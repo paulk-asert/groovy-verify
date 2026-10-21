@@ -15506,6 +15506,37 @@ loop ran on the breaking iteration refuting; a top-level break and a return befo
 at that return; the two fixed unsoundnesses (a loop and an `assert` in one branch); three-deep nesting still
 skipping loudly.
 
+## Phase 345 — for-in over a range  *(shipped — the commonest counting loop)*
+
+A for-in was modelled only over a named collection, so `for (i in 0..<n)`, probably the commonest Groovy counting
+loop, skipped the method ("unsupported statement ForStatement"), with or without an `@Invariant`.
+
+- **A counting loop.** `buildLoopSpec` desugars `for (x in lo..<hi)` / `lo..hi` to `int x = lo; while (x < hi) {
+  body; x = x + 1 }` (`<=` inclusive), with `x` itself the counter rather than a hidden index bound to an element:
+  an `@Invariant` over `x` is then a loop-head invariant, as for a classic `for` (groovy-contracts checks it at body
+  entry, which the head covers). The auto invariant `lo <= x <= hi` (`hi + 1` inclusive) and variant `hi - x` give
+  safety and termination with no hand-written invariant. `(lo..<hi).each { x -> … }` takes the same path.
+- **Ranges can run backwards.** Groovy iterates a range whose upper bound is below its lower one downwards (`0..<-2`
+  is `[0, -1]`, `1..0` is `[1, 0]`), which the counting loop doesn't model. `LoopSpec.rangeForward` (`lo <= hi`) is
+  checked as its own VC in the establishment's entry state, top-level and nested (`checkRangeForward`), then assumed
+  for the invariant's establishment. An inclusive range also needs `hi < Integer.MAX_VALUE`: its counter reaches
+  `hi + 1` at exit, which Phase 333's `int` bound would make an infeasible, vacuous exit state.
+- **What the desugar relies on, checked syntactically.** The range is evaluated once, and its iteration ignores
+  writes to `x`: a body that assigns `x`, or writes (assigns, stores into, calls a method on) a name the bounds
+  read, leaves the loop uncaptured, and the skip now says why (`ContractExpansionTransform.LOOP_SKIP_KEY`, read by
+  BodyEncoder's unsupported-statement skip).
+- **Auto-only accumulation check.** `autoOnlyBodyAccumulates` excluded a for-in's synthetic index but not a range
+  loop's counter, so `(0..<n).each { assert … }` skipped; the update's writes are excluded now. Its message no
+  longer says the invariant is "not attachable to a `.each`" for a for-in, which can carry one.
+
+**Shipped tests:** group `P345 for-in over a range`, 19 cases: counts over `0..<n` and literal bounds, an untyped
+variable over `0..<a.length`, a prefix sum, an inclusive `1..n`, `continue`/`break`, nested and sequential range
+loops, `(0..<n).each` and a false assert in it; a wrong invariant; ranges that may run backwards (`0..<n`, `1..n` at
+0, `0..n - 1` at 0 beside an off-by-one store, a nested `0..<i - 1`, an inclusive range to `Integer.MAX_VALUE`);
+and the loud skips (the body assigning the variable, writing a bound, accumulating with no invariant).
+
+**Still out:** `<..` / `<..<` ranges, `(lo..hi).step(k)`, `n.times { }`, and `.eachWithIndex` over a range.
+
 ---
 
 ## Definition of done, per increment

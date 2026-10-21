@@ -72,7 +72,8 @@ a coverage metric. In expressions the fragment is:
   to prove at the empty edge — the seeded `a[0..<k].sum(0)`, a guaranteed-non-empty range, or the int[]-returning
   `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms. A related documented
   edge: Groovy ranges **auto-reverse** when the upper bound drops below the lower (`0..-1` is `[0, -1]`,
-  `0..<-1` is `[0]`), while the verifier's quantifier model reads such ranges as *empty* (forward-only) —
+  `0..<-1` is `[0]`), while the verifier's quantifier model reads such ranges as *empty* (forward-only; a range
+  *for-in* is different, Phase 345: its establishment proves `lo <= hi`, so `for (i in 1..n)` refutes at `n == 0`) —
   so at the degenerate edge (`(0..<n-1).every { a[it] <= a[it+1] }` with `n == 0`) the contract itself can
   crash at *runtime* where the proof read a vacuous ∀. The runtime rung triages these as `range-edge`
   (corroborating that the body's value is correct). **Reversal-immune spellings** for the
@@ -341,7 +342,9 @@ loop `while (i < n) a[i++] = 0` verifies and an out-of-bounds `a[i++]` refutes; 
 assignment — both the declaration `def (a, b) = [1, 2]` and the bare parallel **swap** `(a, b) = [b, a]`
 (the right-hand side is snapshotted before any target is written; Phases 79 / 90), and annotated
 loops — `while`, `do … while` (Phase 88), a classic `for (init; cond; update)`, `for (x in xs)` over a named
-collection, `xs.each { x -> … }` / `xs.each { … it … }` (Phase 161, modelled as that same for-in — the explicit
+collection, `for (i in lo..<hi)` / `lo..hi` and `(lo..<hi).each { i -> … }` over a range (Phase 345: a counting
+loop with `i` itself the counter, so an `@Invariant` over `i` is a loop-head invariant; establishment checks the
+range runs forwards, below), `xs.each { x -> … }` / `xs.each { … it … }` (Phase 161, modelled as that same for-in — the explicit
 element param *or* the implicit `it`), or `xs.eachWithIndex { x, i -> … }` (the closure's second param becomes the
 loop's *user-named* index, with `x = xs[i]`), all desugaring to the same machinery (Phases 59 & 63; the for-in's
 index is synthesised and hidden — except for `eachWithIndex`, where the developer named it — and the loop variable

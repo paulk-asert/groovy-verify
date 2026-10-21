@@ -52,6 +52,7 @@ import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -126,6 +127,8 @@ class ContractExpansionTransform implements ASTTransformation {
      * transforms inject invariant asserts into the live loop body.
      */
     static final String LOOP_SPEC_KEY = 'verification.loopSpec'
+    /** Phase 345 — why an annotated-looking loop got no {@link #LOOP_SPEC_KEY}, for the loud skip's message. */
+    static final String LOOP_SKIP_KEY = 'verification.loopSkip'
 
     /**
      * Phase 63 — name of the synthetic index a {@code for (x in xs)} desugar introduces. Hidden from
@@ -1006,7 +1009,9 @@ class ContractExpansionTransform implements ASTTransformation {
         if (!(st.expression instanceof MethodCallExpression)) return null
         MethodCallExpression mce = (MethodCallExpression) st.expression
         String method = mce.methodAsString
-        if ((method != 'each' && method != 'eachWithIndex') || !(mce.objectExpression instanceof VariableExpression)) return null
+        // Phase 345 — `(lo..<hi).each { i -> … }` too: the range for-in
+        boolean rangeEach = method == 'each' && mce.objectExpression instanceof RangeExpression
+        if ((method != 'each' && method != 'eachWithIndex') || !(mce.objectExpression instanceof VariableExpression || rangeEach)) return null
         if (!(mce.arguments instanceof ArgumentListExpression)) return null
         List<Expression> args = ((ArgumentListExpression) mce.arguments).expressions
         if (args.size() != 1 || !(args.get(0) instanceof ClosureExpression)) return null
@@ -1119,6 +1124,7 @@ class ContractExpansionTransform implements ASTTransformation {
         Expression inferredInvariant = null    // loop-invariant inference (opt-in -Dverify.inferLoops) for a bare counter loop
         String forInVarName = null
         Statement forInBindStmt = null
+        Expression rangeForward = null         // Phase 345 — a range for-in's bounds don't run backwards
         Expression guard
         if (loop instanceof ForStatement) {
             ForStatement f = (ForStatement) loop
@@ -1163,6 +1169,38 @@ class ContractExpansionTransform implements ASTTransformation {
                 bodyPrefix = [bindX]
                 forInVarName = x
                 forInBindStmt = bindX
+            } else if (f.collectionExpression instanceof RangeExpression) {
+                // Phase 345 — `for (x in lo..<hi)` / `lo..hi` is a counting loop: `int x = lo; while (x < hi) { …; x++ }`,
+                // with x itself the counter, so an @Invariant over x is a loop-head invariant, as for a classic for
+                // (groovy-contracts checks it at body entry, a state the head covers). The range is evaluated once and
+                // its iteration ignores writes to x, so a body that writes x or what the bounds read skips loudly.
+                // Groovy iterates a range whose upper bound lies below its lower one BACKWARDS (`0..<-2` is [0, -1]);
+                // `rangeForward` is the bound the establishment checks, with its own message.
+                RangeExpression r = (RangeExpression) f.collectionExpression
+                String x = f.variable?.name
+                if (x == null || r.exclusiveLeft || !isIntLoopVar(f.variable.type)) return null
+                Set<String> boundNames = namesIn(r.from) + namesIn(r.to)
+                if (writesAny(f.loopBlock, [x] as Set<String>, false)) {
+                    ((Statement) loop).setNodeMetaData(LOOP_SKIP_KEY, "the body assigns the range for-in variable '${x}', which doesn't change the iteration".toString())
+                    return null
+                }
+                if (writesAny(f.loopBlock, boundNames, true)) {
+                    ((Statement) loop).setNodeMetaData(LOOP_SKIP_KEY, "the body writes what the range's bounds read (${boundNames.join(', ')}), which are evaluated once".toString())
+                    return null
+                }
+                String lo = "(${r.from.text})", hi = "(${r.to.text})"
+                boolean incl = !r.exclusiveRight
+                guard         = reparse(incl ? "${x} <= ${hi}" : "${x} < ${hi}")
+                Statement initS = assignStmt("int ${x} = ${lo}")
+                updateStmt    = assignStmt("${x} = ${x} + 1")
+                autoInvariant = reparse(incl ? "${lo} <= ${x} && ${x} <= ${hi} + 1" : "${lo} <= ${x} && ${x} <= ${hi}")
+                autoVariant   = reparse(incl ? "${hi} + 1 - ${x}" : "${hi} - ${x}")
+                // an inclusive range's counter reaches hi + 1 at exit, which an `int` x can't hold when hi is
+                // Integer.MAX_VALUE (Phase 333 bounds a loop-written int), so that state would be vacuous
+                rangeForward  = reparse(incl ? "${lo} <= ${hi} && ${hi} < Integer.MAX_VALUE" : "${lo} <= ${hi}")
+                if (guard == null || initS == null || updateStmt == null || autoInvariant == null || autoVariant == null
+                        || rangeForward == null) return null
+                initStmts = [initS]
             } else {
                 return null   // for-in over a literal / method-call collection → loud skip
             }
@@ -1227,7 +1265,64 @@ class ContractExpansionTransform implements ASTTransformation {
         spec.forInBind = forInBindStmt
         spec.isDoWhile = loop instanceof DoWhileStatement   // Phase 88 — body runs once before the first guard
         spec.autoInvariantOnly = autoInvariantOnly
+        spec.rangeForward = rangeForward
         return spec
+    }
+
+    /** Phase 345 — a range for-in's variable: {@code int}, {@code Integer} or untyped (an IntRange's element). */
+    private static boolean isIntLoopVar(ClassNode t) {
+        t == null || t == ClassHelper.DYNAMIC_TYPE || t == ClassHelper.OBJECT_TYPE ||
+            ClassHelper.getWrapper(t) == ClassHelper.Integer_TYPE
+    }
+
+    /** The variable names {@code e} reads (closures included). */
+    private static Set<String> namesIn(Expression e) {
+        Set<String> out = new LinkedHashSet<String>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression v) { out.add(v.name) }
+        })
+        out
+    }
+
+    /**
+     * Phase 345 — whether {@code body} may write one of {@code names}: an assignment, compound assignment or
+     * {@code ++}/{@code --} on it, or (when {@code contents}) a subscript store into it or a method call on it,
+     * which could change a size or length a range bound reads. Conservative and syntactic, closures included.
+     */
+    private static boolean writesAny(Statement body, Set<String> names, boolean contents) {
+        if (names.isEmpty()) return false
+        boolean[] found = [false]
+        Closure<String> root
+        root = { Expression e ->
+            if (e instanceof VariableExpression) return ((VariableExpression) e).name
+            if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET)
+                return contents ? root(((BinaryExpression) e).leftExpression) : null
+            if (e instanceof PropertyExpression) return contents ? root(((PropertyExpression) e).objectExpression) : null
+            null
+        }
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && names.contains(root(be.leftExpression))) found[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && names.contains(((VariableExpression) de.leftExpression).name)) found[0] = true
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                if (names.contains(root(pe.expression))) found[0] = true
+                super.visitPostfixExpression(pe)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                if (names.contains(root(pe.expression))) found[0] = true
+                super.visitPrefixExpression(pe)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (contents && names.contains(root(mce.objectExpression))) found[0] = true
+                super.visitMethodCallExpression(mce)
+            }
+        })
+        found[0]
     }
 
     private static Expression loopGuard(LoopingStatement loop) {

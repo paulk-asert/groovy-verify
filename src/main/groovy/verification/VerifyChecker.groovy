@@ -11334,7 +11334,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (postAst != null && autoOnlyBodyAccumulates(site)) {
                 addStaticTypeError(Reporter.formatLoopSkipped(node.name,
                     'an auto-bounds-only for-in/.each whose body writes a variable the postcondition depends on ' +
-                    'needs an @Invariant to frame it (not attachable to a `.each` statement)'), site.loopStmt)
+                    (site.spec.fromEach ? 'needs an @Invariant to frame it (not attachable to a `.each` statement)'
+                                        : 'needs an @Invariant to frame it')), site.loopStmt)
             } else if (postAst != null) checkUse(node, site, reqAst, postAst)
             // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
             // when the method has an @Ensures to prove).
@@ -11788,8 +11789,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!collectWritesStmts(site.spec.body, writes)) return true   // unbounded body effect → treat as accumulating
         writes.remove(site.spec.forInVar)
         writes.remove(ContractExpansionTransform.FOR_IN_INDEX)
-        // Phase 328 — and `eachWithIndex`'s user-named index, which its update steps
-        if (site.spec.forInVar != null && site.spec.update != null) {
+        // Phase 328 — and `eachWithIndex`'s user-named index, which its update steps; Phase 345 — a range for-in's counter
+        if ((site.spec.forInVar != null || site.spec.rangeForward != null) && site.spec.update != null) {
             Set<String> stepped = new HashSet<String>()
             if (collectWritesStmt(site.spec.update, stepped)) writes.removeAll(stepped)
         }
@@ -12151,13 +12152,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  Phase 49 — assume {@code ¬each prefix early-exit guard} (the loop is only reached on
      *  the no-exit-taken path). */
     private void checkEstablishment(MethodNode node, LoopSite site, Expression reqAst) {
-        SmtSession s = backend.session()
-        try {
-            Encoder enc = mkEncoder(s)
+        Closure<Void> entry = { SmtSession s, Encoder enc ->
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             walkPrefix(site, null, enc, s)
+        }
+        checkRangeForward(node, site, entry)
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            entry(s, enc)
+            assumeRangeForward(site, enc, s)
             // Phase 88 — a do-while (`do B while (G)` ≡ `B; while (G) B`) runs its body once before the
             // first guard/invariant check, so the invariant must hold AFTER that first iteration, not at
             // loop entry. Execute the body once here (no guard assumed — the first pass is unconditional)
@@ -12171,6 +12177,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Reporter.formatLoopEstablishment(node.name, invText(site), r, site.spec.isDoWhile), site.loopStmt)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Phase 345 — a range for-in's bounds, checked in the establishment's entry state: Groovy iterates
+     *  {@code lo..<hi} backwards when {@code hi < lo}, which the counting-loop desugar doesn't model. */
+    private void checkRangeForward(MethodNode node, LoopSite site, Closure<Void> entry) {
+        if (site.spec.rangeForward == null) return
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            entry(s, enc)
+            Object fwd = enc.translate(site.spec.rangeForward)
+            if (fwd == null) throw new UnsupportedConstructException("range bounds outside fragment ('${site.spec.rangeForward.text}')")
+            s.assertExpr(s.not(fwd))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatRangeBackwards(node.name, site.spec.rangeForward.text, r), site.loopStmt)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Phase 345 — once checked (and reported if it fails), the forward bound is a fact of the establishment. */
+    private static void assumeRangeForward(LoopSite site, Encoder enc, SmtSession s) {
+        if (site.spec.rangeForward == null) return
+        Object fwd = enc.translate(site.spec.rangeForward)
+        if (fwd != null) s.assertExpr(fwd)
     }
 
     /** Preservation: invariant ∧ guard ∧ class invariants ∧ one body iteration ⇒ invariant still holds.
@@ -12416,9 +12447,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     private void checkNestedEstablishmentFrom(MethodNode node, LoopSite outer, LoopSite innerSite,
                                               List<Statement> before, Expression reqAst, boolean doWhileFirstPass) {
-        SmtSession s = backend.session()
-        try {
-            Encoder enc = mkEncoder(s)
+        Closure<Void> entry = { SmtSession s, Encoder enc ->
             // Phase 343 — at an outer iteration only the @Requires the outer loop's writers leave standing holds
             if (doWhileFirstPass) {
                 if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
@@ -12434,6 +12463,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 s.assertExpr(LoopEncoder.tr(enc, outer.spec.guard, "guard"))
             }
             LoopEncoder.symExec(before, enc, s)
+        }
+        checkRangeForward(node, innerSite, entry)
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            entry(s, enc)
+            assumeRangeForward(innerSite, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, innerSite.spec.invariants)))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {

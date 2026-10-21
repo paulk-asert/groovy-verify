@@ -698,7 +698,8 @@ class BodyEncoder {
         }
 
         throw new UnsupportedConstructException(
-            "unsupported statement ${s.class.simpleName} (line ${s.lineNumber})")
+            "unsupported statement ${s.class.simpleName} (line ${s.lineNumber})" +
+                (s.getNodeMetaData(ContractExpansionTransform.LOOP_SKIP_KEY) != null ? ": ${s.getNodeMetaData(ContractExpansionTransform.LOOP_SKIP_KEY)}" : ''))
     }
 
     /** `subject == label`, the guard a case arm runs under. */

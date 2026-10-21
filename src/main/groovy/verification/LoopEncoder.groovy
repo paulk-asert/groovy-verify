@@ -90,6 +90,9 @@ class LoopSpec {
     // `return` ends only the current element's call (like `continue`), never the method. The loop-site builder
     // uses this to keep such a `return` from being read as a method early-exit.
     boolean fromEach = false
+    // Phase 345 — a range for-in's {@code lo <= hi}: Groovy iterates a range whose upper bound lies below its lower
+    // one backwards, which the counting-loop desugar doesn't model, so the establishment checks it (null otherwise)
+    Expression rangeForward = null
 }
 
 /**

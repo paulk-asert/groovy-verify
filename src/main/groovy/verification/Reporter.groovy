@@ -924,6 +924,15 @@ class Reporter {
             "Could not decide loop-invariant establishment in ${methodName}", result)
     }
 
+    /** Phase 345 — a range for-in whose bounds may run backwards: Groovy iterates {@code 0..<n} downwards when
+     *  {@code n < 0} (and {@code 0..n} when {@code n < 0}, so {@code 0..-1} is {@code [0, -1]}). */
+    static String formatRangeBackwards(String methodName, String boundText, CheckResult result) {
+        loopFailure("Cannot prove the for-in range runs forwards in ${methodName} (Groovy iterates a range whose " +
+            "upper bound is below its lower one backwards)",
+            "needs", boundText,
+            "Could not decide that the for-in range runs forwards in ${methodName}", result)
+    }
+
     static String formatLoopPreservation(String methodName, String invariantText, CheckResult result) {
         loopFailure("Cannot prove loop invariant is preserved by the loop body in ${methodName}",
             "invariant", invariantText,
