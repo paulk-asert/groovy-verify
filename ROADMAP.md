@@ -15537,6 +15537,35 @@ and the loud skips (the body assigning the variable, writing a bound, accumulati
 
 **Still out:** `<..` / `<..<` ranges, `(lo..hi).step(k)`, `n.times { }`, and `.eachWithIndex` over a range.
 
+## Phase 346 — a library call in a loop body  *(shipped — overload choice, honest repros; a bigger unsoundness found)*
+
+`s = s + Math.abs(i)` in a loop body under `0 <= i` failed to preserve `s >= 0`, with `fails on: f(1)`, though
+`f(1)` returns 1, and the havocked value displayed as `s (after a loop)`.
+
+- **The overload needs the argument's width.** `java.lang.Math` specs both `abs(int)` and `abs(long)`; Phase 219's
+  typed lookup declines when the argument's kind is unknown, and `staticNumericKind` knew only `scalarTypes`
+  (parameters and fields). A local's width is now taken from `integralNames` (Phase 333, conflicting declarations
+  already dropped), and a for-in's variable is noted there too. So the spec applies in loop bodies, after a loop
+  (`return Math.abs(i)` skipped as "outside the fragment") and over straight-line locals.
+- **An untranslatable value is labelled, and its repro withheld.** `LoopEncoder.rebind` havocs a right-hand side the
+  encoder can't translate; it now mints it as `x$unmodelled$n`, shown as `x (unmodelled)`. The model picks such a
+  value freely, so no run is known to produce it: `shown()` withholds the failing call with a note naming it.
+
+**Shipped tests:** group `P346 a library call in a loop body`, 9 cases: `Math.abs` in a loop body, into a body
+local, `Math.max`, after a loop, in a guard, in a range for-in, over a straight-line local; a claim the spec doesn't
+give refuting with a real call; and a contracted call's havocked result withholding the call.
+
+**Found, not fixed — a call's side effects are dropped (unsound, long-standing).** A same-class call used as a value
+is modelled without its writes:
+- an uncontracted method is a "pure function" when it merely has no contract (`PureEvaluator.resolve`), so
+  `int bump() { count = 99; return 1 }` makes `s = s + bump()` keep `count == 0`, in straight-line code and loops;
+- a contracted method with no `@Modifies` is assumed to write nothing, and nothing checks it does: `int s =
+  clobber(a)`, with `clobber` storing `a[0] = -1`, keeps `a[0] == 0`.
+
+Only a call as a statement in a loop body skips loudly. The fix is a design choice: infer a callee's write set from
+its body at each call (havocking it, or skipping loudly when it can't be bounded), or make "no `@Modifies`" mean
+"modifies nothing" and check that at the callee, as Dafny does. It is its own phase.
+
 ---
 
 ## Definition of done, per increment

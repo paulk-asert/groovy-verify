@@ -1903,12 +1903,14 @@ class Encoder implements TheoryApi {
     @Override
     MethodNode currentMethod() { vcMethod }
 
-    Object havoc(String name) {
+    /** Phase 346 — {@code tag} names why: {@code havoc} (a loop's write) or {@code unmodelled} (a value the encoder
+     *  can't translate), which the counterexample display and the repro builder tell apart. */
+    Object havoc(String name, String tag = 'havoc') {
         // Phase 205 — havoc in the name's OWN sort: a boolean local havocked as an Int handle later
         // crashes the guard translation (`Cannot cast IntExpr to BoolExpr` — the inner-loop `found`
         // flag). The prior binding's sort is the authority; unbound names default to Int as before.
         Object prev = env.get(name)
-        String hn = name + '$havoc$' + (havocCounter++)
+        String hn = name + '$' + tag + '$' + (havocCounter++)
         Object v
         if (prev != null && session.isBool(prev)) v = session.boolVar(hn)
         else if (prev != null && session.isReal(prev)) v = session.realVar(hn)
@@ -7089,6 +7091,11 @@ class Encoder implements TheoryApi {
             String n = t?.name
             if (n == 'long' || n == 'java.lang.Long') return 'long'
             if (n in ['int', 'java.lang.Integer', 'short', 'java.lang.Short', 'byte', 'java.lang.Byte', 'char', 'java.lang.Character']) return 'int'
+            // Phase 346 — a local isn't in scalarTypes; its declared width is in integralNames (Phase 333, a name
+            // declared both int and long dropped), so `int t = Math.abs(i)` over a local `int i` picks abs(int)
+            Integer bits = t == null ? integralNames?.get(vn) : null
+            if (bits == 32) return 'int'
+            if (bits == 64) return 'long'
             return null
         }
         if (e instanceof UnaryMinusExpression) return staticNumericKind(((UnaryMinusExpression) e).expression)

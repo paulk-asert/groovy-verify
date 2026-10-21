@@ -841,7 +841,7 @@ class LoopEncoder {
         if (enc.tryMaterialiseSetBinopAssign(name, rhs)) return
         if (enc.tryRecordFactoryAssign(name, rhs)) return
         Object h = enc.translate(rhs)
-        if (h == null) enc.havoc(name)
+        if (h == null) enc.havoc(name, 'unmodelled')   // Phase 346 — no run is known to give the value it takes
         else enc.bind(name, h)
     }
 }

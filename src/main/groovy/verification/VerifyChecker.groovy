@@ -1939,6 +1939,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     for (VariableExpression v : declaredTargets(de)) note(v.name, v.originType ?: v.type)
                     super.visitDeclarationExpression(de)
                 }
+                // Phase 346 — a for-in's variable (`for (int i in 0..<n)`) is declared by the loop, not a declaration
+                @Override
+                void visitForLoop(ForStatement f) {
+                    if (f.variable != null && f.variable != ForStatement.FOR_LOOP_DUMMY) note(f.variable.name, f.variable.originType ?: f.variable.type)
+                    super.visitForLoop(f)
+                }
             })
         } catch (Throwable ignored) {}
         out
@@ -2210,6 +2216,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         reproBreaksRequires = false
         r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
         if (reproBreaksRequires && !r.notes.contains(REPRO_BREAKS_REQUIRES)) r.notes.add(REPRO_BREAKS_REQUIRES)
+        // Phase 346 — a model that gives an unmodelled value (`s = s + g(i)` with g's result untranslatable) picked
+        // it freely: no run is known to produce it, so the call it suggests may not fail. Withheld, with a note.
+        List<String> unmodelled = r.counterexample == null ? Collections.<String> emptyList() :
+            r.counterexample.keySet().findAll { UNMODELLED_KEY.matcher(it).matches() }
+                .collect { String k -> unmodelledBase(k) }.findAll { !it.contains('#') && !it.startsWith('$') }.unique()
+        if (r.failingCall != null && !unmodelled.isEmpty()) {
+            r.failingCall = null
+            String note = "no failing call: the failure rests on ${unmodelled.join(', ')}, a value the verifier doesn't model (an unmodelled call or expression), so no run is known to reach it".toString()
+            if (!r.notes.contains(note)) r.notes.add(note)
+        }
         // Phase 125 — array names whose Int-valued *elements* are meaningful to print: a parameter or instance
         // field reflects the actual input/entry state. A *local* array's model value is its arbitrary pre-state
         // (e.g. a loop-preservation check picks an unconstrained entry array), which would mislead — so those
@@ -2233,6 +2249,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         r.counterexample.each { String k, Long v ->
+            if (UNMODELLED_KEY.matcher(k).matches()) {
+                String base = unmodelledBase(k)
+                if (!base.contains('#') && !base.startsWith('$')) display.put(base + ' (unmodelled)', v)
+                return
+            }
             java.util.regex.Matcher hm = HAVOC_KEY.matcher(k)
             if (hm.matches()) {
                 String base = hm.group(1)
@@ -2274,6 +2295,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** A loop summary's havocked scalar: {@code <name>$havoc$<n>}. */
     private static final java.util.regex.Pattern HAVOC_KEY = java.util.regex.Pattern.compile('(.+)\\$havoc\\$(\\d+)')
+    /** Phase 346 — a value the encoder couldn't translate, havocked: {@code <name>$unmodelled$<n>}. */
+    private static final java.util.regex.Pattern UNMODELLED_KEY = java.util.regex.Pattern.compile('(.+)\\$unmodelled\\$(\\d+)')
+
+    private static String unmodelledBase(String k) {
+        java.util.regex.Matcher m = UNMODELLED_KEY.matcher(k)
+        m.matches() ? m.group(1) : k
+    }
 
     private static final List<String> INT_TYPE_NAMES = [
         'int', 'long', 'short', 'byte', 'char',
