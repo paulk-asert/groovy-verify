@@ -2560,7 +2560,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> mutated = new HashSet<String>()
         body.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression m) {
-                if (m.objectExpression instanceof VariableExpression && !(m.methodAsString in LOOP_PURE_READS)) {
+                if (m.objectExpression instanceof VariableExpression && !pureRead(m, LOOP_PURE_READS)) {
                     mutated.add(((VariableExpression) m.objectExpression).name)
                 }
                 super.visitMethodCallExpression(m)
@@ -11774,6 +11774,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         'is','asBoolean','getV1','getV2','getV3','getV4','getFirst','getSecond','getThird','isPresent','orElse',
         'getClass','compareToIgnoreCase','codePointAt','isBlank','isAllWhitespace','padLeft','padRight','center',
         'multiply','intdiv','tuple','getAt','size','isNaN','isInfinite','max','min','floor','ceil','round',
+        // Phase 358 — GDK reads returning a new value (`unique()`/`sort()` mutate, so stay out)
+        'grep','findResult','findResults','countBy','indexed','collectNested',
         // `cs(r)` on a Function / Closure in scope is `cs.call(r)`: applying a callable doesn't write the callable
         'call'] as Set
 
@@ -11823,7 +11825,39 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         'lastIndexOf','charAt','substring','keySet','values','entrySet','sum','max','min','count',
         'every','any','find','findAll','collect','intdiv','mod','remainder','abs','compareTo','equals',
         'startsWith','endsWith','toUpperCase','toLowerCase','first','last','head','tail','of','range',
-        'boundedBy','boundedCount','intValue','longValue','containsWithinBounds'] as Set
+        'boundedBy','boundedCount','intValue','longValue','containsWithinBounds',
+        // Phase 358 — copies: a shallow clone of an array, list or map, or a sorted / de-duplicated new list
+        'clone','toSorted','toUnique'] as Set
+
+    /** Phase 358 — is {@code mce} a read by its name in {@code names}? Not when the receiver's declared type is a
+     *  class of the source that declares the method itself: a user's {@code size()} or {@code clone()} may write,
+     *  and its own frame (or the receiver-write fallback) says so; only the library's method is known pure. */
+    private static boolean pureRead(MethodCallExpression mce, Set<String> names) {
+        String m = mce.methodAsString
+        m in names && !userDeclared(mce.objectExpression, m)
+    }
+
+    /** Phase 358 — the receiver's declared type (a parameter, local or field read by name) or a supertype of it is a
+     *  primary class node — compiled from source — that declares {@code m}. A receiver with no declared type (a
+     *  {@code def} local, a call's result) may be any class: then any class of the compilation unit declaring
+     *  {@code m} is enough. */
+    private static boolean userDeclared(Expression recv, String m) {
+        ClassNode t = null
+        if (recv instanceof VariableExpression) {
+            VariableExpression ve = (VariableExpression) recv
+            t = ve.name == 'this' || ve.name == 'super' ? WRITE_OWNER.get() : (ve.accessedVariable?.originType ?: ve.originType)
+        }
+        if (t == null || t.redirect() == ClassHelper.OBJECT_TYPE) {
+            ClassNode owner = WRITE_OWNER.get()
+            if (owner?.module == null) return false
+            for (ClassNode cn : owner.module.classes) if (!cn.getDeclaredMethods(m).isEmpty()) return true
+            return false
+        }
+        for (ClassNode c = t.redirect(); c != null; c = c.superClass) {
+            if (c.isPrimaryClassNode() && !c.getDeclaredMethods(m).isEmpty()) return true
+        }
+        false
+    }
 
     /**
      * Phase 65 — for a for-in loop, split the invariant clauses that reference the loop variable out
@@ -11926,7 +11960,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> kept = new HashSet<String>(), changed = new HashSet<String>()
         for (Statement st : stmts) st.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression m) {
-                if (m.objectExpression instanceof VariableExpression && !(m.methodAsString in LOOP_PURE_READS)) {
+                if (m.objectExpression instanceof VariableExpression && !pureRead(m, LOOP_PURE_READS)) {
                     String n = ((VariableExpression) m.objectExpression).name
                     (m.methodAsString == 'set' ? kept : changed).add(n)
                 }
@@ -12438,7 +12472,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // a loop's write set: the earlier reading, unchanged by Phase 347
                 if (LOOP_MUTATORS.contains(m)) {
                     if (!recordTarget(mce.objectExpression, ws)) return false
-                } else if (!LOOP_PURE_READS.contains(m)) {
+                } else if (!pureRead(mce, LOOP_PURE_READS)) {
                     return false   // unknown call → can't bound effects → bail
                 } else {
                     if (!collectWritesExpr(mce.objectExpression, ws)) return false
@@ -12457,7 +12491,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 347 — a static call on another class: through the registry (a @Pure spec, or its declared
                 // frame onto the actuals), else every nameable argument may be written
                 return collectStaticCallWrites(((ClassExpression) mce.objectExpression).type?.name, m, mce.arguments, ws)
-            } else if (!LOOP_PURE_READS.contains(m) && !INFER_PURE_READS.contains(m)) {
+            } else if (!pureRead(mce, LOOP_PURE_READS) && !pureRead(mce, INFER_PURE_READS)) {
                 // Phase 350 — a call on a parameter of a SIBLING class (`c.bump()`): the callee's own frame says what
                 // it writes — the receiver, when a field; the actuals, when a formal; nothing, when nothing
                 ClassNode sib = siblingReceiverClass(mce.objectExpression)
@@ -12482,10 +12516,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  or a local), skipping a name of immutable type; a receiver with no name contributes its own writes. */
     private static boolean recordReceiverWrite(Expression recv, Set<String> ws) {
         Set<String> tmp = new HashSet<String>()
+        String prevReason = WRITE_UNBOUNDED.get()
         if (recordTarget(recv, tmp)) {
             Set<String> immutable = WRITE_IMMUTABLE.get()
             for (String n : tmp) if (immutable == null || !immutable.contains(n)) ws.add(n)
             return true
+        }
+        WRITE_UNBOUNDED.set(prevReason)   // recordTarget's refusal isn't the verdict: the receiver's freshness is
+        // Phase 358 — a receiver with no name is written too: fresh (`new T()`, a literal, a copy), that touches
+        // nothing visible; anything else (`id(h)`, `h?.peer`) may be a parameter or field, so the frame is unbounded
+        if (aliasSources(recv).any { it.startsWith(OPAQUE_ALIAS) }) {
+            return unbounded("a call on '${clip(recv.text)}', which may be a parameter or field and may write it")
         }
         collectWritesExpr(recv, ws)
     }
@@ -12582,7 +12623,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             out.addAll(aliasSources(((CastExpression) e).expression))
         } else if (e instanceof PropertyExpression && !(((PropertyExpression) e).objectExpression instanceof ClassExpression)) {
             out.addAll(aliasSources(((PropertyExpression) e).objectExpression))
-        } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET) {
+        } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LEFT_SQUARE_BRACKET, Types.LEFT_SHIFT]) {
+            // an element's owner; `xs << v` returns `xs` (Phase 358 — a chained `log << a << b`)
             out.addAll(aliasSources(((BinaryExpression) e).leftExpression))
         } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in FRESH_RESULT_METHODS) {
             // a fresh result

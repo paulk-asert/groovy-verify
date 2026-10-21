@@ -15983,10 +15983,50 @@ alias; a view and a call's result loud; a call's result only read keeping the fr
 object parameter's field written, incremented and written through a local; an object ternary meeting the Phase 194
 boundary; a declared frame missing the written object and one naming it; a for-in variable aliasing its collection.
 
-**Still out:** `a.clone()` and other unknown methods on a receiver are still read as writing it (sound, imprecise);
+**Still out:** `a.clone()` and other unknown methods on a receiver are still read as writing it (sound, imprecise —
+`clone` and the GDK copies: Phase 358);
 flow-sensitive aliasing; aliasing in general, the non-goal behind Phase 194's boundary. A local array alias in a
 method's own body (`int[] b = a; b[0] = 5; return a[0]`) is unchanged: not linked, so a spurious bounds warning, not
 a false proof.
+
+## Phase 358 — a copy is a read, a user method is not  *(shipped — precision, and soundness: two silent write holes closed)*
+
+Phase 357's follow-up. The write collector decides what a call writes by its method name: a mutator (`add`, `sort`,
+…) writes its receiver, a name on the read lists (`LOOP_PURE_READS`, and `INFER_PURE_READS` in callee inference)
+writes nothing, and anything else is read as writing its receiver (Phase 347) — or, in a loop's write set, as
+unbounded.
+
+- **A copy is a read:** `clone`, `toSorted` and `toUnique` join the read lists, and `grep`, `findResult(s)`,
+  `countBy`, `indexed` and `collectNested` the callee-inference one (`unique()` and `sort()` mutate, so stay out;
+  `reverse()` mutates a `StringBuilder`, so stays out too). Before, `int[] b = a.clone(); b[0] = 5` in a helper
+  havocked the caller's `a`, `xs.toSorted()` its size, and a loop taking a clone dropped every loop-stable
+  precondition over the original.
+- **Fixed, older: a user method named like a library read was a read.** The read lists name library methods, but
+  the test was on the name alone, so a sibling class's own `int size() { n = n + 1; … }` called on a parameter was
+  taken as `List.size()`: nothing written, in a helper's inferred frame (the Phase 350 sibling-frame branch came
+  after the read-list test) and in a method body loop's write set, which kept `h.n == 0` loop-stable across
+  `h.size()`. Both verified a false `@Ensures({ h.n == 0 })`. `pureRead` now refuses the name when the receiver's
+  declared type — or a supertype — is a class compiled from source that declares the method itself; the call then
+  takes the sibling's own frame (a pure `size()` still frames nothing), the receiver-write fallback, or, in a loop,
+  the bail. The same test guards Phase 343's written-parameter and size-preserving visitors. A receiver with no
+  declared type (a `def` local, a call's result) may be of any class, so there any class of the compilation unit
+  declaring the name is enough to refuse it.
+- **Fixed, older: an unknown method on a receiver with no name wrote nothing.** Phase 347's fallback records an
+  unknown method's receiver as written — but a receiver that isn't a name (`id(h).size()`) contributed only its own
+  expression's writes, though `id(h)` is `h`. Now, by Phase 357's `aliasSources`, a fresh receiver (`new T()`, a
+  literal, a copy) still writes nothing visible; anything else makes the frame unbounded, loudly ("a call on
+  'A.id(h)', which may be a parameter or field and may write it"). `xs << v` returns `xs`, so a chained
+  `log << a << b` writes `log`, as before.
+
+**Shipped tests:** group `P358 a copy is a read, a user method is not`, 11 cases: a helper writing a clone keeping the
+original, and writing the original still refuting; clearing a sorted copy keeping the size; a loop taking a clone
+keeping a loop-stable precondition; a sibling's own writing `size()` in a helper, through a local and in a method body
+loop and through a `def` local (each compiled cleanly before); a call on a call's result loud (compiled cleanly
+before); a sibling's own writing `clone()`; a sibling's reading `size()` framed by its body.
+
+**Still out:** a receiver declared as an interface or library type that a source class implements (`List<T> xs`
+holding a user `List`) is still read by the library's contract; `reverse()` and the other receiver-type-dependent
+names stay writes.
 
 ---
 
