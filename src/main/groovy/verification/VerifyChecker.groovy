@@ -2536,9 +2536,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!r.notes.contains(note)) r.notes.add(note)
         }
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
-        if (r.failingCall != null && loopCallNote != null) {
+        String callNote = loopCallNote ?: closureCallNote   // Phase 372 — or a closure's call after earlier writes
+        if (r.failingCall != null && callNote != null) {
             r.failingCall = null
-            if (!r.notes.contains(loopCallNote)) r.notes.add(loopCallNote)
+            if (!r.notes.contains(callNote)) r.notes.add(callNote)
         }
         // Phase 125 — array names whose Int-valued *elements* are meaningful to print: a parameter or instance
         // field reflects the actual input/entry state. A *local* array's model value is its arbitrary pre-state
@@ -2593,7 +2594,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (stem != null && !(sizeAccessors.containsKey(stem) || currentListNames.contains(stem) ||
                     currentMapTypes.containsKey(stem) || elementArrays.contains(stem))) return
                 if (latestHavoc.get(base) == Integer.parseInt(hm.group(2)) && !base.contains('#') && !base.startsWith('$')) {
-                    display.put(base + ' (after a loop)', v)
+                    String shownBase = stem != null ? stem + sizeAccessor(stem) : base   // the size as the source spells it
+                    display.put(shownBase + (closureCallNote != null ? ' (when the closure runs)' : ' (after a loop)'), v)
                 }
                 return
             }
@@ -5326,7 +5328,155 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * session (context assumptions added by the caller) and report if it is not
      * discharged. Shared by the havoc pass and the Phase 5 value-flow pass.
      */
+    /**
+     * Phase 372 — a site inside a closure runs when the closure is called, not where it is written: later, perhaps
+     * many times, after its own writes and the method's later ones. It was checked in the state at the closure, so
+     * `int d = 1; 3.times { 100.intdiv(d); d-- }` proved the divisor from `d == 1`, and the second call throws. Every
+     * captured name that can differ by then is havocked first ({@link #closureHavoc}). The failing call is withheld:
+     * nothing follows the calls from entry, and the closure's own parameters (`k` in `n.times { k -> … }`) are free.
+     */
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+        Set<String> h = site.hasProperty('node') ? closureHavocFor((ASTNode) site['node']) : null
+        if (h == null) { dischargeObligationAt(s, enc, site); return }
+        for (String n : h) havocLocation(enc, n)
+        String prev = closureCallNote
+        closureCallNote = CLOSURE_CALL_NOTE
+        try { dischargeObligationAt(s, enc, site) } finally { closureCallNote = prev }
+    }
+
+    static final String CLOSURE_CALL_NOTE = 'no failing call: the failure is inside a closure, in a call whose ' +
+        'arguments and captured state the check takes as unknown rather than following from entry'
+
+    /** Phase 372 — while set, {@link #shown} withholds the failing call, with this note. */
+    private String closureCallNote = null
+
+    /** Phase 372 — per method body: each node inside a closure literal → the captured names it may read changed
+     *  (empty when none can: its sites are checked as before, only their call withheld). */
+    private Statement closureHavocBody = null
+    private IdentityHashMap<ASTNode, Set<String>> closureHavocMap = null
+
+    private Set<String> closureHavocFor(ASTNode at) {
+        if (at == null || currentMethod == null) return null
+        if (currentChannelDesugared || !currentChannelNames.isEmpty()) return null   // processes: rely/guarantee
+        Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
+        if (body == null) return null
+        if (!body.is(closureHavocBody)) { closureHavocBody = body; closureHavocMap = closureHavoc(body, currentMethod.declaringClass) }
+        closureHavocMap.get(at)
+    }
+
+    /**
+     * Phase 372 — for every closure literal in {@code body} (but one a `.each` desugars into a loop, Phase 310, whose
+     * summary already havocs its writes): the names its body may read changed when it runs — those it writes itself
+     * (an earlier call's), those the method writes after it (a later call's), and, inside a loop, those the loop
+     * writes. Mapped from each node of its body, so a nested closure gets the union.
+     */
+    private static IdentityHashMap<ASTNode, Set<String>> closureHavoc(Statement body, ClassNode cls) {
+        IdentityHashMap<ASTNode, Set<String>> out = new IdentityHashMap<ASTNode, Set<String>>()
+        // the leaf statements (and conditions, as statements), each with its own write set: one a write set can't bound
+        // falls back alone, not the whole method
+        List<Object[]> leaves = new ArrayList<Object[]>()   // [statement, its writes]
+        List<ClosureExpression> closures = new ArrayList<ClosureExpression>()
+        body.visit(new CodeVisitorSupport() {
+            void leaf(Statement s) { leaves.add([s, writesOf([s] as List<Statement>, cls)] as Object[]) }
+            void cond(Expression e, ASTNode at) {
+                if (e == null) return
+                ExpressionStatement s = new ExpressionStatement(e)
+                s.setSourcePosition(at)
+                leaf(s)
+            }
+            @Override void visitExpressionStatement(ExpressionStatement s) { leaf(s); super.visitExpressionStatement(s) }
+            @Override void visitReturnStatement(ReturnStatement s) { leaf(s); super.visitReturnStatement(s) }
+            @Override void visitIfElse(IfStatement s) { cond(s.booleanExpression, s); super.visitIfElse(s) }
+            @Override void visitWhileLoop(WhileStatement s) { cond(s.booleanExpression, s); super.visitWhileLoop(s) }
+            @Override void visitDoWhileLoop(DoWhileStatement s) { cond(s.booleanExpression, s); super.visitDoWhileLoop(s) }
+            @Override void visitForLoop(ForStatement s) { cond(s.collectionExpression, s); super.visitForLoop(s) }
+            @Override void visitClosureExpression(ClosureExpression ce) { closures.add(ce); super.visitClosureExpression(ce) }
+        })
+        // any closure the method holds may be called between another's creation and its call, so their writes count
+        Set<String> closureWrites = new LinkedHashSet<String>()
+        for (ClosureExpression ce : closures) if (ce.code != null) closureWrites.addAll(writesOf([ce.code] as List<Statement>, cls))
+        List<Statement> loops = new ArrayList<Statement>()
+        body.visit(new CodeVisitorSupport() {
+            boolean eachClosure(ClosureExpression ce) { false }
+            void enterLoop(Statement l, Closure sup) { loops.add(l); try { sup.call() } finally { loops.remove(loops.size() - 1) } }
+            @Override void visitForLoop(ForStatement f) { enterLoop(f) { super.visitForLoop(f) } }
+            @Override void visitWhileLoop(WhileStatement w) { enterLoop(w) { super.visitWhileLoop(w) } }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { enterLoop(d) { super.visitDoWhileLoop(d) } }
+            @Override void visitExpressionStatement(ExpressionStatement es) {
+                LoopSpec spec = (LoopSpec) es.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                if (spec != null && spec.fromEach && es.expression instanceof MethodCallExpression) {
+                    // the `.each` desugared to a loop: its closure body is that loop's body; only nested closures count
+                    MethodCallExpression mce = (MethodCallExpression) es.expression
+                    mce.objectExpression.visit(this)
+                    Expression args = mce.arguments
+                    if (args instanceof TupleExpression) for (Expression a : ((TupleExpression) args).expressions) {
+                        if (a instanceof ClosureExpression) enterLoop(es) { ((ClosureExpression) a).code.visit(this) }
+                        else a.visit(this)
+                    }
+                    return
+                }
+                super.visitExpressionStatement(es)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                Set<String> names = new LinkedHashSet<String>(closureWrites)
+                for (Object[] lf : leaves) {
+                    Statement st = (Statement) lf[0]
+                    if (st.lineNumber > ce.lineNumber || (st.lineNumber == ce.lineNumber && st.columnNumber > ce.columnNumber)) {
+                        names.addAll((Set<String>) lf[1])
+                    }
+                }
+                if (!loops.isEmpty()) {
+                    for (Object[] lf : leaves) if (within((Statement) lf[0], loops.get(0))) names.addAll((Set<String>) lf[1])
+                }
+                if (ce.code != null) {
+                    ce.code.visit(new CodeVisitorSupport() {
+                        void mark(ASTNode n) {
+                            Set<String> prev = out.get(n)
+                            if (prev == null) out.put(n, new LinkedHashSet<String>(names)) else prev.addAll(names)
+                        }
+                        @Override void visitBinaryExpression(BinaryExpression e) { mark(e); super.visitBinaryExpression(e) }
+                        @Override void visitMethodCallExpression(MethodCallExpression e) { mark(e); super.visitMethodCallExpression(e) }
+                        @Override void visitStaticMethodCallExpression(StaticMethodCallExpression e) { mark(e); super.visitStaticMethodCallExpression(e) }
+                        @Override void visitPropertyExpression(PropertyExpression e) { mark(e); super.visitPropertyExpression(e) }
+                        @Override void visitPostfixExpression(PostfixExpression e) { mark(e); super.visitPostfixExpression(e) }
+                        @Override void visitPrefixExpression(PrefixExpression e) { mark(e); super.visitPrefixExpression(e) }
+                        @Override void visitUnaryMinusExpression(UnaryMinusExpression e) { mark(e); super.visitUnaryMinusExpression(e) }
+                        @Override void visitCastExpression(CastExpression e) { mark(e); super.visitCastExpression(e) }
+                        @Override void visitAssertStatement(AssertStatement e) { mark(e); super.visitAssertStatement(e) }
+                    })
+                }
+                super.visitClosureExpression(ce)
+            }
+        })
+        out
+    }
+
+    /** Phase 372 — is {@code inner} positioned inside {@code outer}'s source range? */
+    private static boolean within(ASTNode inner, ASTNode outer) {
+        if (inner.lineNumber < 0 || outer.lineNumber < 0) return false
+        boolean after = inner.lineNumber > outer.lineNumber || (inner.lineNumber == outer.lineNumber && inner.columnNumber >= outer.columnNumber)
+        boolean before = inner.lineNumber < outer.lastLineNumber ||
+            (inner.lineNumber == outer.lastLineNumber && inner.columnNumber <= outer.lastColumnNumber)
+        after && before
+    }
+
+    /** Phase 372 — what {@code stmts} may write: the frame inference's write set (pure reads write nothing, a callee
+     *  its frame), else, when it can't bound them, every assignment target and call receiver and — through an
+     *  implicit-this call — every instance field. */
+    private static Set<String> writesOf(List<Statement> stmts, ClassNode cls) {
+        Set<String> ws = new LinkedHashSet<String>()
+        boolean ok
+        try { ok = collectWritesStmts(stmts, ws) } catch (Throwable ignored) { ok = false }
+        if (ok && !ws.any { it.startsWith(OPAQUE_ALIAS) }) {
+            return ws.collect { it.startsWith(REBIND) ? it.substring(REBIND.length()) : it } as Set<String>
+        }
+        boolean[] thisCall = [false]
+        Set<String> names = writeTargetsOf(stmts, thisCall)
+        if (thisCall[0] && cls != null) for (FieldNode f : cls.fields) if (!f.isStatic()) names.add(f.name)
+        names
+    }
+
+    private void dischargeObligationAt(SmtSession s, Encoder enc, Object site) {
 
         // Phase 193 — an obligation inside a try whose handler covers its exception is DEFINED behaviour:
         // the throw transfers to the catch path (modelled since Phase 192), so nothing is uncaught and a
@@ -8160,6 +8310,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 if (de.leftExpression instanceof VariableExpression &&
                     (stripCasts(de.rightExpression) instanceof ConstructorCallExpression ||
+                     stripCasts(de.rightExpression) instanceof ClosureExpression ||      // Phase 372 — a literal
                      ActorMailbox.isActorFactory(stripCasts(de.rightExpression)))) {   // Phase 289
                     news.add(((VariableExpression) de.leftExpression).name)
                 }

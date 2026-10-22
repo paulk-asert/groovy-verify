@@ -16581,6 +16581,43 @@ at its fourth pass, an index it moves, a divisor it writes, a do-while's second 
 (the boundary), and a run that leaves the loop. Plus a body guard still discharging, an annotated loop's call entering
 it, and a later iteration's failure.
 
+## Phase 372 — a closure runs when it is called  *(shipped — soundness: a silent hole across closure iteration)*
+
+A sweep after Phase 371's finding, which was a loop body checked in the state before the loop. The same shape held for
+every closure: a site inside a closure literal was discharged with the statements before the closure, so in the state
+where the closure is WRITTEN. It runs later, perhaps many times, after its own writes and the method's later ones.
+Measured against the runtime, every one of these compiled cleanly and throws: `int d = 1; 3.times { s = 100.intdiv(d); d-- }`, and the
+same body under `upto`, `downto`, `step`, `collect`, `findAll`, `inject`, `any`, `every`, `sum`, `reverseEach`, a map's
+`each`, a stored `Closure c = { … }` called after `d = 0`, and `{ xs.get(0) }` called after `xs.clear()`. Only a `.each`
+/ `eachWithIndex` escaped, as the loop Phase 310 desugars it into.
+
+- **The fix.** Each site inside a closure literal is checked with every captured name it may read changed havocked
+  first (`closureHavoc`, consulted in `dischargeObligationUnder`, so every pass gets it). That covers the names the
+  closure itself writes (an earlier call's), those written by any statement after it (a later call's), those an
+  enclosing loop writes, and those any closure in the method writes (it may be called in between). The write sets are
+  the frame inference's (`collectWritesStmts`: a pure read like `get` writes nothing, a callee its frame), per statement,
+  falling back to the crude targets, plus every instance field through a this-call, only for a statement it can't
+  bound. A `.each` desugared to a loop is left to the loop. A channel method is left to rely/guarantee (Phase 371's rule).
+- **Its failing call is withheld**, with the note "no failing call: the failure is inside a closure, in a call whose
+  arguments and captured state the check takes as unknown rather than following from entry". That holds for every site in
+  a closure, havoc or not: a closure parameter is free too, and `2.times { int k -> 100.intdiv(k - 3) }` showed
+  `fails on: f()`, a call that never fails. Havocked values show as `d (when the closure runs) = 0`.
+- **A closure literal local is never null** (Phase 277's constructor rule): `Closure c = { … }; c()` drew a
+  null-dereference warning on `c()`.
+- **Display.** A havocked size shows as the source spells it (`xs.size() (when the closure runs)`), not the oracle's
+  `xs.size`.
+
+No corpus case moved: none relied on the hole, and no `ok:` case gained a warning.
+
+**Boundary:** a closure's calls aren't followed, so its warnings come without a failing call, and a captured name the
+closure's caller can't change by then (written only before it) keeps its value. A `.each` loop's witness comes from
+Phase 371.
+
+**Shipped tests:** group `P372 closure iteration`, 10 cases, 8 verifying before. Silent before: `times`, `collect` and
+`inject` writing what they read, a stored closure after a later write, `xs.clear()` before the call. A wrong call before:
+`fails on: f()` for a closure parameter that never reaches the failure. A false warning before: a closure literal local's
+`c()`, twice. Plus a captured value nothing writes and an `.each` loop keeping its call.
+
 ---
 
 ## Definition of done, per increment
