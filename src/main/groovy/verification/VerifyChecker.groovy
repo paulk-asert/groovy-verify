@@ -2854,6 +2854,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** The locations a method declares it modifies via {@code @Modifies}; null when it has none. */
     private static Set<String> declaredModifies(MethodNode node) {
         Expression e = contractAstFor(node, 'modifies')
+        // Phase 363 — an override of a precompiled ancestor whose skeleton is @Pure inherits "writes nothing"
+        if (e == null && node.getNodeMetaData(SpecRegistry.SPEC_KEY) == null) {
+            MethodNode sk = inheritedSkeletonOf(node, 'modifies')
+            if (sk != null && SpecRegistry.isPure(sk)) return new HashSet<String>()
+        }
         if (e == null) return null
         Set<String> out = new HashSet<String>()
         addModifiedLocation(e, out)
@@ -3021,14 +3026,44 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Phase 360 — the reason a callee's frame is unknown: open to override, else the inference's own reason. */
-    static String frameReason(MethodNode m) { openReason(m) ?: calleeWritesReason(m) }
+    static String frameReason(MethodNode m) {
+        if (m != null && m.code == null && precompiled(m) && ownSkeleton(m) == null) {
+            return "'${m.declaringClass.nameWithoutPackage}.${m.name}(…)' is compiled elsewhere, with no contract or skeleton " +
+                   "giving its frame — supply a skeleton (META-INF/groovy-verify/specs or relied) declaring @Modifies"   // Phase 363
+        }
+        openReason(m) ?: calleeWritesReason(m)
+    }
 
     private static Set<String> modifiedNames(MethodNode node) {
         Set<String> declared = declaredModifies(node)
         if (declared != null) return declared
-        if (node.getNodeMetaData(SpecRegistry.SPEC_KEY) != null || node.code == null) return Collections.<String> emptySet()
+        if (node.getNodeMetaData(SpecRegistry.SPEC_KEY) != null) return Collections.<String> emptySet()
+        // Phase 363 — a method compiled ELSEWHERE has no body to read: its own class's skeleton (relied, else spec)
+        // is its declared frame — which a checked override is held to, so it stands whatever the open world says —
+        // and without one its writes are unknown
+        if (node.code == null && precompiled(node)) {
+            MethodNode sk = ownSkeleton(node)
+            if (sk == null) return null
+            Set<String> skd = declaredModifies(sk)
+            return skd != null ? skd : SpecRegistry.isPure(sk) ? Collections.<String> emptySet() : null
+        }
         if (openToOverride(node)) return null   // Phase 360 — open world: an override's writes are unknown
+        // a bodiless method of the SOURCE (abstract, an interface's) writes nothing itself: its unit overrides are
+        // unioned in by the caller (Phase 359), and an open one is unknown above
+        if (node.code == null) return Collections.<String> emptySet()
         calleeWrites(node)
+    }
+
+    /** Phase 363 — declared by a class compiled elsewhere (a library's), not this unit's source. */
+    private static boolean precompiled(MethodNode m) {
+        m?.declaringClass != null && !m.declaringClass.redirect().isPrimaryClassNode() && m.getNodeMetaData(SpecRegistry.SPEC_KEY) == null
+    }
+
+    /** Phase 363 — the skeleton (relied, else spec) of a precompiled method's own class, or null. */
+    private static MethodNode ownSkeleton(MethodNode m) {
+        if (m.isStatic() || !precompiled(m)) return null
+        SpecRegistry.ancestorContract(m.declaringClass.redirect().name, m.name, m.parameters.length,
+            m.parameters.collect { Parameter p -> p.type.name })
     }
 
     /** Phase 362 — {@link #modifiedNames} where a CALL relies on it: a frame read off an overridable body under the
@@ -3308,8 +3343,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // write set (transitive through same-class calls, list mutators and `++` included)
         Set<String> inferred = calleeWrites(node)
         if (inferred != null) {
+            MethodNode sk = inheritedSkeletonOf(node, 'modifies')   // Phase 363 — say where an inherited frame is from
             for (String loc : inferred) if (!declared.contains(loc)) {
-                addStaticTypeError(Reporter.formatModifiesViolation(node.name, loc, declared), node)
+                String msg = Reporter.formatModifiesViolation(node.name, loc, declared)
+                if (sk != null) msg += " The clause is inherited from the skeleton of ${sk.declaringClass.name}#${sk.name}, which this override is held to."
+                addStaticTypeError(msg, node)
             }
             return
         }
@@ -8574,10 +8612,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // for reasons flow analysis can't follow. Conjoined into the postcondition below.
         boolean nnReturn = hasNonNullReturn(node)
 
-        if (ens == null && classInvs.isEmpty() && !nnReturn) return
+        // Phase 363 — an @Ensures this method only INHERITS (a source ancestor's, Phase 123, or a precompiled one's
+        // skeleton) is its postcondition too: callers assume it through the ancestor, so the override must prove it
+        boolean inheritedEns = ens == null && node.code != null && findContractText(node, 'ensures') != null
+        if (ens == null && !inheritedEns && classInvs.isEmpty() && !nnReturn) return
         if (node.code == null) return
 
-        Expression postAst = ens != null ? contractAstFor(node, 'ensures') : null
+        Expression postAst = (ens != null || inheritedEns) ? contractAstFor(node, 'ensures') : null
         if (ens != null && postAst == null) {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name,
@@ -10520,6 +10561,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // the receiver context, exactly as a value call is. Only an unresolvable callee (no body, no contract)
         // takes the conservative all-fields havoc below.
         if (node != null && assumeCalleeEnsures(s, enc, call, node, null, false)) return true
+
+        // Phase 363 — the havoc below covers the RECEIVER's fields only. A callee it couldn't resolve may write what it
+        // is handed too (`n.wrap(a)`, whose body stores into `a`): an argument of a mutable type makes the call
+        // unmodelled, loudly, rather than framing it by the receiver alone
+        for (Expression a : (collectArgumentExpressions(mce) ?: Collections.<Expression> emptyList())) {
+            if (a instanceof ConstantExpression) continue
+            ClassNode at = inferredTypeOf(a)
+            if (at != null && isImmutableType(at)) continue
+            throw new UnsupportedConstructException(
+                "call '${clip(mce.text)}' resolves to no body or contract the verifier can read, and is passed " +
+                "'${clip(a.text)}', which it may write — only its receiver's fields would be havocked")
+        }
 
         // Step 1 — havoc every declared instance field of the receiver: rebind {@code b$field}
         // to a fresh SMT constant. Subsequent reads of {@code b.field} pick up the fresh value,
@@ -12668,9 +12721,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 return collectWritesArgs(mce.arguments, ws)
             }
-            if (LOOP_MUTATORS.contains(m) || INFER_MUTATORS.contains(m)) {
+            // Phase 363 — a mutator NAME is the library's method only: a same-class call, or one the receiver's own
+            // source class declares, is framed by that method (`fill(a)` on a class declaring `fill` wrote `this`)
+            boolean superCall = mce.objectExpression instanceof VariableExpression &&
+                ((VariableExpression) mce.objectExpression).name == 'super' && WRITE_OWNER.get()?.superClass != null
+            if ((LOOP_MUTATORS.contains(m) || INFER_MUTATORS.contains(m)) && !superCall && !isSameClassCall(mce) &&
+                    !userDeclared(mce.objectExpression, m)) {
                 if (!recordTarget(mce.objectExpression, ws)) return false
                 if (!SIZE_PRESERVING.contains(m)) noteSizeChange(mce.objectExpression)   // Phase 349
+            } else if (superCall) {
+                // Phase 363 — `super.m(…)` runs the superclass's m, non-virtually: its frame, onto the actuals
+                List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
+                if (as == null) return unbounded("call 'super.${m}(…)' with unusual arguments")
+                List<MethodNode> cands = new ArrayList<MethodNode>()
+                for (ClassNode c = WRITE_OWNER.get().superClass; c != null; c = c.superClass) cands.addAll(c.getMethods(m))
+                if (cands.isEmpty()) return unbounded("call 'super.${m}(…)' resolves to no method")
+                if (!collectCallWritesAmong(cands, m, as, ws, null)) return false
             } else if (isSameClassCall(mce)) {
                 // Phase 347 — a same-class call writes what its callee's frame says, mapped onto the actuals
                 List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
@@ -15533,18 +15599,47 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static List<MethodNode> superAndInterfaceDecls(MethodNode m) {
         List<MethodNode> out = new ArrayList<MethodNode>()
         ClassNode dc = m.declaringClass
-        if (dc == null) return out
+        if (dc == null || m.getNodeMetaData(SpecRegistry.SPEC_KEY) != null) return out   // a skeleton's own: none
         ClassNode sc = dc.superClass
         if (sc != null && sc != ClassHelper.OBJECT_TYPE) {
+            MethodNode sk = skeletonDecl(sc, m)
+            if (sk != null) out.add(sk)
             MethodNode inh = sc.getMethod(m.name, m.parameters)
             if (inh != null) out.add(inh)
         }
         ClassNode[] itfs = dc.interfaces
         if (itfs != null) for (ClassNode itf : itfs) {
+            MethodNode sk = skeletonDecl(itf, m)
+            if (sk != null) out.add(sk)
             MethodNode inh = itf.getMethod(m.name, m.parameters)
             if (inh != null) out.add(inh)
         }
         out
+    }
+
+    /** Phase 363 — a PRECOMPILED ancestor's skeleton declaration of {@code m} (a relied skeleton, else a spec one):
+     *  the contract an override compiled here is held to, inherited like a source ancestor's (its @Requires,
+     *  @Ensures and @Modifies; a {@code @Pure} one as {@code @Modifies({ [] })}). A source ancestor's contracts
+     *  are its annotations, so none is looked up for it. */
+    private static MethodNode skeletonDecl(ClassNode anc, MethodNode m) {
+        if (anc == null || m.isStatic() || m.isPrivate() || anc.redirect().isPrimaryClassNode()) return null
+        List<String> types = m.parameters.collect { Parameter p -> p.type.name }
+        SpecRegistry.ancestorContract(anc.redirect().name, m.name, m.parameters.length, types)
+    }
+
+    /** Phase 363 — the skeleton an inherited contract of {@code kind} comes from, when it does (for the message). */
+    private static MethodNode inheritedSkeletonOf(MethodNode m, String kind) {
+        List<AnnotationNode> own = m.getAnnotations(CONTRACT_SOURCE_TYPE)
+        if (own && own[0].getMember(kind) instanceof ConstantExpression && ((ConstantExpression) own[0].getMember(kind)).value) return null
+        for (MethodNode a : superAndInterfaceDecls(m)) {
+            if (a.getNodeMetaData(SpecRegistry.SPEC_KEY) != null) {
+                if (findContractText(a, kind) != null || (kind == 'modifies' && SpecRegistry.isPure(a))) return a
+                continue
+            }
+            MethodNode deeper = inheritedSkeletonOf(a, kind)
+            if (deeper != null) return deeper
+        }
+        null
     }
 
     /**

@@ -396,3 +396,29 @@ beside its perf line, DocLint's trusted inventory lints every shipped skeleton, 
 grid-tests the proofs — its spec-throw category type-checking any runtime throw against the very
 arms that predicted it — and `VERIFY_EXPLAIN` names, per proof, exactly which trusted facts carried
 it: the per-proof twin of the build-level ledger.
+
+## Overrides — a skeleton is a contract a subclass is held to
+
+A skeleton is also an **ancestor declaration** (Phase 363). When your class overrides a method of a precompiled
+supertype that has a skeleton, the override inherits the skeleton's contract, just as it would a source
+ancestor's: its `@Modifies` is frame-checked (a `@Pure` method's is "nothing"), and its `@Ensures` must be proved.
+Two directories feed it: `specs/`, the trusted library specs above, and `relied/`
+(`META-INF/groovy-verify/relied/<fqn>.groovy`). A relied skeleton holds the contracts a library's proofs relied on
+under `closedWorld: true` (Phase 362), the obligations its subclasses take on:
+
+<!-- doclint:ignore relied skeleton (a library's reliance, not a corpus case) -->
+```groovy
+// META-INF/groovy-verify/relied/fixture.LibCounter.groovy
+package fixture
+
+class LibCounter {
+    @Modifies({ this.count }) void incr() {}
+}
+```
+
+An override in a checked build that writes more is then a compile error naming the skeleton: "Method 'incr' writes
+'log', which is not in its @Modifies clause [count]. … The clause is inherited from the skeleton of
+fixture.LibCounter#incr, which this override is held to." The override is proved against the skeleton, not trusted
+with it, so nothing is ledgered. A precompiled method's own skeleton is also its frame where your code calls it:
+without one, a helper calling an inherited library method is loud, since nothing says what it writes. The skeleton
+dialect imports `groovy.contracts.*` by default, so an annotation can't silently go unrecognised.

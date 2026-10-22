@@ -113,9 +113,29 @@ class VerifyHarness {
         verification.TrustLedger.capture()
         List<String> errors
         List<String> trustedRecords
+        // Phase 363 — `specs:` / `relied:` — [fqn: skeleton text] maps written to a temporary VERIFY_SPECS directory
+        // for this one compile (relied ones under relied/), the registry's cached entries for them evicted around it
+        Map<String, String> specFiles = [:]
+        ((Map<String, String>) (c.specs ?: [:])).each { k, v -> specFiles[k] = v }
+        ((Map<String, String>) (c.relied ?: [:])).each { k, v -> specFiles[verification.SpecRegistry.RELIED + '/' + k] = v }
+        File specDir = null
+        String priorSpecs = System.getProperty('verify.specs')
+        if (specFiles) {
+            specDir = File.createTempDir('verify-specs', '')
+            specFiles.each { String rel, String text ->
+                File f = new File(specDir, rel + '.groovy'); f.parentFile.mkdirs(); f.setText(text, 'UTF-8')
+                verification.SpecRegistry.evict(rel.contains('/') ? rel.substring(rel.indexOf('/') + 1) : rel)
+            }
+            System.setProperty('verify.specs', specDir.path)
+        }
         try {
             errors = compile(name, (String) c.src)
         } finally {
+            if (specDir != null) {
+                if (priorSpecs != null) System.setProperty('verify.specs', priorSpecs) else System.clearProperty('verify.specs')
+                specFiles.keySet().each { String rel -> verification.SpecRegistry.evict(rel.contains('/') ? rel.substring(rel.indexOf('/') + 1) : rel) }
+                specDir.deleteDir()
+            }
             trustedRecords = verification.TrustLedger.captured()
             verification.TrustLedger.mode = priorTrustMode
             verification.TrustLedger.drainPending()

@@ -16185,7 +16185,53 @@ not ledgered as its own reliance; `deny` failing at the relying method; an overr
 subclass declares still caught; the option per class.
 
 **Next (slice 3):** stamp the reliances into the class file, so a later unit compiled with the checker has its
-overrides checked against them — the unchecked subclass remains the residual, now a ledgered one.
+overrides checked against them — the unchecked subclass remains the residual, now a ledgered one (Phase 363 for
+3a; the carriers were refined to two: skeleton files and, optionally, annotations).
+
+## Phase 363 — an override is held to its ancestor's skeleton  *(shipped — slice 3a; three older holes closed)*
+
+Slice 3 was refined into two carriers for the reliances (a relied-skeleton file, the JDK-specs dialect; and,
+optionally later, a class-file annotation) over one model: **a reliance is a contract nobody wrote** — a frame is a
+`@Modifies`, an inlined value an `@Ensures` with `@Modifies({ [] })`, a field read a trivial getter's `@Ensures`. So
+checking a later unit's override is contract inheritance, which already existed for source ancestors. 3a is the
+consumer, built and tested first against hand-written skeletons.
+
+- **A precompiled ancestor's skeleton is an ancestor declaration** (`skeletonDecl` in `superAndInterfaceDecls`):
+  `SpecRegistry.ancestorContract` returns the relied skeleton's method (`relied/<fqn>.groovy`, under `VERIFY_SPECS`
+  or `META-INF/groovy-verify/`), else the spec skeleton's — never ledgered, since the override is proved against
+  it. Its `@Requires`/`@Ensures`/`@Modifies` are inherited through `findContractText`; a `@Pure` one inherits as
+  `@Modifies({ [] })` (`declaredModifies`). The frame check names the skeleton.
+- **An inherited `@Ensures` is a postcondition to prove:** the verification gate looked at the method's OWN
+  `@Ensures` only. A source ancestor's reaches the method anyway, through groovy-contracts' inheritance transform,
+  so this is new for skeleton ancestors only.
+- **Fixed, older: a precompiled method has no body, but was read as writing nothing.** `modifiedNames` gave every
+  bodiless method the skeleton's "nothing" — right for a skeleton, and for a source abstract method whose unit
+  overrides are unioned (Phase 359), but not for a library method: a helper calling an inherited one (`fill(a)` from
+  a subclass of a precompiled class) wrote nothing. Now its own class's skeleton is its frame (ahead of the open-world
+  test, since a checked override is held to it), and without one the call is loud: "'LibCounter.fill(…)' is compiled
+  elsewhere, with no contract or skeleton giving its frame — supply a skeleton … declaring @Modifies".
+- **Fixed, older: `super.m(…)`** recorded `super` as the written name — no caller-visible location, so dropped. It
+  now resolves on the superclass, non-virtually.
+- **Fixed, older: a same-class method named like a library mutator** (`fill`, `add`, `sort`, `append`, …) was read
+  by the mutator list as writing its receiver `this` — dropped — instead of by its own frame; the twin of Phase 358's
+  read-list hole. The mutator reading now applies only to a method no same-class call or user class declares.
+- **Fixed: a skeleton without imports said nothing** — CET resolves contract annotations' simple names through the
+  imports, so an un-imported `@Ensures` was silently dropped; the skeleton dialect now star-imports
+  `groovy.contracts`.
+- **Harness:** `specs:` / `relied:` case keys (fqn → skeleton text) written to a temporary `VERIFY_SPECS` directory
+  for one compile, the registry's cached entries evicted around it (`SpecRegistry.evict`); and a precompiled
+  "library" class, `fixture.LibCounter`, in the test sources, so a case's source is a later unit.
+- **Also found:** an applyCrossClassCall fallback (Phase 45: an unresolvable callee havocs the receiver's fields)
+  ignored the arguments; it is now loud when handed a mutable one. (Unreached by this phase's cases, which resolve.)
+
+**Shipped tests:** group `P363 an override is held to its ancestor's skeleton`, 11 cases, 7 compiling cleanly
+before: an override writing outside a relied frame, and one within it; a spec skeleton's `@Pure` as an empty frame;
+an inherited `@Ensures` refuted on the override and met; a source interface's `@Ensures` proved on an implementer, as
+before; a same-class instance method named like a mutator framed by its body; a helper calling an inherited
+precompiled method loud, directly and through `super`; a skeleton framing it, exactly.
+
+**Still out:** inherited fields of a precompiled class are not modelled (`n.count` with `count` declared by the
+library class is outside the fragment — loud); 3b, the writer of relied skeletons; 3c, the annotation carrier.
 
 ---
 

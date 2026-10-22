@@ -78,9 +78,36 @@ class SpecRegistry {
      * spec can never be mis-applied to the FP overload).
      */
     static MethodNode lookup(String fqn, String name, int arity, List<String> paramTypeNames = null) {
+        MethodNode m = select(fqn, '', name, arity, paramTypeNames)
+        if (m != null) {
+            CONSUMED.add("${fqn}#${name}/${arity}".toString())
+            TrustLedger.record('external spec', "${fqn}#${name}/${arity}".toString(),
+                'registry skeleton (META-INF/groovy-verify/specs)')
+        }
+        m
+    }
+
+    /** Phase 363 — the subdirectory (of {@code VERIFY_SPECS} and of {@code META-INF/groovy-verify/}) holding RELIED
+     *  skeletons: a library's closed-world reliances (Phase 362) written as contracts its subclasses are held to. */
+    static final String RELIED = 'relied'
+
+    /**
+     * Phase 363 — the skeleton method an OVERRIDE of {@code fqn#name} is held to: the relied skeleton's, else the
+     * spec skeleton's. Nothing is ledgered — the override is proved against it, not trusted with it — and a relied
+     * skeleton is never consumed for a call here.
+     */
+    static MethodNode ancestorContract(String fqn, String name, int arity, List<String> paramTypeNames) {
+        select(fqn, RELIED, name, arity, paramTypeNames) ?: select(fqn, '', name, arity, paramTypeNames)
+    }
+
+    /** Test hook: forget the cached skeletons of {@code fqn} (both kinds), so a case's own files are read. */
+    static void evict(String fqn) { CACHE.remove(fqn); CACHE.remove(RELIED + ':' + fqn) }
+
+    private static MethodNode select(String fqn, String kind, String name, int arity, List<String> paramTypeNames) {
         if (fqn == null || name == null) return null
         if (!PackRegistry.specAllowed(fqn)) return null   // Phase 227 — a disabled pack's specs are off
-        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
+        String key = kind ? kind + ':' + fqn : fqn
+        Object entry = CACHE.computeIfAbsent(key, { String k -> (load(fqn, kind) ?: MISS) as Object })
         if (!(entry instanceof ClassNode)) return null
         List<MethodNode> byArity = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
         MethodNode m
@@ -96,12 +123,7 @@ class SpecRegistry {
         } else {
             m = byArity.size() == 1 ? byArity.get(0) : null
         }
-        if (m != null) {
-            m.putNodeMetaData(SPEC_KEY, Boolean.TRUE)
-            CONSUMED.add("${fqn}#${name}/${arity}".toString())
-            TrustLedger.record('external spec', "${fqn}#${name}/${arity}".toString(),
-                'registry skeleton (META-INF/groovy-verify/specs)')
-        }
+        if (m != null) m.putNodeMetaData(SPEC_KEY, Boolean.TRUE)
         m
     }
 
@@ -148,7 +170,7 @@ class SpecRegistry {
     static boolean hasSpec(String fqn) {
         if (fqn == null) return false
         if (!PackRegistry.specAllowed(fqn)) return false
-        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
+        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k, '') ?: MISS) as Object })
         entry instanceof ClassNode
     }
 
@@ -190,7 +212,7 @@ class SpecRegistry {
     static List<MethodNode> overloads(String fqn, String name, int arity) {
         if (fqn == null || name == null) return Collections.<MethodNode> emptyList()
         if (!PackRegistry.specAllowed(fqn)) return Collections.<MethodNode> emptyList()
-        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
+        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k, '') ?: MISS) as Object })
         if (!(entry instanceof ClassNode)) return Collections.<MethodNode> emptyList()
         List<MethodNode> out = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
         if (!out.isEmpty()) CONSUMED.add("${fqn}#${name}/${arity}".toString())
@@ -244,7 +266,7 @@ class SpecRegistry {
     static void reset() { CACHE.clear(); CONSUMED.clear() }
 
     /** Lint-facing: the raw skeleton text for an FQN from the classpath (no gating, no cache). */
-    static String specTextFor(String fqn) { specText(fqn) }
+    static String specTextFor(String fqn) { specText(fqn, '') }
 
     /** Lint-facing: parse spec TEXT exactly as {@link #lookup} would (no cache); null on failure. */
     static ClassNode parseForLint(String text, String fqn) {
@@ -260,8 +282,8 @@ class SpecRegistry {
         m.getAnnotations().any { it.classNode.nameWithoutPackage in ['ContractSource', 'ThrowsIf', 'ThrowsIfConditions'] }
     }
 
-    private static ClassNode load(String fqn) {
-        String text = specText(fqn)
+    private static ClassNode load(String fqn, String kind) {
+        String text = specText(fqn, kind)
         if (text == null) return null
         parse(text, fqn)
     }
@@ -280,6 +302,10 @@ class SpecRegistry {
             SourceUnit su = cu.addSource('spec$' + fqn.replace('.', '_') + '.groovy', text)
             cu.compile(Phases.CONVERSION)
             ModuleNode module = su.AST
+            // Phase 363 — the skeleton dialect's contract annotations need no imports: an un-imported @Ensures was
+            // unrecognised (CET resolves simple names through the imports), so a hand-written skeleton silently said
+            // nothing. The star import is added unless the file brings its own.
+            if (module != null && !module.starImports.any { it.packageName == 'groovy.contracts.' }) module.addStarImport('groovy.contracts.')
             if (module == null) return null
             ClassNode cn = module.classes.find { it.name == fqn } ?: (module.classes ? module.classes[0] : null)
             if (cn == null) return null
@@ -290,13 +316,13 @@ class SpecRegistry {
         }
     }
 
-    private static String specText(String fqn) {
+    private static String specText(String fqn, String kind) {
         String dir = System.getProperty('verify.specs', System.getenv('VERIFY_SPECS'))
         if (dir != null && !dir.isEmpty()) {
-            File f = new File(dir, fqn + '.groovy')
+            File f = kind ? new File(new File(dir, kind), fqn + '.groovy') : new File(dir, fqn + '.groovy')
             if (f.isFile()) return f.getText('UTF-8')
         }
-        String res = 'META-INF/groovy-verify/specs/' + fqn + '.groovy'
+        String res = 'META-INF/groovy-verify/' + (kind ?: 'specs') + '/' + fqn + '.groovy'
         ClassLoader tccl = Thread.currentThread().contextClassLoader
         URL u = (tccl != null ? tccl.getResource(res) : null) ?: SpecRegistry.classLoader.getResource(res)
         u != null ? u.getText('UTF-8') : null
