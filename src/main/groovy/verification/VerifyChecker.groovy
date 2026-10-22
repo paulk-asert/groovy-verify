@@ -4003,6 +4003,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } catch (Throwable ignored) {
             }
             noOverrideCheck(node)   // Phase 364
+            try {
+                contractPurityCheck(node)   // Phase 366
+            } catch (Throwable ignored) {
+            }
 
             // Phase 120 (behavioral subtyping / Liskov): if this method overrides a contracted parent method
             // and redeclares its own contract, prove the override is substitutable — its @Requires is weaker
@@ -10019,6 +10023,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession session = backend.session()
         try {
             guardArrayAliasHazard(node, p, postAst)
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(session)
             int ssaVersion = 0   // mints fresh versions for re-assigned names (SSA, see the Assign step)
 
@@ -10127,6 +10132,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
+                    // Phase 366 — `int[] b = a` with neither mutated (guardContainerAlias passed): one object, so `b`
+                    // reads `a`'s contents, size and nullity exactly (it had its own, unconstrained, oracles)
+                    if (a.rhs instanceof VariableExpression && a.name != ((VariableExpression) a.rhs).name &&
+                            mayHoldContainer((VariableExpression) a.rhs) && isContainerType(declaredTypeOf(a.rhs) ?:
+                            (ClassNode) a.rhs.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE))) {
+                        String src = ((VariableExpression) a.rhs).name
+                        enc.bindArray(a.name, enc.arrayFor(src))
+                        enc.bindSize(a.name, enc.sizeOf(src))
+                        enc.bindNullity(a.name, enc.nullityOf(src))
+                    }
                     // Phase 35 — Set<X> u = a + b / Set<X> u = a.intersect(b): if the RHS is a
                     // recognised set union/intersection over a single element sort, the encoder
                     // materialises u as a first-class set with the membership iff axiom, skipping
@@ -12367,6 +12382,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                    List<Expression> stableReqs) {
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))   // x-free invariants + index bounds
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))    // idx < size
@@ -13206,12 +13222,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
+    /** Phase 366 — a method of the compilation unit that can't be overridden whose every returned value is fresh
+     *  (a constructor, a literal, a fresh-result call, a call of another such method): its result aliases nothing. */
+    private static boolean returnsFresh(MethodNode m, int depth) {
+        if (m == null || depth > 4 || m.code == null || !m.declaringClass?.isPrimaryClassNode() || openToOverride(m)) return false
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        List<Expression> rets = new ArrayList<Expression>()
+        boolean[] bad = [false] as boolean[]
+        try {
+            body.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitReturnStatement(ReturnStatement rs) { rets.add(rs.expression) }
+                @Override void visitClosureExpression(ClosureExpression ce) { }
+            })
+        } catch (Throwable ignored) { bad[0] = true }
+        // the implicit return: a body's last expression statement
+        Statement last = body instanceof BlockStatement && !((BlockStatement) body).statements.isEmpty() ?
+            ((BlockStatement) body).statements.last() : body
+        if (last instanceof ExpressionStatement) rets.add(((ExpressionStatement) last).expression)
+        else if (!(last instanceof ReturnStatement)) bad[0] = true
+        if (bad[0] || rets.isEmpty()) return false
+        for (Expression r : rets) {
+            if (r instanceof MethodCallExpression || r instanceof StaticMethodCallExpression) {
+                if (!(r instanceof MethodCallExpression && ((MethodCallExpression) r).methodAsString in FRESH_RESULT_METHODS &&
+                      !collectorOverload((MethodCallExpression) r)) && !returnsFresh(stcTarget(r), depth + 1)) return false
+            } else if (!aliasSources(r).isEmpty()) return false
+        }
+        true
+    }
+
     /** Phase 357 — the prefix of an alias source the inference can't name (followed by the expression's text). */
     private static final String OPAQUE_ALIAS = '*'
 
     /** Phase 357 — methods that return a fresh collection or array, never a view of their receiver. */
     private static final Set<String> FRESH_RESULT_METHODS = ['clone', 'collect', 'findAll', 'toList', 'toSorted',
-        'toUnique', 'plus', 'minus', 'toArray', 'collectEntries', 'grep', 'toSet'] as Set
+        'toUnique', 'plus', 'minus', 'toArray', 'collectEntries', 'grep', 'toSet', 'intersect'] as Set
 
     /** Phase 357 — the names a reference-typed value may share state with: a variable itself, either branch of a
      *  ternary or elvis, a cast's operand, the owner of a field or element read ({@code h.arr}, {@code xss[i]});
@@ -13231,8 +13276,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LEFT_SQUARE_BRACKET, Types.LEFT_SHIFT]) {
             // an element's owner; `xs << v` returns `xs` (Phase 358 — a chained `log << a << b`)
             out.addAll(aliasSources(((BinaryExpression) e).leftExpression))
-        } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in FRESH_RESULT_METHODS) {
-            // a fresh result
+        } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in FRESH_RESULT_METHODS &&
+                   !collectorOverload((MethodCallExpression) e)) {
+            // a fresh result (Phase 366 — not a collector overload, which returns the collector it is handed)
+        } else if ((e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) && returnsFresh(stcTarget(e), 0)) {
+            // Phase 366 — a call whose callee (one that can't be overridden) only ever returns a fresh value
         } else if (!(e instanceof ConstantExpression || e instanceof ConstructorCallExpression || e instanceof ArrayExpression ||
                      e instanceof ListExpression || e instanceof MapExpression || e instanceof RangeExpression ||
                      e instanceof GStringExpression || e instanceof ClosureExpression || e instanceof EmptyExpression)) {
@@ -13259,6 +13307,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             direct.computeIfAbsent(d) { new LinkedHashSet<String>() }.addAll(aliasSources(be.rightExpression))
                         }
                     }
+                    // Phase 366 — `x instanceof T b` binds `b` to `x`
+                    VariableExpression pv = patternVariable(be)
+                    if (pv != null && !visible.contains(pv.name) && !isImmutableType(pv.originType)) {
+                        direct.computeIfAbsent(pv.name) { new LinkedHashSet<String>() }.addAll(aliasSources(be.leftExpression))
+                    }
                     super.visitBinaryExpression(be)
                 }
                 @Override void visitForLoop(ForStatement fs) {
@@ -13284,6 +13337,287 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!res.isEmpty()) out.put(d, res)
         }
         out
+    }
+
+    /**
+     * Phase 366 — a contract is evaluated at run time (groovy-contracts checks @Requires on entry and @Ensures on
+     * exit), so a method it calls that writes state changes the very state the proofs reason about: a callee's
+     * @Requires calling `bump(a)` rewrote `a` at every call, unseen by the caller's proof. A contract may call only a
+     * method that writes nothing; one of the unit that writes — or whose writes can't be bounded — or a collection
+     * mutator in a contract is an error.
+     */
+    private void contractPurityCheck(MethodNode node) {
+        // the class invariant, once per class: checked at every method's exit, so its calls run there
+        ClassNode cn = node.declaringClass
+        if (cn != null && cn.getNodeMetaData(INV_PURITY_KEY) == null) {
+            cn.putNodeMetaData(INV_PURITY_KEY, Boolean.TRUE)
+            for (Expression inv : classInvariantTexts(cn)) {
+                String bad = impureContractCall(inv, cn)
+                if (bad == null) continue
+                List<AnnotationNode> ans = cn.getAnnotations(CLASS_INVARIANT_SOURCE_TYPE)
+                ASTNode anchor = cn
+                AnnotationNode an = cn.annotations.find { it.classNode?.nameWithoutPackage == 'Invariant' } ?: (ans ? ans[0] : null)
+                if (an != null && an.lineNumber > 0) {
+                    anchor = new ConstantExpression(null)
+                    anchor.setSourcePosition(an)
+                    anchor.columnNumber = an.columnNumber + 1
+                }
+                addStaticTypeError("The @Invariant of ${cn.nameWithoutPackage} calls ${bad} — a contract runs when it is checked, " +
+                    "so its effects would change the state the proofs assume; a contract may call only methods that write nothing", anchor)
+                break
+            }
+        }
+        for (String kind : ['requires', 'ensures']) {
+            Expression ast = contractAstFor(node, kind)
+            if (ast == null) continue
+            String bad = impureContractCall(ast, node.declaringClass)
+            if (bad != null) {
+                // anchored on the annotation: the method node may already carry a skip, and STC keeps one error per anchor
+                AnnotationNode an = kind == 'requires' ? findRequires(node) : findEnsures(node)
+                // (one column in: a first annotation starts where the method does)
+                ASTNode anchor = node
+                if (an != null && an.lineNumber > 0) {
+                    anchor = new ConstantExpression(null)
+                    anchor.setSourcePosition(an)
+                    anchor.columnNumber = an.columnNumber + 1
+                }
+                addStaticTypeError("The @${kind.capitalize()} of ${node.name} calls ${bad} — a contract runs when it is checked, " +
+                    "so its effects would change the state the proofs assume; a contract may call only methods that write nothing", anchor)
+            }
+        }
+    }
+
+    private static final String INV_PURITY_KEY = 'verification.invariantPurityChecked'
+
+    /** Phase 366 — the first call in a contract that may write, described, or null. */
+    private static String impureContractCall(Expression ast, ClassNode owner) {
+        String[] hit = [null] as String[]
+        try {
+            ast.visit(new CodeVisitorSupport() {
+                @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                    if (hit[0] == null) hit[0] = describe(mce.methodAsString, mce.objectExpression, mce.implicitThis, mce.arguments)
+                    super.visitMethodCallExpression(mce)
+                }
+                @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                    if (hit[0] == null) hit[0] = describe(sce.method, new ClassExpression(sce.ownerType), false, sce.arguments)
+                    super.visitStaticMethodCallExpression(sce)
+                }
+                @Override void visitClosureExpression(ClosureExpression ce) { ce.code?.visit(this) }
+                private String describe(String m, Expression recv, boolean implicitThis, Expression args) {
+                    if (m == null) return null
+                    int arity = args instanceof TupleExpression ? ((TupleExpression) args).expressions.size() : -1
+                    ClassNode in = null
+                    if (implicitThis || (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')) in = owner
+                    else if (recv instanceof ClassExpression && recv.type?.isPrimaryClassNode()) in = recv.type
+                    if (in != null) {
+                        for (ClassNode c = in; c != null; c = c.superClass) for (MethodNode cm : c.getMethods(m)) {
+                            if (cm.parameters.length != arity || cm.code == null) continue
+                            if (declaredModifies(cm) != null && declaredModifies(cm).isEmpty()) continue
+                            Set<String> w = calleeWrites(cm)
+                            if (w == null) return "'${m}(…)', whose writes can't be bounded"
+                            if (!w.isEmpty()) return "'${m}(…)', which writes ${w.sort().collect { "'${it}'" }.join(', ')}"
+                        }
+                        return null
+                    }
+                    (m in LOOP_MUTATORS || m in INFER_MUTATORS) ? "'${clip(recv.text)}.${m}(…)', which mutates '${clip(recv.text)}'" : null
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        hit[0]
+    }
+
+    /** Phase 366 — the variable an `instanceof` pattern binds (`x instanceof int[] b`), or null. */
+    private static VariableExpression patternVariable(BinaryExpression be) {
+        if (be.operation.type != Types.KEYWORD_INSTANCEOF || !(be.rightExpression instanceof DeclarationExpression)) return null
+        Expression v = ((DeclarationExpression) be.rightExpression).leftExpression
+        v instanceof VariableExpression ? (VariableExpression) v : null
+    }
+
+    /** Phase 366 — the names a body may mutate the contents of: the base of a store, a field write or `++`, the
+     *  receiver of a call that isn't a read, and an argument handed to a call that may write it (a callee of the
+     *  unit by its frame, anything else unless the argument is immutable). A closure's body counts — it may run. */
+    private static Set<String> mutatedNames(MethodNode m, Statement body) {
+        Set<String> out = new LinkedHashSet<String>()
+        ClassNode prevOwner = WRITE_OWNER.get()
+        WRITE_OWNER.set(m.declaringClass)
+        try {
+            body.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                private void base(Expression e) {
+                    while (true) {
+                        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET) e = ((BinaryExpression) e).leftExpression
+                        else if (e instanceof PropertyExpression) e = ((PropertyExpression) e).objectExpression
+                        else if (e instanceof CastExpression) e = ((CastExpression) e).expression
+                        else break
+                    }
+                    if (e instanceof VariableExpression && mayHoldContainer((VariableExpression) e)) out.add(((VariableExpression) e).name)
+                }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    int t = be.operation.type
+                    if (Types.ofType(t, Types.ASSIGNMENT_OPERATOR) && !(be instanceof DeclarationExpression) &&
+                            !(t == Types.ASSIGN && be.leftExpression instanceof VariableExpression)) base(be.leftExpression)
+                    if (t == Types.LEFT_SHIFT) base(be.leftExpression)
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitPostfixExpression(PostfixExpression e) { if (!(e.expression instanceof VariableExpression)) base(e.expression); super.visitPostfixExpression(e) }
+                @Override void visitPrefixExpression(PrefixExpression e) { if (!(e.expression instanceof VariableExpression)) base(e.expression); super.visitPrefixExpression(e) }
+                @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                    boolean read = pureRead(mce, LOOP_PURE_READS) || pureRead(mce, INFER_PURE_READS)
+                    if (!read) base(mce.objectExpression)
+                    handed(stcTarget(mce), mce.arguments, read)
+                    super.visitMethodCallExpression(mce)
+                }
+                @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                    handed(stcTarget(sce), sce.arguments, false)
+                    super.visitStaticMethodCallExpression(sce)
+                }
+                @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {
+                    handed(null, cce.arguments, false)
+                    super.visitConstructorCallExpression(cce)
+                }
+                private void handed(MethodNode target, Expression args, boolean read) {
+                    List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : Collections.<Expression> emptyList()
+                    Set<String> frame = target != null && target.code != null && target.declaringClass?.isPrimaryClassNode() ? reliedFrame(target) : null
+                    for (int i = 0; i < as.size(); i++) {
+                        Expression a = as.get(i)
+                        if (!(a instanceof VariableExpression) || immutableArgument(a) || !mayHoldContainer((VariableExpression) a)) continue
+                        if (frame != null) {
+                            if (i < target.parameters.length && frame.contains(target.parameters[i].name)) out.add(((VariableExpression) a).name)
+                        } else if (!read) {
+                            out.add(((VariableExpression) a).name)
+                        }
+                    }
+                }
+            })
+        } catch (Throwable ignored) {
+            return null
+        } finally {
+            WRITE_OWNER.set(prevOwner)
+        }
+        out
+    }
+
+    /** Phase 366 — a variable that may hold an array, collection or map: so typed, or untyped. */
+    private static boolean mayHoldContainer(VariableExpression v) {
+        ClassNode t = v.name == 'this' ? null : (v.accessedVariable?.originType ?: v.originType)
+        if (t == null || t.redirect() == ClassHelper.OBJECT_TYPE || t.redirect() == ClassHelper.DYNAMIC_TYPE) {
+            Object it = v.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+            if (it instanceof ClassNode) t = (ClassNode) it
+        }
+        t == null || t.redirect() == ClassHelper.OBJECT_TYPE || isContainerType(t)
+    }
+
+    /** Phase 366 — an array, collection or map: a value the encoder keeps per NAME (its element, size and nullity
+     *  oracles), so two names holding one such object are two models of it. */
+    private static boolean isContainerType(ClassNode t) {
+        if (t == null || isImmutableType(t)) return false
+        if (t.isArray()) return true
+        ClassNode r = t.redirect()
+        r.name in ['java.util.Collection', 'java.util.List', 'java.util.Set', 'java.util.Map'] ||
+            r.implementsInterface(ClassHelper.make(Collection)) || r.implementsInterface(ClassHelper.make(Map)) ||
+            r.isDerivedFrom(ClassHelper.make(AbstractCollection)) || r.isDerivedFrom(ClassHelper.make(AbstractMap))
+    }
+
+    /**
+     * Phase 366 — the encoder models an array, collection or map by its NAME, so `int[] b = a` gives `b` its own
+     * oracles: a store through `b` left `a` as it was (`int[] b = a; b[0] = 1` proved `a[0] == 7`), and a read
+     * through `b` after a store into `a` read the old value. (Objects have Phase 351's alias model; this is the
+     * container half.) A container-typed local, parameter or field assigned something that may share its state —
+     * another name, a ternary of names, an element or field read, a call that isn't known to return a fresh value —
+     * is a hazard when the body writes either name; a read-only alias is a faithful copy. The reason, or null.
+     */
+    private static String containerAliasHazard(MethodNode node) {
+        Object memo = node.getNodeMetaData(CONTAINER_ALIAS_KEY)
+        if (memo != null) return memo == '' ? null : (String) memo
+        String out = null
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body != null) {
+            List<Object[]> aliases = new ArrayList<Object[]>()   // [name, sources, text]
+            try {
+                body.visit(new ClassCodeVisitorSupport() {
+                    protected SourceUnit getSourceUnit() { null }
+                    @Override void visitBinaryExpression(BinaryExpression be) {
+                        if (be.operation.type == Types.ASSIGN) {
+                            Expression lhs = be.leftExpression
+                            String d = null
+                            ClassNode t = null
+                            if (lhs instanceof VariableExpression) {
+                                d = ((VariableExpression) lhs).name
+                                t = be instanceof DeclarationExpression ? ((VariableExpression) lhs).originType :
+                                    ((VariableExpression) lhs).accessedVariable?.originType
+                            } else if (lhs instanceof PropertyExpression && ((PropertyExpression) lhs).objectExpression instanceof VariableExpression &&
+                                       ((VariableExpression) ((PropertyExpression) lhs).objectExpression).name == 'this') {
+                                d = ((PropertyExpression) lhs).propertyAsString
+                                t = node.declaringClass?.getField(d)?.type
+                            }
+                            if (t == null || t.redirect() == ClassHelper.OBJECT_TYPE) {
+                                Object it = be.rightExpression.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+                                if (it instanceof ClassNode) t = (ClassNode) it
+                            }
+                            if (d != null && isContainerType(t)) {
+                                Set<String> src = aliasSources(be.rightExpression)
+                                src.remove(d)
+                                if (!src.isEmpty()) aliases.add([d, src, clip(be.text), reach(be.rightExpression)] as Object[])
+                            }
+                        }
+                        // `x instanceof int[] b` binds `b` to `x`
+                        VariableExpression pv = patternVariable(be)
+                        if (pv != null && isContainerType(pv.originType)) {
+                            Set<String> src = aliasSources(be.leftExpression)
+                            if (!src.isEmpty()) aliases.add([pv.name, src, clip(be.text), reach(be.leftExpression)] as Object[])
+                        }
+                        super.visitBinaryExpression(be)
+                    }
+                    @Override void visitForLoop(ForStatement fs) {
+                        if (fs.variable != null && fs.variable != ForStatement.FOR_LOOP_DUMMY && isContainerType(fs.variable.originType)) {
+                            Set<String> src = aliasSources(fs.collectionExpression)
+                            if (!src.isEmpty()) aliases.add([fs.variable.name, src, "for (${fs.variable.name} in ${clip(fs.collectionExpression.text)})".toString(), reach(fs.collectionExpression)] as Object[])
+                        }
+                        super.visitForLoop(fs)
+                    }
+                    @Override void visitClosureExpression(ClosureExpression ce) { }   // a closure's locals are its own
+                    // what an opaque value may share state with: a name it mentions, or a field
+                    private Set<String> reach(Expression e) {
+                        Set<String> r = new HashSet<String>()
+                        collectVarNames(e, r)
+                        for (ClassNode c = node.declaringClass; c != null; c = c.superClass) for (FieldNode f : c.fields) r.add(f.name)
+                        r
+                    }
+                })
+            } catch (Throwable ignored) {
+            }
+            if (!aliases.isEmpty()) {
+                Set<String> ws = mutatedNames(node, body)
+                for (Object[] al : aliases) {
+                    String d = (String) al[0]
+                    Set<String> src = (Set<String>) al[1]
+                    Set<String> named = new LinkedHashSet<String>(src.findAll { !it.startsWith(OPAQUE_ALIAS) })
+                    boolean opaque = named.size() != src.size()
+                    String written = ws == null ? null : ([d] + (named as List<String>)).find { ws.contains(it) }
+                    // an opaque source may be anything its expression reaches — a name it mentions, a field
+                    if (written == null && opaque && ws != null) written = ((Set<String>) al[3]).sort(false).find { ws.contains(it) }
+                    if (ws == null || written != null) {
+                        String shared = named.isEmpty() ? 'a value the verifier can\'t name' : named.collect { "'${it}'" }.join(' or ')
+                        out = "'${al[2]}' makes '${d}' share its contents with ${shared}" +
+                            (written != null ? ", and '${written}' is written" : ", and the body's writes can't be bounded") +
+                            " — the encoder models each name's contents separately (heap aliasing is a non-goal)"
+                        break
+                    }
+                }
+            }
+        }
+        node.putNodeMetaData(CONTAINER_ALIAS_KEY, out ?: '')
+        out
+    }
+
+    private static final String CONTAINER_ALIAS_KEY = 'verification.containerAliasHazard'
+
+    /** Phase 366 — skip a body check, loudly, at a container alias the encoder would model as two objects. */
+    private static void guardContainerAlias(MethodNode node) {
+        String why = containerAliasHazard(node)
+        if (why != null) throw new UnsupportedConstructException(why)
     }
 
     /** Phase 350 — another class of {@link #WRITE_OWNER}'s compilation unit, by fully-qualified or simple name. */
@@ -13401,6 +13735,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                     Expression reqAst, Expression postAst, boolean doWhileFirstIter) {
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             // Phase 343 — the prefix region and a do-while's first pass replay from the entry state, where all of
             // @Requires holds; an in-body exit on some iteration sees only what of it the writes leave standing
@@ -13581,6 +13916,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         checkRangeForward(node, site, entry)
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             entry(s, enc)
             assumeRangeForward(site, enc, s)
@@ -13605,6 +13941,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (site.spec.rangeForward == null) return
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             entry(s, enc)
             Object fwd = enc.translate(site.spec.rangeForward)
@@ -13631,6 +13968,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void checkPreservation(MethodNode node, LoopSite site, List<Expression> stableReqs) {
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
@@ -13743,6 +14081,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void checkProgress(MethodNode node, LoopSite site, List<Expression> stableReqs) {
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
@@ -13887,6 +14226,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         checkRangeForward(node, innerSite, entry)
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             entry(s, enc)
             assumeRangeForward(innerSite, enc, s)
@@ -13924,6 +14264,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void checkUse(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
         SmtSession s = backend.session()
         try {
+            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(s)
             // Phase 343 — the precise context replays the prefix from the entry state, where all of @Requires holds;
             // the coarse one reads the post-loop state directly, where only what the writes leave standing does

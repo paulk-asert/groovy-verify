@@ -16323,6 +16323,46 @@ callers dispatch directly). An instance method of a final class is framed by its
 (over-strict). A `Sib$field` written through a chain of calls is havocked under that name by a caller that can't
 read it, harmlessly.
 
+## Phase 366 — a contract-layer sweep  *(shipped)*
+
+Phase 365 swept how calls are framed; this sweeps what a method's own body and its contracts are taken to mean —
+`old` snapshots, `result` aliasing, side effects inside contracts, class invariants, loops calling framed helpers,
+`instanceof` patterns, exceptions — about 60 shapes. `old` (arrays, lists, maps, fields, through helpers) and the
+loop engine's use of helper frames were already sound. Two families were not.
+
+- **A container alias in the method's own body.** The encoder keeps an array, collection or map by NAME (its
+  element, size and nullity oracles), so `int[] b = a` gave `b` oracles of its own: `int[] b = a; b[0] = 1` proved
+  `a[0] == 7`, and `int[] b = a; a[0] = 1; b[0]` read 7. (This is what the "spurious bounds warning" on such a `b`,
+  recorded earlier as over-strict only, was hiding.) The same held for a field assigned a parameter, a ternary of
+  names, a call that may return its argument (`ys = id(xs)`), and an `instanceof` pattern variable. Phase 351 gave
+  objects an alias model; this is the container half, and it is loud: `containerAliasHazard` finds each
+  container-typed local, parameter or field assigned something that may share its contents (Phase 357's
+  `aliasSources`; an opaque value reaches the names it mentions and the fields), and `mutatedNames` the names the
+  body mutates (a store, field write or `++` base, a mutator's receiver, an argument a call may write — a unit
+  callee by its frame); an alias with either side mutated skips the path, early-exit and loop checks
+  (`guardContainerAlias`), naming the assignment. A read-only alias is a faithful copy: it now shares its source's
+  oracles (`int[] b = a; b.length > 0 ? b[0] : 0` proves; it refuted before). A call whose non-overridable callee
+  only returns fresh values (`returnsFresh`) aliases nothing; `intersect` joins the fresh-result methods, and a
+  collector overload (`collect(dst) { … }`, which returns `dst`) leaves them.
+- **A helper's pattern variable.** `if (o instanceof int[] b) b[0] = 1` in a helper wrote a "local": the frame
+  dropped it. Now the pattern variable aliases what it tests, in the inference (`patternVariable`) as in the guard.
+- **Contracts that write.** groovy-contracts evaluates a contract when it checks it, so one calling a method that
+  writes changes the state the proofs assume — a callee's `@Requires({ bump(a) })` rewrote `a` at every call while
+  the caller's proof framed it. A contract (`@Requires`, `@Ensures`, a class `@Invariant`) calling a method of the
+  unit that writes, or whose writes can't be bounded, or a collection mutator, is now an error on the contract
+  (`contractPurityCheck`), anchored on the annotation.
+
+**Shipped tests:** group `P366 contract-layer sweep`, 16 cases: a store through a local alias, a read through one
+after a store into the original, a ternary of names, a call returning its argument, a field assigned a parameter,
+a pattern variable, a loop through an alias (all loud, all verifying before); a read-only alias and a fresh call
+result that prove; a helper's pattern variable over an array and a list (refuted, verifying before); a writing
+`@Requires`, `@Ensures`, callee `@Requires` (whose caller verified before) and `@Invariant` (errors); a contract
+calling a pure method, fine.
+
+**Still out:** the alias is loud, not modelled — two names for one container whose contents change aren't proved
+through; implicit bounds obligations on an alias still see its own length (a spurious warning, sound); a callee's
+`old.x` on a non-parameter in a static method is a groovy-contracts restriction.
+
 ---
 
 ## Definition of done, per increment
