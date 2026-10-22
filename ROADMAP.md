@@ -16855,6 +16855,34 @@ whole), a sum bounded below and above by its elements', the element form, and a 
 element bound. Plus guards, not proved: a sum bound the elements don't give, a strict upper bound, a quantifier over
 part of the array, and an array written after the quantifier.
 
+## Phase 380 — a closure over a range has its index in it  *(shipped — completeness: a false index warning)*
+
+A site inside a closure was checked with the closure's parameter free, even where the closure iterates a known range:
+`boolean all = (0..<j.length).every { j[it] >= 0 }` warned `index may be out of bounds` with `it = -1`, and so did
+`j.indices.any { k -> j[k] == 3 }`, `j.length.times { k -> s += j[k] }`, `upto`, `downto` and `collect` over a range
+(it predates Phase 372: the Phase 371 commit warns the same). Noticed while checking Phase 379's sum bounds.
+
+- **The range fact** (`closureParamFacts`, `iterationFact`, consulted in `dischargeObligationUnder`): `(lo..<hi)` (or
+  `lo..hi`) with `every`, `any`, `each`, `collect`, `findAll`, `find`, `count` or `sum` gives `lo <= p && p < hi` (`<=`),
+  `a.indices` `0 <= p < a.length` (`a.size()` for a list), `n.times` `0 <= p < n`, `a.upto(b)` `a <= p <= b`,
+  `a.downto(b)` `b <= p <= a`. A nested closure keeps its outer facts, except one over a name its own parameter (or
+  implicit `it`) shadows: `(0..<5).every { j[it] }` inside `(0..<j.length).every { … }` is its own `it`.
+- **Read at the call.** A range is evaluated once, as the call starts, so its bounds are translated in the state at the
+  call, before Phase 372's havoc of what may change by the time the closure runs: a closure that shrinks the list it
+  iterates over still warns, and a later `j.length.times { … }` doesn't cost an earlier one its range.
+
+**Changed cases:** G416's "a closure parameter is free, so no call is shown" (`2.times { int k -> 100.intdiv(k - 3) }`,
+safe: k is 0 or 1) now proves, renamed "a closure parameter is bounded by its range"; beside it, a `3.times` whose `k - 2`
+reaches 0 still warns, its call withheld.
+
+**Boundary:** only those receivers and iterators; an element closure (`xs.each { v -> … }`) is bounded by Phase 379's
+element facts, not here, and a `.each` that Phase 310 desugars into a loop is the loop's.
+
+**Shipped tests:** group `P380 closure range`, 13 cases. A false warning before: an `every` over the indices, an array's
+and a list's `indices`, `times`, a nested closure over the outer index, `upto` and `downto`, two range closures in a row,
+`collect` over a range. Plus guards that still warn: an inclusive range one past the end, `times` reading `k + 1`, an
+inner `it` shadowing the outer, an `upto` from -1, and a closure that shrinks the list it iterates over.
+
 ---
 
 ## Definition of done, per increment

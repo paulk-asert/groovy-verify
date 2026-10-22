@@ -5450,7 +5450,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
         Set<String> h = site.hasProperty('node') ? closureHavocFor((ASTNode) site['node']) : null
         if (h == null) { dischargeObligationAt(s, enc, site); return }
+        // Phase 380 — a closure iterating a range runs with its parameter in it: `(0..<j.length).every { j[it] >= 0 }`
+        // checked `j[it]` with `it` free (`it = -1`). The range is evaluated once, as the call starts, so its bounds are
+        // read here, in the state at the call, before the havoc of what may change by the time the closure runs.
+        List<Object> ranges = new ArrayList<Object>()
+        for (Expression fact : closureParamFactsFor((ASTNode) site['node'])) {
+            Object t = enc.translate(fact)
+            if (t != null) ranges.add(t)
+        }
         for (String n : h) havocLocation(enc, n)
+        for (Object t : ranges) s.assertExpr(t)
         String prev = closureCallNote
         closureCallNote = CLOSURE_CALL_NOTE
         try { dischargeObligationAt(s, enc, site) } finally { closureCallNote = prev }
@@ -5464,6 +5473,112 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 372 — per method body: each node inside a closure literal → the captured names it may read changed
      *  (empty when none can: its sites are checked as before, only their call withheld). */
+    private Statement closureFactsBody = null
+    private IdentityHashMap<ASTNode, List<Expression>> closureFactsMap = null
+
+    /** Phase 380 — the range facts in force at {@code at}: one per enclosing range-iterating closure ({@link #closureParamFacts}). */
+    private List<Expression> closureParamFactsFor(ASTNode at) {
+        if (at == null || currentMethod == null) return Collections.<Expression> emptyList()
+        Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
+        if (body == null) return Collections.<Expression> emptyList()
+        if (!body.is(closureFactsBody)) { closureFactsBody = body; closureFactsMap = closureParamFacts(body) }
+        closureFactsMap.get(at) ?: Collections.<Expression> emptyList()
+    }
+
+    /** Iterators over a range's elements, and the ones whose closure gets each index as its parameter. */
+    private static final Set<String> RANGE_ITERATORS = ['every', 'any', 'each', 'collect', 'findAll', 'find', 'count',
+                                                        'sum', 'inject', 'eachWithIndex'] as Set
+
+    /**
+     * Phase 380 — for every closure that iterates a range, the fact its parameter satisfies when it runs, mapped from
+     * each node of its body: `(lo..<hi).m { p -> }` (and `lo..hi`) gives `lo <= p && p < hi` (`<= hi`), `a.indices.m`
+     * `0 <= p && p < a.size()`, `n.times { p -> }` `0 <= p && p < n`, `a.upto(b)` `a <= p && p <= b`, `a.downto(b)`
+     * `b <= p && p <= a`. A nested closure keeps its outer facts, except those over a name its own parameter (or
+     * implicit `it`) shadows.
+     */
+    private static IdentityHashMap<ASTNode, List<Expression>> closureParamFacts(Statement body) {
+        IdentityHashMap<ASTNode, List<Expression>> out = new IdentityHashMap<ASTNode, List<Expression>>()
+        List<List<Expression>> stack = new ArrayList<List<Expression>>()
+        stack.add(new ArrayList<Expression>())
+        CodeVisitorSupport v
+        v = new CodeVisitorSupport() {
+            void mark(ASTNode n) {
+                List<Expression> cur = stack.get(stack.size() - 1)
+                if (!cur.isEmpty()) out.put(n, cur)
+            }
+            void enter(ClosureExpression ce, Expression fact) {
+                Set<String> params = new HashSet<String>()
+                if (ce.parameters != null && ce.parameters.length > 0) for (Parameter p : ce.parameters) params.add(p.name)
+                else if (!ce.isParameterSpecified()) params.add('it')
+                List<Expression> next = stack.get(stack.size() - 1).findAll { Expression f -> !namesRead(f).any { params.contains(it) } }
+                if (fact != null) next.add(fact)
+                stack.add(next)
+                try { ce.code?.visit(this) } finally { stack.remove(stack.size() - 1) }
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) { enter(ce, null) }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                mark(mce)
+                mce.objectExpression.visit(this)
+                mce.method.visit(this)
+                Expression args = mce.arguments
+                List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : [args]
+                for (Expression a : as) {
+                    if (a instanceof ClosureExpression) enter((ClosureExpression) a, iterationFact(mce, (ClosureExpression) a))
+                    else a.visit(this)
+                }
+            }
+            @Override void visitBinaryExpression(BinaryExpression e) { mark(e); super.visitBinaryExpression(e) }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression e) { mark(e); super.visitStaticMethodCallExpression(e) }
+            @Override void visitPropertyExpression(PropertyExpression e) { mark(e); super.visitPropertyExpression(e) }
+            @Override void visitPostfixExpression(PostfixExpression e) { mark(e); super.visitPostfixExpression(e) }
+            @Override void visitPrefixExpression(PrefixExpression e) { mark(e); super.visitPrefixExpression(e) }
+            @Override void visitUnaryMinusExpression(UnaryMinusExpression e) { mark(e); super.visitUnaryMinusExpression(e) }
+            @Override void visitCastExpression(CastExpression e) { mark(e); super.visitCastExpression(e) }
+        }
+        body.visit(v)
+        out
+    }
+
+    /** Phase 380 — the range fact for {@code ce}'s parameter as {@code mce} runs it, or null. */
+    private static Expression iterationFact(MethodCallExpression mce, ClosureExpression ce) {
+        String m = mce.methodAsString
+        Parameter[] ps = ce.parameters
+        String p = ps != null && ps.length == 1 ? ps[0].name : (ps == null || ps.length == 0) && !ce.isParameterSpecified() ? 'it' : null
+        if (p == null) return null
+        VariableExpression pv = new VariableExpression(p)
+        Expression recv = mce.objectExpression
+        Expression lo = null, hi = null
+        boolean hiInclusive = false
+        if (m in RANGE_ITERATORS && m != 'eachWithIndex') {
+            Expression r = recv
+            if (r instanceof RangeExpression) {
+                lo = ((RangeExpression) r).from; hi = ((RangeExpression) r).to; hiInclusive = ((RangeExpression) r).inclusive
+            } else if (r instanceof PropertyExpression && ((PropertyExpression) r).propertyAsString == 'indices') {
+                Expression of = ((PropertyExpression) r).objectExpression
+                lo = new ConstantExpression(0, true)
+                if (Encoder.staticTypeOf(of)?.isArray()) {
+                    hi = new PropertyExpression(of, 'length')
+                } else {
+                    MethodCallExpression size = new MethodCallExpression(of, 'size', new ArgumentListExpression())
+                    size.implicitThis = false
+                    hi = size
+                }
+            }
+        } else if (m == 'times' && ((TupleExpression) mce.arguments).expressions.size() == 1) {
+            lo = new ConstantExpression(0, true); hi = recv
+        } else if ((m == 'upto' || m == 'downto') && ((TupleExpression) mce.arguments).expressions.size() == 2) {
+            Expression other = ((TupleExpression) mce.arguments).expressions.get(0)
+            lo = m == 'upto' ? recv : other
+            hi = m == 'upto' ? other : recv
+            hiInclusive = true
+        }
+        if (lo == null || hi == null) return null   // a bound that isn't an int doesn't translate, and isn't assumed
+        Token le = Token.newSymbol(Types.COMPARE_LESS_THAN_EQUAL, -1, -1)
+        Token upper = Token.newSymbol(hiInclusive ? Types.COMPARE_LESS_THAN_EQUAL : Types.COMPARE_LESS_THAN, -1, -1)
+        new BinaryExpression(new BinaryExpression(lo, le, pv), Token.newSymbol(Types.LOGICAL_AND, -1, -1),
+            new BinaryExpression(pv, upper, hi))
+    }
+
     private Statement closureHavocBody = null
     private IdentityHashMap<ASTNode, Set<String>> closureHavocMap = null
 

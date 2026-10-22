@@ -112,14 +112,26 @@ class G416_p372_closure_iteration {
                         }
                     }''')],
 
-        // Before: `fails on: f()`, which never fails — the closure's k is only 0 and 1. The warning stays (k is free).
-        [group: "P372 closure iteration", name: "a closure parameter is free, so no call is shown",
+        // Before: `fails on: f()`, which never fails — the closure's k is only 0 and 1. Phase 372 kept the warning (k was
+        // free); Phase 380 bounds a `times` closure's parameter, so it proves.
+        [group: "P372 closure iteration", name: "a closure parameter is bounded by its range",
+         ok: true,
+         src: tc('''class A {
+                        static int f() {
+                            int s = 0
+                            2.times { int k -> s = 100.intdiv(k - 3) }
+                            s
+                        }
+                    }''')],
+
+        // … and where the range does reach the zero (k = 2), the warning stays, its call withheld.
+        [group: "P372 closure iteration", name: "… a range that reaches it still warns, no call shown",
          expect: ["Possible ArithmeticException: Division by zero", "no failing call: the failure is inside a closure"],
          refute: "fails on",
          src: tc('''class A {
                         static int f() {
                             int s = 0
-                            2.times { int k -> s = 100.intdiv(k - 3) }
+                            3.times { int k -> s = 100.intdiv(k - 2) }
                             s
                         }
                     }''')],
