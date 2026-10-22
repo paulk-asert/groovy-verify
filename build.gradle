@@ -366,9 +366,29 @@ tasks.named('test', Test) {
     if (System.getProperty('verify.only')) {
         systemProperty 'verify.only', System.getProperty('verify.only')
     }
+    filter { excludeTestsMatching 'EncoderAuditTest' }   // its own task: encoderAudit (below)
     testLogging {
         events 'failed'
         exceptionFormat 'full'
+    }
+}
+
+// Phase 368 — the encoder's built-in semantics audited against the runtime: ~130 probe expressions on an edge-value
+// grid, each point a pinned VC asking the verifier to prove the runtime's value wrong (~5,000 compiles' worth of
+// methods, ~2 min). Kept out of `test`/`check` for their wall-clock; CI runs it as its own step.
+tasks.register('encoderAudit', Test) {
+    group = 'verification'
+    description = 'Audit the encoder\'s built-in translations against the runtime (EncoderAuditTest, Phase 368)'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    maxHeapSize = '2g'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    filter { includeTestsMatching 'EncoderAuditTest' }
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+        showStandardStreams = true   // the audit's summary lines (points proved, precision findings)
     }
 }
 

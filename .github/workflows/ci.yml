@@ -17,6 +17,8 @@
 #                   (RuntimeRung, with its coverage canary), and the doc-drift asserts (DocLintTest),
 #                   plus the examples-dsl subproject's suite. Runs on the JDK 25 toolchain the
 #                   project develops against.
+#   - `encoderAudit` — the encoder's built-in translations audited against the runtime (Phase 368):
+#                   a separate step of the check job, kept out of `check` for its ~2 min.
 #   - `tlcCheck` / `tlcTicket` — the rung-2 exhaustive TLA+ models (the §VII buffer and the Leino
 #                   ticket lock), model-checked with TLC.
 #   - `nuscr`     — the session-type oracle (rung-2 flavour for the SEQ/PAR ladder's @Protocol half):
@@ -67,6 +69,10 @@ jobs:
         env:
           # Refute-direction VCs (model search) are hardware-speed sensitive; CI runners get 4x the
           # per-check solver budget a dev laptop needs for the same crisp refutations.
+          VERIFY_Z3_TIMEOUT_MS: '8000'
+      - name: Encoder audit (built-in semantics vs the runtime)
+        run: ./gradlew encoderAudit --no-daemon
+        env:
           VERIFY_Z3_TIMEOUT_MS: '8000'
       - name: TLC exhaustive models (rung 2)
         run: ./gradlew tlcCheck tlcTicket tlcNetwork tlcMailbox --no-daemon

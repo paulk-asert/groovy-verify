@@ -16412,7 +16412,8 @@ framed as a read (a runtime-type property the static types don't show).
 ## Phase 368 — the encoder's built-in semantics, audited against the runtime  *(shipped)*
 
 Phase 367 audited the skeletons and the name tables; most of what the verifier assumes about Groovy is neither, but the
-encoder's own translations. `EncoderAuditTest` (JUnit) checks them against the runtime: 128 probe expressions —
+encoder's own translations. `EncoderAuditTest` (JUnit; its own task, `./gradlew encoderAudit`, run by CI as a separate
+step — about two minutes, kept out of `check`) checks them against the runtime: 128 probe expressions —
 integer arithmetic and its wrap, `%`, `mod`, `intdiv`, `/`-then-truncate, `Math.floorDiv`/`floorMod`, shifts and
 bitwise ops, long arithmetic and narrowing, comparisons, ranges and `in`, Groovy truth and Elvis, casts, list / array /
 string methods with their edge cases (empty, negative and out-of-range indices) — each run on an edge-value grid

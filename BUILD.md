@@ -158,6 +158,13 @@ it out of the published POM.
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation
 ```
 
+Its complement aims the runtime at the *encoder* rather than at the corpus's proofs: **`./gradlew encoderAudit`**
+(Phase 368, `EncoderAuditTest`) runs ~130 built-in expressions — arithmetic and its wrap, `%`/`mod`/`intdiv`, shifts,
+casts, ranges, Groovy truth, list/array/string methods — on an edge-value grid, and asks the verifier, pinned to each
+point, to prove the runtime's value wrong; any proof fails it. About two minutes, so it is its own task rather than
+part of `check` (CI runs it as a separate step). Its trusted-base sibling, `SpecAuditTest` (Phase 367: the shipped
+skeletons and the inference's name tables against the JDK), is fast and stays in `test`.
+
 Tier A (scalar/array/string inputs) cross-validates **547 of 570 runnable proofs clean** (500 with an
 `@Ensures`/`@Invariant`/`assert` postcondition oracle) as of Phase 168; the rest are Tier B (a structured `@Requires` the grid
 can't hit) or Tier C (units/concurrency/info-flow — not grid-executable). The grid is also **seeded from the
