@@ -87,6 +87,11 @@ class SpecRegistry {
         m
     }
 
+    /** Phase 370 — {@link #lookup}'s answer without consuming it: nothing is ledgered. */
+    static MethodNode peek(String fqn, String name, int arity, List<String> paramTypeNames = null) {
+        select(fqn, '', name, arity, paramTypeNames)
+    }
+
     /** Phase 363 — the subdirectory (of {@code VERIFY_SPECS} and of {@code META-INF/groovy-verify/}) holding RELIED
      *  skeletons: a library's closed-world reliances (Phase 362) written as contracts its subclasses are held to. */
     static final String RELIED = 'relied'

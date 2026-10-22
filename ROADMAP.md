@@ -16443,7 +16443,7 @@ the end, `max()`/`min()` of an empty list are `null` — is read as Java's stric
 runtime never throws, so wrong values there are proved only beside a loud warning (over-strict, never silent).
 `Math.floorDiv`/`floorMod`'s spec states only the throw, so its value is opaque (precision); a spec's `@ThrowsIf` is a
 survival fact, not a call-site obligation, so a call that always throws (`floorDiv(x, 0)`) draws no diagnostic
-(partial correctness — it never returns).
+(partial correctness — it never returns). *(Closed in Phase 370.)*
 
 **Shipped tests:** `EncoderAuditTest`, 2 tests; group `P368 the encoder audited`, 11 cases, 5 verifying before (a
 boolean cast's wrong value, `intdiv`, `<<` and a narrowing cast under `@CheckOverflow`, `last()` on a possibly-empty
@@ -16490,6 +16490,48 @@ groovy-contracts `@Modifies` JIRA, beside `@Modifies({})`.
 `a[-2]` and a store through `a[-1]` proving (bounds warnings before); `xs[-1]` on a possibly-empty list; a list
 subscript's head and `get(i)`'s; `f.apply(b)` writing (verifying before) and an immutable argument not; a closure
 literal handed to a helper (the `doCall` reason before).
+
+## Phase 370 — a spec's `@ThrowsIf` is an obligation at the call  *(shipped)*
+
+A registry spec's `@ThrowsIf` arm was only a survival fact (Phase 222): past the call, its condition is false. Nothing
+checked it AT the call, so `Math.floorDiv(x, y)` was silent where `x.intdiv(y)` warned of division by zero, and
+`floorDiv(x, 0)`, which always throws, drew nothing (the Phase 368 audit's note).
+
+- **The obligation.** Each spec'd call with arms is a site (`SpecThrowSite`, collected by the `ObligationCollector`
+  through `specThrowSiteFor`), discharged like a division's: the arms' conditions, with the formals replaced by the
+  actuals, must be unsatisfiable under the path's facts. So `@Requires`, guards, loop invariants and the value-flow
+  replay all discharge it. A refutation reads `Possible ArithmeticException: Math.floorDiv(x, y) throws when y == 0`,
+  `obligation: !(y == 0)`, with a failing call and a repro asserting the arm's exception. An arm outside the fragment
+  is a loud skip, never assumed false. The registry is peeked (`SpecRegistry.peek`) before it is consumed, so a call
+  without arms ledgers nothing new.
+- **A handler covers it.** An arm whose exception a surrounding `catch` covers is defined behaviour (Phase 193). The
+  curated coverage gained the two exceptions the specs throw beyond the built-ins: `IllegalArgumentException` (itself)
+  and `NoSuchElementException`, both also under `RuntimeException`/`Exception`/`Throwable`.
+- **Deliberate throwers are exempt.** For `Objects.requireNonNull`, `Objects.checkIndex` and the `Math.*Exact` family,
+  the throw is the point: a check written as a method, or arithmetic that throws where the operator would wrap.
+  Calling one is a deliberate throw, as a `throw` statement is, so there is no obligation; its arms still give the
+  survival facts after it (`THROWING_GUARDS`). `Integer.parseInt` is there too, because the built-in numeral
+  obligation (Phase 54) already covers its arm. `SpecAuditTest` checks every entry names a shipped skeleton with arms,
+  so a renamed spec can't leave an entry that quietly exempts another call.
+- **The method's own `@ThrowsIf`.** A woven guard (the default) runs at entry, so its condition is false throughout
+  the body. That is now an entry fact for every implicit obligation, built-in or spec'd. Before, a division the guard
+  had already ruled out still warned. A declared, unwoven throw makes an obligation of the same (or a covered)
+  exception the method's contract where its condition holds. Both apply only to a condition over parameters the body
+  never reassigns, the entry state it speaks of.
+
+One existing case moved: `Long.parseLong(s)` on a possibly-null `s` now warns at the call, and its survival fact still
+keeps the `s.length()` after it quiet (now asserted with `refute:`).
+
+**Found, not changed:** in a loop body, an implicit obligation's failing call is built from the parameters alone, so it
+may not enter the loop. A `floorMod(i, y)` (or `i % y`) in a `for (i < n)` body, under `@Requires({ n >= 0 })`, shows
+`fails on: f(0, 0)`, a call that never reaches the body. The warning is right (`y` may be zero) but the repro is not.
+This is older than Phase 370 (the built-in `%` does the same), and it is the next reporting item.
+
+**Shipped tests:** group `P370 spec throws`, 14 cases, 6 verifying before: `floorDiv` by a possibly-zero divisor and by
+zero, `max` of a possibly-empty collection, `nCopies` of a possibly-negative count, a declared throw of another exception
+(all compiled cleanly before), and a woven guard ruling out a division (warned before). Plus discharge by `@Requires`, a
+guard, a handler, a supertype handler, a loop invariant; the deliberate throwers; a declared throw. And `SpecAuditTest`'s
+fifth test, `throwingGuardsNameSpecsThatThrow`.
 
 ---
 

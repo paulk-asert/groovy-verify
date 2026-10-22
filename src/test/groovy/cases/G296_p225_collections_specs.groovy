@@ -57,7 +57,10 @@ class G296_p225_collections_specs {
                             return l.size()
                         }
                     }''')],
-        [group: 'P225 collections specs', name: 'Long.parseLong survival proves s non-null (signals arm)', ok: true,
+        // Phase 370 — the arm is now an obligation at the call (s may be null there); past it, the survival fact still
+        // proves s non-null, so the deref below draws no second warning
+        [group: 'P225 collections specs', name: 'Long.parseLong survival proves s non-null (signals arm)',
+         expect: 'Possible NumberFormatException: Long.parseLong(s) throws when s == null', refute: 'NullPointerException',
          src: tc('''class C {
                         static int f(String s) {
                             long v = Long.parseLong(s)

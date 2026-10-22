@@ -1393,15 +1393,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Catch-parameter simple name → the implicit-obligation exceptions it (super)covers. Curated: exact
      *  types, their JDK supertypes (NFE <: IllegalArgumentException; the broad RuntimeException /
      *  Exception / Throwable), nothing inferred. */
+    private static final List<String> RUNTIME_OBLIGATION_EXCEPTIONS = ['NullPointerException', 'ArithmeticException',
+        'IndexOutOfBoundsException', 'NumberFormatException', 'IllegalArgumentException', 'NoSuchElementException']
     private static final Map<String, List<String>> CATCH_COVERS = [
         'NullPointerException'          : ['NullPointerException'],
         'ArithmeticException'           : ['ArithmeticException'],
         'IndexOutOfBoundsException'     : ['IndexOutOfBoundsException'],
         'NumberFormatException'         : ['NumberFormatException'],
-        'IllegalArgumentException'      : ['NumberFormatException'],
-        'RuntimeException'              : ['NullPointerException', 'ArithmeticException', 'IndexOutOfBoundsException', 'NumberFormatException'],
-        'Exception'                     : ['NullPointerException', 'ArithmeticException', 'IndexOutOfBoundsException', 'NumberFormatException'],
-        'Throwable'                     : ['NullPointerException', 'ArithmeticException', 'IndexOutOfBoundsException', 'NumberFormatException'],
+        'IllegalArgumentException'      : ['NumberFormatException', 'IllegalArgumentException'],
+        'NoSuchElementException'        : ['NoSuchElementException'],   // Phase 370 — a spec's @ThrowsIf throws it
+        'RuntimeException'              : RUNTIME_OBLIGATION_EXCEPTIONS,
+        'Exception'                     : RUNTIME_OBLIGATION_EXCEPTIONS,
+        'Throwable'                     : RUNTIME_OBLIGATION_EXCEPTIONS,
     ]
 
     /** Walk the clean body for try blocks and their handlers' coverage (see {@link #currentCatchCoverage}). */
@@ -1452,6 +1455,166 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (site instanceof ParseSite) return 'NumberFormatException'
         if (site instanceof DerefSite) return 'NullPointerException'
         null   // AssertSite (the developer\'s own spec) and OverflowSite (wraps, never throws) stay checked
+    }
+
+    /** An obligation collector for the current method: its overflow mode, and its spec'd throwing calls (Phase 370). */
+    private ObligationCollector newCollector() {
+        ObligationCollector col = new ObligationCollector()
+        col.overflowChecking = currentOverflowChecking
+        col.specSite = { Expression call -> specThrowSiteFor(call) }
+        col
+    }
+
+    /**
+     * Phase 370 — spec'd calls whose throw is their purpose: a check written as a method ({@code requireNonNull},
+     * {@code checkIndex}), or an arithmetic that throws where the plain operator would wrap (the {@code *Exact}
+     * family). Calling one is a deliberate throw, as a {@code throw} statement is, so it carries no obligation; its
+     * arms still give the survival facts after it (Phase 222). And {@code Integer.parseInt}, whose spec arm the
+     * built-in numeral obligation (Phase 54) already covers.
+     */
+    private static final Set<String> THROWING_GUARDS = ['java.util.Objects#requireNonNull', 'java.util.Objects#checkIndex',
+        'java.lang.Math#absExact', 'java.lang.Math#negateExact', 'java.lang.Math#addExact',
+        'java.lang.Integer#parseInt'] as Set
+
+    /** Phase 370 — the obligation site for a call to a registry spec with @ThrowsIf arms, else null. Nothing is
+     *  ledgered for a call that isn't one (the registry is peeked, then consumed only for a site). */
+    private SpecThrowSite specThrowSiteFor(Expression call) {
+        if (!(call instanceof MethodCall)) return null
+        ClassNode owner = staticOwnerType(call) ?: instanceReceiverType(call)
+        if (owner == null) return null
+        String name = ((MethodCall) call).methodAsString
+        Expression argsExpr = ((MethodCall) call).arguments
+        if (name == null || !(argsExpr instanceof ArgumentListExpression)) return null
+        if (THROWING_GUARDS.contains(owner.name + '#' + name)) return null
+        List<Expression> actuals = ((ArgumentListExpression) argsExpr).expressions
+        List<ClassNode> inferred = actuals.collect { Expression a -> inferredTypeOf(a) }
+        List<String> types = inferred.every { it != null } ? inferred.collect { SpecRegistry.typeKey(it) } : null
+        MethodNode peek = SpecRegistry.peek(owner.name, name, actuals.size(), types)
+        if (peek == null || SpecRegistry.throwsIfArms(peek).isEmpty()) return null
+        MethodNode spec = SpecRegistry.lookup(owner.name, name, actuals.size(), types)
+        String recv = staticOwnerType(call) != null ? owner.nameWithoutPackage : ((MethodCallExpression) call).objectExpression.text
+        new SpecThrowSite(node: call, spec: spec, actuals: actuals,
+            callText: "${recv}.${name}(${actuals.collect { sourceText(it) }.join(', ')})".toString())
+    }
+
+    /** An actual as the source spells it: a string constant keeps its quotes ({@code .text} drops them). */
+    private static String sourceText(Expression e) {
+        e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof String ?
+            "'${((ConstantExpression) e).value}'".toString() : e.text
+    }
+
+    /** Phase 370 — a spec contract with its formals replaced by the call's actuals ({@code b == 0} at
+     *  {@code Math.floorDiv(x, y)} is {@code y == 0}), translated and shown in the caller's own terms. */
+    private static Expression substituteFormals(MethodNode spec, Expression cond, List<Expression> actuals) {
+        Map<String, Expression> by = new HashMap<String, Expression>()
+        for (int i = 0; i < spec.parameters.length; i++) by.put(spec.parameters[i].name, actuals.get(i))
+        ExpressionTransformer tx = new ExpressionTransformer() {
+            @Override Expression transform(Expression e) {
+                if (e == null) return null
+                if (e instanceof VariableExpression && by.containsKey(((VariableExpression) e).name)) {
+                    return by.get(((VariableExpression) e).name)
+                }
+                return e.transformExpression(this)
+            }
+        }
+        tx.transform(cond)
+    }
+
+    /** A condition's text without the outer parentheses Groovy prints round a binary expression. */
+    private static String bareText(Expression e) {
+        String t = e.text
+        e instanceof BinaryExpression && t.startsWith('(') && t.endsWith(')') ? t.substring(1, t.length() - 1) : t
+    }
+
+    /**
+     * Phase 370 — at a spec'd call, the obligation is that no @ThrowsIf arm holds: an arm whose exception a handler
+     * covers is defined behaviour (Phase 193), and one the method itself declares throwing is its contract. An arm
+     * outside the fragment is a loud skip, never assumed false.
+     */
+    private void dischargeSpecThrowUnder(SmtSession s, Encoder enc, SpecThrowSite st) {
+        List<Object> fails = new ArrayList<Object>()
+        List<String> conds = new ArrayList<String>(), exceptions = new ArrayList<String>()
+        for (Map<String, Object> arm : SpecRegistry.throwsIfArms(st.spec)) {
+            String ex = (String) arm.get('exception') ?: 'RuntimeException'
+            if (catchCovered(st.node, ex)) continue
+            Expression c = (Expression) arm.get('cond')
+            Object ch = specContractReceiverIndependent(st.spec, c) ?
+                enc.translateBool(substituteFormals(st.spec, c, st.actuals)) : null
+            if (ch == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("${st.callText} exception",
+                    "its @ThrowsIf condition '${bareText(c)}' is outside fragment"), st.node)
+                return
+            }
+            Object declared = declaredThrowCover(s, enc, ex)
+            fails.add(declared == null ? ch : s.and([ch, s.not(declared)]))
+            conds.add(bareText(substituteFormals(st.spec, c, st.actuals)))
+            if (!exceptions.contains(ex)) exceptions.add(ex)
+        }
+        if (fails.isEmpty()) return
+        s.assertExpr(fails.size() == 1 ? fails.get(0) : s.or(fails))
+        CheckResult r = shown(s.check())
+        if (r.status != CheckResult.Status.VERIFIED) {
+            String obligation = conds.collect { "!(${it})" }.join(' && ')
+            addStaticTypeError(withRepro(Reporter.formatSpecThrow(exceptions.join(' or '), st.callText, conds.join(' or '),
+                obligation, r), r, exceptions.size() == 1 ? exceptions.get(0) : 'RuntimeException'), st.node)
+        }
+        explainIfVerified(s, r, "${st.callText} returns normally")
+    }
+
+    /** The current method's @ThrowsIf instances as [condition, exception simple name (null: any), woven], each
+     *  over parameters the body never reassigns (the condition speaks of the entry state); others are left out. */
+    private List<Object[]> ownThrowsIf() {
+        List<Object[]> out = new ArrayList<Object[]>()
+        if (currentMethod == null) return out
+        List<AnnotationNode> anns = tiAnnotations(currentMethod)
+        if (anns.isEmpty()) return out
+        Set<String> params = currentMethod.parameters.collect { it.name } as Set
+        Set<String> assigned = assignedNames(currentMethod)
+        for (AnnotationNode an : anns) {
+            Expression member = an.getMember('value')
+            if (!(member instanceof ClosureExpression)) continue
+            Statement cc = ((ClosureExpression) member).code
+            List<Statement> cs = cc instanceof BlockStatement ? ((BlockStatement) cc).statements :
+                Collections.<Statement> singletonList(cc)
+            if (cs.size() != 1 || !(cs.get(0) instanceof ExpressionStatement)) continue
+            Expression cond = ((ExpressionStatement) cs.get(0)).expression
+            Set<String> vars = new LinkedHashSet<String>()
+            collectVariableNames(cond, vars)
+            if (!params.containsAll(vars) || vars.any { assigned.contains(it) }) continue
+            Expression exc = an.getMember('exception')
+            Expression wv = an.getMember('woven')
+            out.add([cond, exc instanceof ClassExpression ? ((ClassExpression) exc).type.nameWithoutPackage : null,
+                     !(wv instanceof ConstantExpression && ((ConstantExpression) wv).value == false)] as Object[])
+        }
+        out
+    }
+
+    /** Phase 370 — a woven @ThrowsIf guard runs at entry, so past it the condition is false; a declared (unwoven) one
+     *  covering {@code obEx} makes that obligation's throw the method's contract where the condition holds. */
+    private void assumeOwnThrowsIf(SmtSession s, Encoder enc, String obEx) {
+        for (Object[] ti : ownThrowsIf()) {
+            boolean woven = (boolean) ti[2]
+            if (!woven && (obEx == null || !throwCovers((String) ti[1], obEx))) continue
+            Object c = enc.translateBool((Expression) ti[0])
+            if (c != null) s.assertExpr(s.not(c))
+        }
+    }
+
+    /** Phase 370 — the disjunction of the method's declared (unwoven) @ThrowsIf conditions whose exception covers
+     *  {@code ex}, or null. (A woven one is already an entry fact, {@link #assumeOwnThrowsIf}.) */
+    private Object declaredThrowCover(SmtSession s, Encoder enc, String ex) {
+        List<Object> cs = new ArrayList<Object>()
+        for (Object[] ti : ownThrowsIf()) {
+            if ((boolean) ti[2] || !throwCovers((String) ti[1], ex)) continue
+            Object c = enc.translateBool((Expression) ti[0])
+            if (c != null) cs.add(c)
+        }
+        cs.isEmpty() ? null : (cs.size() == 1 ? cs.get(0) : s.or(cs))
+    }
+
+    /** A declared exception (simple name; null = any) covers a thrown one: the same, or a curated supertype. */
+    private static boolean throwCovers(String declared, String thrown) {
+        declared == null || declared == thrown || CATCH_COVERS.get(declared)?.contains(thrown)
     }
 
     private static Map<String, ClassNode> collectObjectParams(MethodNode node) {
@@ -4309,8 +4472,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } catch (Throwable t) {
             pf = new PathFacts()
         }
-        ObligationCollector col = new ObligationCollector()
-        col.overflowChecking = currentOverflowChecking
+        ObligationCollector col = newCollector()
         try {
             body.visit(col)
         } catch (Throwable t) {
@@ -4323,6 +4485,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (StringCharAtSite s : col.stringCharAtSites) dischargeStringCharAt(s, pf, reqAst)
         for (StringSubstringSite s : col.stringSubstringSites) dischargeStringSubstring(s, pf, reqAst)
         for (ParseSite s : col.parseSites) dischargeParse(s, pf, reqAst)
+        for (SpecThrowSite s : col.specThrowSites) dischargeSpecThrow(s, pf, reqAst)
     }
 
     private void dischargeStringCharAt(StringCharAtSite site, PathFacts pf, Expression reqAst) {
@@ -4570,13 +4733,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return
         }
 
-        ObligationCollector col = new ObligationCollector()
-        col.overflowChecking = currentOverflowChecking
+        ObligationCollector col = newCollector()
         try { e.visit(col) } catch (Throwable ignored) { return }
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() &&
             col.derefSites.isEmpty() && col.overflowSites.isEmpty() &&
             col.stringCharAtSites.isEmpty() && col.stringSubstringSites.isEmpty() &&
-            col.parseSites.isEmpty()) return
+            col.parseSites.isEmpty() && col.specThrowSites.isEmpty()) return
         List<Object> snap = new ArrayList<Object>(steps)
         for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
         for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
@@ -4585,6 +4747,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (StringCharAtSite s : col.stringCharAtSites) out.add(mkVf(s, snap))
         for (StringSubstringSite s : col.stringSubstringSites) out.add(mkVf(s, snap))
         for (ParseSite s : col.parseSites) out.add(mkVf(s, snap))
+        for (SpecThrowSite s : col.specThrowSites) out.add(mkVf(s, snap))
     }
 
     /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
@@ -5069,6 +5232,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    private void dischargeSpecThrow(SpecThrowSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            dischargeObligationUnder(s, enc, site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
     private void dischargeDeref(DerefSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
@@ -5123,6 +5297,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // the curated CATCH_COVERS types suppress, and only for sites positioned inside the try block.
         String obEx = obligationExceptionOf(site)
         if (obEx != null && site.hasProperty('node') && catchCovered((org.codehaus.groovy.ast.ASTNode) site['node'], obEx)) return
+        // Phase 370 — the method's own @ThrowsIf: a woven guard ran at entry, so its condition is false here; and a
+        // throw the method declares is its contract, so an obligation of that exception holds where the condition does
+        assumeOwnThrowsIf(s, enc, obEx)
+        if (site instanceof SpecThrowSite) { dischargeSpecThrowUnder(s, enc, (SpecThrowSite) site); return }
         if (site instanceof AssertSite) {
             AssertSite asite = (AssertSite) site
             Object p = enc.translateGoal(asite.cond)
@@ -8597,15 +8775,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     private List<Object> sitesInStatement(Statement st) {
-        ObligationCollector col = new ObligationCollector()
-        col.overflowChecking = currentOverflowChecking
+        ObligationCollector col = newCollector()
         try { if (st != null) st.visit(col) } catch (Throwable ignored) {}
         return combineSites(col)
     }
 
     private List<Object> sitesInExpression(Expression e) {
-        ObligationCollector col = new ObligationCollector()
-        col.overflowChecking = currentOverflowChecking
+        ObligationCollector col = newCollector()
         try { if (e != null) e.visit(col) } catch (Throwable ignored) {}
         return combineSites(col)
     }
@@ -8614,7 +8790,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Object> r = new ArrayList<Object>()
         r.addAll(col.indexSites); r.addAll(col.divideSites); r.addAll(col.derefSites)
         r.addAll(col.overflowSites); r.addAll(col.stringCharAtSites)
-        r.addAll(col.stringSubstringSites); r.addAll(col.parseSites)
+        r.addAll(col.stringSubstringSites); r.addAll(col.parseSites); r.addAll(col.specThrowSites)
         return r
     }
 
@@ -8627,6 +8803,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 54 — {@code Integer.parseInt(arg)}: the implicit obligation that {@code arg} is a valid
      *  integer numeral (else {@code NumberFormatException}). */
     @CompileStatic private static class ParseSite { ASTNode node; Expression arg }
+    /** Phase 370 — a call to a registry spec carrying {@code @ThrowsIf}: the obligation that no arm's condition
+     *  holds there, as a division's is that its divisor isn't zero (else the call throws the arm's exception). */
+    @CompileStatic private static class SpecThrowSite { ASTNode node; MethodNode spec; String callText; List<Expression> actuals }
 
     /** True if {@code e} refers to the {@code Integer} class (any of the three AST shapes). */
     @CompileStatic
@@ -8698,6 +8877,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final List<DivideSite> divideSites = []
         final List<ParseSite> parseSites = []
         final List<DerefSite> derefSites = []
+        /** Phase 370 — the spec'd calls with @ThrowsIf arms, as {@link #specSite} resolves them (null: none collected). */
+        final List<SpecThrowSite> specThrowSites = []
+        Closure<SpecThrowSite> specSite = null
         /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
         final List<OverflowSite> overflowSites = []
         /** Phase 46e — collected at every {@code charAt(i)} call shape (string-typing checked at discharge). */
@@ -8793,7 +8975,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
 
         @Override
+        void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+            SpecThrowSite st = specSite != null ? specSite.call(call) : null
+            if (st != null) specThrowSites.add(st)
+            super.visitStaticMethodCallExpression(call)
+        }
+
+        @Override
         void visitMethodCallExpression(MethodCallExpression mce) {
+            SpecThrowSite st = specSite != null ? specSite.call(mce) : null
+            if (st != null) specThrowSites.add(st)
             Expression recv = mce.objectExpression
             // Groovy integer-division / modulo method forms: the obligation is on the divisor, not
             // the (numeric, non-null-tracked) receiver — so collect a DivideSite and skip the deref/

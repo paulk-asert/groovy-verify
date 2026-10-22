@@ -260,6 +260,25 @@ class C {
 }
 ```
 
+## A spec's throw is an obligation at the call
+
+Survival facts take the throw as given. Since Phase 370, each `@ThrowsIf` arm is also an obligation where
+the call is made, discharged the way a division's `b != 0` is: by `@Requires`, a guard, or a handler covering
+its exception. `x.intdiv(y)` and `Math.floorDiv(x, y)` now get the same treatment:
+
+<!-- doclint:case p370-spec-throws/floordiv-by-a-possibly-zero-divisor -->
+```groovy
+class A {
+    static int f(int x, int y) { Math.floorDiv(x, y) }
+}
+```
+
+`Possible ArithmeticException: Math.floorDiv(x, y) throws when y == 0`, with `obligation: !(y == 0)` and a
+failing call. A call whose throw is its purpose carries no obligation, just as a `throw` statement doesn't:
+`requireNonNull`, `checkIndex` and the `*Exact` family. A method's own `@ThrowsIf` also counts: a woven
+guard runs at entry, so its condition is false in the body, and a declared throw of the same exception is
+the method's contract.
+
 ## Catch-entry facts — the handler knows why it was entered
 
 The converse direction: entering a `catch` means some try-block source threw the caught type. When
@@ -364,7 +383,9 @@ class C {
 ```
 
 And `Long.parseLong` joins `Integer.parseInt` as a one-directional arm whose survival contrapositive
-does real work — the call returned, so the string wasn't null:
+does real work — the call returned, so the string wasn't null. (Since Phase 370 the arm is also an
+obligation at the call, so this method warns that `s` may be null there; past the call, the survival
+fact still proves the deref safe, so there is no second warning.)
 
 <!-- doclint:case p225-collections-specs/long-parselong-survival-proves-s-non-null-signals-arm -->
 ```groovy

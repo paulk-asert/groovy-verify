@@ -877,6 +877,12 @@ class Reporter {
             "Could not decide modulus positive", result)
     }
 
+    /** Phase 370 — a spec'd call whose @ThrowsIf condition may hold: it throws there. */
+    static String formatSpecThrow(String exception, String call, String condText, String obligation, CheckResult result) {
+        implicit("Possible ${exception}: ${call} throws when ${condText}",
+            obligation, "Could not decide ${call} returns normally", result)
+    }
+
     static String formatNumberFormat(String argText, CheckResult result) {
         // Integer.parseInt(s) throws NumberFormatException unless s is a valid integer numeral.
         implicit("Possible NumberFormatException: not a valid integer",

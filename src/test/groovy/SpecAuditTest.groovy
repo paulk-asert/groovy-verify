@@ -478,4 +478,22 @@ class SpecAuditTest {
         println "Phase 367 pure-static audit: ${classes.size()} classes, ${failures.size()} failures"
         assertTrue(failures.isEmpty(), 'Pure static classes whose methods write an argument:\n  ' + failures.unique().join('\n  '))
     }
+
+    // ── 5. Phase 370 — the calls whose throw is their purpose ────────────────────────────────────────────────────
+
+    /** Each exempt name is a shipped skeleton with @ThrowsIf arms: a renamed or dropped spec can't leave an entry that
+     *  quietly exempts some other call. */
+    @Test
+    void throwingGuardsNameSpecsThatThrow() {
+        List<String> failures = []
+        for (String key : new TreeSet<String>(VerifyChecker.THROWING_GUARDS)) {
+            String fqn = key.substring(0, key.indexOf('#')), name = key.substring(key.indexOf('#') + 1)
+            File f = new File(SPEC_DIR, fqn + '.groovy')
+            ClassNode cn = f.exists() ? SpecRegistry.parseForLint(f.text, fqn) : null
+            List<MethodNode> ms = cn == null ? [] : cn.methods.findAll { it.name == name }
+            if (ms.isEmpty()) failures << "${key}: no shipped skeleton"
+            else if (ms.every { SpecRegistry.throwsIfArms(it).isEmpty() }) failures << "${key}: no @ThrowsIf arm"
+        }
+        assertTrue(failures.isEmpty(), 'THROWING_GUARDS entries that exempt nothing real:\n  ' + failures.join('\n  '))
+    }
 }
