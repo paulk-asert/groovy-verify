@@ -1121,6 +1121,26 @@ class Encoder implements TheoryApi {
     Closure<Set<String>> inPlaceWritesSupplier
     private Set<String> inPlaceWrites
 
+    /** Phase 378 — a fresh slot typed as {@code name} (array or list, its element sort), for a call's result to be
+     *  assumed of before it becomes {@code name}'s ({@link #copyOracles}). */
+    String resultSlot(String name) {
+        String slot = '$res$' + name + '#' + (reassignCounter++)
+        if (listElementTypes.containsKey(name)) {
+            try { listElementTypes.put(slot, listElementTypes.get(name)) } catch (Throwable ignored) { }
+        }
+        if (isArrayTyped(name)) arraySnapshots.add(slot) else registerListName(slot)
+        freshArray(slot)
+        slot
+    }
+
+    /** Phase 378 — {@code name} now holds {@code from}'s array: its contents, length and nullity; no factory record. */
+    void copyOracles(String name, String from) {
+        arrEnv.put(name, arrayFor(from))
+        sizeEnv.put(name + '.size', sizeOf(from))
+        nullEnv.put(name, nullityOf(from))
+        localFactories.remove(name)
+    }
+
     /** Phase 375 — a name standing for {@code name}'s array as it is now (a call's actual, read before its result is
      *  assigned to {@code name}): its contents, length, nullity and element type. */
     String snapshotArray(String name) {
@@ -3363,7 +3383,7 @@ class Encoder implements TheoryApi {
         if (lo == null || hi == null) return false                                       // symbolic bounds → fall through
         int size = re.inclusive ? (hi - lo + 1) : (hi - lo)
         if (size < 0) size = 0
-        Object arr = session.constIntArray(session.intLit(0L))
+        Object arr = zeroArray()
         for (int i = 0; i < size; i++) {
             arr = session.store(arr, session.intLit((long) i), session.intLit((long) (lo + i)))
         }
@@ -3456,7 +3476,7 @@ class Encoder implements TheoryApi {
             bindNullity(name, session.boolLit(false))   // Phase 375 — the new array's, not asserted of the old one's
             Object[] sorts = arraySortsFor(name)
             if (sorts[1] == session.intSort()) {
-                bindArray(name, session.constIntArray(session.intLit(0L)))
+                bindArray(name, zeroArray())
             } else {
                 havocArray(name)   // Phase 375 — fresh contents (a re-assignment's old ones are another array's)
             }
@@ -3831,6 +3851,16 @@ class Encoder implements TheoryApi {
      * it e-matches to {@code sum(arr,0,i+1) == sum(arr,0,i) + arr[i]}, exactly the body's update.
      */
     Object sumOf(Object arr, Object loH, Object hiH) {
+        // Phase 378 — a constant array's sum is ground: c * (hi - lo) over a non-empty range, else 0. From the axioms
+        // it takes induction over the length, which the solver can't do: `int[] bal = new int[m]` never established
+        // `bal.sum() == 0` (it timed out). The term is kept, so the store law still links it to the next array's sum.
+        Object c = constArrayValue.get(arr)
+        if (c != null) {
+            Object t = session.sum(arr, loH, hiH)
+            session.assertExpr(session.eq(t, session.ite(session.lt(loH, hiH),
+                session.times(c, session.minus(hiH, loH)), session.intLit(0L))))
+            return t
+        }
         if (sumConstrained.add(arr)) {
             Object zero = session.intLit(0L)
             Object one = session.intLit(1L)
@@ -3850,6 +3880,17 @@ class Encoder implements TheoryApi {
                 session.implies(session.lt(sl, sh), session.eq(sterm, rhs)), [sterm]))
         }
         session.sum(arr, loH, hiH)
+    }
+
+    /** Phase 378 — the constant arrays this encoder made, by their element value (a zero-filled allocation). */
+    private final Map<Object, Object> constArrayValue = new HashMap<Object, Object>()
+
+    /** Phase 378 — a zero-filled Int array (a fresh `new int[n]`), remembered as constant for {@link #sumOf}. */
+    Object zeroArray() {
+        Object zero = session.intLit(0L)
+        Object a = session.constIntArray(zero)
+        constArrayValue.put(a, zero)
+        a
     }
 
     /** Array handles whose range-count base/step axioms have been asserted (mint-once, per array). */

@@ -16685,30 +16685,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // first, the fresh oracles below would be the argument too (`result.size() == a.size() + 1` over one size)
         call = withActualSnapshot(call, name, enc)
         boolean array = enc.isArrayTyped(name)
-        Object savedNull = enc.peekNullity(name)
-        Object savedSize = enc.peekSize(name)
-        Object savedArr = enc.peekArray(name)
-        int v = ++havocCounter
-        if (array) {
-            enc.freshArray(name)   // Phase 375 — an array result: its element sort, a non-negative length
-        } else {
-            // Phase 375 — and no factory record: `v = [1, 2]; v = grow(v)` still folded v.size() to 2, against the
-            // callee's `result.size() == a.size() + 1` — a contradiction, so the method's postcondition proved
-            enc.clearFactoryRecord(name)
-            enc.bindNullity(name, s.boolVar(name + '?null#lfc' + v))
-            enc.bindSize(name, s.intVar(name + '#size#lfc' + v))
-            enc.bindArray(name, s.arrayVar(name + '#arr#lfc' + v))
-        }
-        if (assumeCalleeEnsures(s, enc, call, caller, null, hasDecreases(caller), name)) {
+        // Phase 378 — the result is assumed of its own fresh slot, then becomes the name's: renamed to the name itself,
+        // `result` collided with a callee formal of the same name (`bal = row(bal, …)` into `int[] row(int[] bal, …)`),
+        // whose aliasing rebinds that name while the @Ensures is read — so `result.sum() == bal.sum()` said nothing,
+        // and the loop's `bal.sum() == 0` timed out where it should prove. A fresh slot also has no factory record
+        // (Phase 375: `v = [1, 2]; v = grow(v)` folded the new v.size() to 2).
+        String slot = enc.resultSlot(name)
+        if (assumeCalleeEnsures(s, enc, call, caller, null, hasDecreases(caller), slot)) {
+            enc.copyOracles(name, slot)
             if (!array) enc.registerListName(name)   // Phase 323 — so it can be spread or concatenated (`[x] + rest`)
             return true
         }
-        if (array) return false   // the caller leaves an array fresh: its old oracles are another array's
-        // nothing assumable: restore, so the fresh-handle fallback behaves exactly as before
-        if (savedNull != null) enc.bindNullity(name, savedNull)
-        if (savedSize != null) enc.bindSize(name, savedSize)
-        if (savedArr != null) enc.bindArray(name, savedArr)
-        return false
+        false   // nothing assumable: the name is untouched (an array's caller then leaves it fresh)
     }
 
     /** Phase 220 — the STC-inferred type of an instance call's receiver (`d.getMonthValue()`), so the

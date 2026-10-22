@@ -16802,6 +16802,34 @@ before a loop (on entry). A false invariant refuted in the wrong place before: t
 Skipped before: a capacity, a copy that keeps its size, and its false twin. Plus a guard: an alias whose source is added
 to (still skipped loudly).
 
+## Phase 378 — a sum fold over a call proves  *(shipped — completeness, and a vacuity in the result's naming)*
+
+The ClearSplit port's conservation theorem as a fold — `bal = afterExpenseRow(bal, payer[e], amount[e], flat, off[e])`
+in a loop with the invariant `bal.sum() == 0`, the callee ensuring `flat[o..<o + bal.length].sum(0) == amount ==>
+result.sum() == bal.sum()` — timed out after Phase 375 whether or not its key precondition was there. Two causes, and
+the second hid a soundness hole.
+
+- **A constant array's sum is ground** (`Encoder.zeroArray`, `sumOf`): `int[] bal = new int[m]` never established
+  `bal.sum() == 0`, which from the recursive base/step axioms takes induction over `m`; every such loop timed out at its
+  entry. A zero-filled array's sum over `[lo, hi)` is now `c * (hi - lo)` (0 for an empty range), on the same sum term,
+  so the store law still links it to the next array's.
+- **A call's result is assumed of its own slot** (`resultSlot`, `copyOracles`), then becomes the assigned name's.
+  Renamed to the name itself (Phase 225's list route, Phase 375's arrays), `result` collided with a callee formal of the
+  same name, whose aliasing rebinds that name while the `@Ensures` is read: the result's facts landed on the argument.
+  For the fold that said nothing of the new `bal` (`bal.sum() == bal.sum()`), and the check timed out. For a contract
+  relating the two it was a contradiction — `@Ensures({ result.size() == xs.size() + 1 })` read as `xs.size() ==
+  xs.size() + 1` — so **every claim after the call proved**: `xs = grow(xs); xs.size()` "proved" `result == 42`, and so
+  did `List<Integer> xs = grow(v)` into `grow(List<Integer> xs)`. Present since Phase 225 for lists; Phase 375 opened it
+  for arrays.
+
+**Boundary:** the fold without its hypothesis is reported, not refuted: a counterexample needs a model of the sum's
+quantified axioms (as the earlier `bump` repro's). A sum over an array a store has changed keeps the axioms.
+
+**Shipped tests:** group `P378 sum fold`, 8 cases. Undecided before: a new array's sum, a sum-conserving call whose formal
+shares the caller's name, the conservation fold. A vacuous proof before: a growing call whose formal shares the name
+(array), a list parameter re-assigned so, and a list local named as the formal. Plus the growing call's true
+postcondition, and the fold without its hypothesis (still reported).
+
 ---
 
 ## Definition of done, per increment
