@@ -4290,6 +4290,17 @@ class Encoder implements TheoryApi {
                 Integer code = singleCharCode(ce.expression)
                 if (code != null) return session.intLit((long) code.intValue())
             }
+            // Phase 368 — a cast is transparent only where it keeps the value: `x as boolean` is Groovy TRUTH (non-zero,
+            // non-empty, non-null), not the int itself — translated through, it stood for `x` (the encoder audit found
+            // `(7 as boolean) != true` proved). An unmodelled truth is a loud skip.
+            String cn = ce.type?.nameWithoutPackage
+            if (cn == 'boolean' || cn == 'Boolean') {
+                Object inner = translate(ce.expression)
+                if (inner == null) return null
+                return ce.expression.getType() == ClassHelper.boolean_TYPE ? inner : groovyTruth(ce.expression, inner)
+            }
+            // and `n as String` of an integer is its decimal text, not the number (the GString conversion)
+            if (cn == 'String' && isIntLikeType(ce.expression.getType())) return translateValueAsString(ce.expression)
             return translate(ce.expression)
         }
 

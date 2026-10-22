@@ -5313,10 +5313,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 return
             }
+            // Phase 368 — a narrowing cast's range is its TARGET's; a shift by a literal count is a multiply (a count
+            // that isn't a literal in [0, width) is outside what this checks — loud)
+            if (ov.op.startsWith('narrow:')) {
+                String to = ov.op.substring('narrow:'.length())
+                long lo = to in ['int', 'Integer'] ? Integer.MIN_VALUE : to in ['short', 'Short'] ? Short.MIN_VALUE :
+                          to in ['char', 'Character'] ? 0L : Byte.MIN_VALUE
+                long hi = to in ['int', 'Integer'] ? Integer.MAX_VALUE : to in ['short', 'Short'] ? Short.MAX_VALUE :
+                          to in ['char', 'Character'] ? 65535L : Byte.MAX_VALUE
+                loLit = s.intLit(lo); hiLit = s.intLit(hi)
+                width = to in ['int', 'Integer'] ? 32 : to in ['byte', 'Byte'] ? 8 : 16
+            }
+            Object shlPow = null
+            if (ov.op == 'shl') {
+                Object k = ov.right instanceof ConstantExpression ? ((ConstantExpression) ov.right).value : null
+                if (!(k instanceof Integer || k instanceof Long) || ((Number) k).longValue() < 0 || ((Number) k).longValue() >= width - 1) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("integer overflow",
+                        "the shift count of '${ov.text}' isn't a literal below ${width - 1}"), ov.node)
+                    return
+                }
+                shlPow = s.intLit(1L << ((Number) k).longValue())
+            }
             Object result = (ov.op == '+')   ? s.plus(L, R) :
                             (ov.op == '-')   ? s.minus(L, R) :
                             (ov.op == '*')   ? s.times(L, R) :
                             (ov.op == 'neg') ? s.neg(L) :
+                            (ov.op == 'shl') ? s.times(L, shlPow) :
+                            ov.op.startsWith('narrow:') ? L :
                                                null
             if (result == null) return    // unrecognised op shouldn't happen, but be defensive
             // ¬(MIN ≤ result ∧ result ≤ MAX)  ≡  result < MIN ∨ result > MAX
@@ -8671,7 +8694,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 overflowSites.add(new OverflowSite(node: be,
                     left: be.leftExpression, right: be.rightExpression, op: 'div', text: be.text))
             }
+            // Phase 368 — `x << k` on an integer is `x * 2^k`, which wraps like `*` (the encoder audit: `MAX << 1`
+            // proved `!= -2`); `xs << v` on a collection is an append, and no arithmetic
+            if (overflowChecking && be.operation.type == Types.LEFT_SHIFT && isIntegralTyped(be.leftExpression)) {
+                overflowSites.add(new OverflowSite(node: be,
+                    left: be.leftExpression, right: be.rightExpression, op: 'shl', text: be.text))
+            }
             super.visitBinaryExpression(be)
+        }
+
+        /** Phase 368 — an int/long (or boxed) operand, by STC's inferred type. */
+        private static boolean isIntegralTyped(Expression e) {
+            ClassNode inf = (ClassNode) e.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+            String n = (inf != null ? inf : e.getType())?.nameWithoutPackage
+            n in ['int', 'Integer', 'long', 'Long', 'short', 'Short', 'byte', 'Byte']
+        }
+
+        @Override
+        void visitCastExpression(CastExpression ce) {
+            // Phase 368 — a narrowing cast (`(int) l`, `l as int`) keeps the value only in the target's range: it wraps
+            // outside it, and the encoder's math-int model reads it as the identity (`(int) 2^31` proved `!= MIN_VALUE`)
+            String to = ce.type?.nameWithoutPackage
+            if (overflowChecking && (to in ['int', 'Integer', 'short', 'Short', 'byte', 'Byte', 'char', 'Character']) &&
+                    isIntegralTyped(ce.expression) && !(ce.expression instanceof ConstantExpression)) {
+                String from = ((ClassNode) ce.expression.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) ?: ce.expression.getType())?.nameWithoutPackage
+                int fromW = from in ['long', 'Long'] ? 64 : from in ['int', 'Integer'] ? 32 : from in ['short', 'Short'] ? 16 : 8
+                int toW = to in ['int', 'Integer'] ? 32 : to in ['short', 'Short', 'char', 'Character'] ? 16 : 8
+                if (toW < fromW) overflowSites.add(new OverflowSite(node: ce, left: ce.expression, right: null,
+                    op: 'narrow:' + to, text: ce.text))
+            }
+            super.visitCastExpression(ce)
         }
 
         @Override
@@ -8697,6 +8749,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ((ArgumentListExpression) mce.arguments).expressions : Collections.<Expression>emptyList()
             if (dargs.size() == 1 && (mm == 'intdiv' || mm == 'remainder' || mm == 'mod')) {
                 divideSites.add(new DivideSite(node: mce, divisor: dargs.get(0), requirePositive: mm == 'mod'))
+                // Phase 368 — `MIN_VALUE.intdiv(-1)` wraps exactly as `MIN_VALUE / -1` does
+                if (overflowChecking && mm == 'intdiv') {
+                    overflowSites.add(new OverflowSite(node: mce, left: recv, right: dargs.get(0), op: 'div', text: mce.text))
+                }
                 super.visitMethodCallExpression(mce)
                 return
             }
@@ -8769,12 +8825,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 340 — List.set(i, v) throws IndexOutOfBoundsException outside [0, size): the bounds obligation
                 // of a get(i) (a BitSet's set(int, boolean) has two arguments too, hence the receiver type)
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
-            } else if ((mName == 'first' || mName == 'head' ||
+            } else if ((mName == 'first' || mName == 'head' || mName == 'last' ||
                         mName == 'removeLast' || mName == 'pop' ||
                         mName == 'max' || mName == 'min') && margs.isEmpty()) {
-                // first/head/pop and the witnessed extrema max()/min() all throw on an empty receiver
-                // (UnsupportedOperationException for max/min), so the receiver must be provably non-empty —
-                // the same `0 < size` obligation as a `[0]` read, synthesised as IndexSite(name, 0).
+                // first/head/last/pop throw on an empty receiver (Phase 368 — the encoder audit found `last()` missing),
+                // so the receiver must be provably non-empty — the same `0 < size` obligation as a `[0]` read,
+                // synthesised as IndexSite(name, 0). The extrema max()/min() of an empty Iterable return null rather
+                // than throw (measured, Groovy 6): the obligation is over-strict there, never unsound.
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: new ConstantExpression(0)))
             } else if (mName == 'charAt' && margs.size() == 1) {
                 // Phase 46e — {@code s.charAt(i)} on a parameter / field. String vs list

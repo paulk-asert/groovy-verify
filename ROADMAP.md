@@ -16409,6 +16409,45 @@ the edge sets) go untested, and the name tables are audited on common receivers,
 map whose reads write is beyond any name table: `[:].withDefault { 0 }` inserts on `get`, so a helper reading one is
 framed as a read (a runtime-type property the static types don't show).
 
+## Phase 368 — the encoder's built-in semantics, audited against the runtime  *(shipped)*
+
+Phase 367 audited the skeletons and the name tables; most of what the verifier assumes about Groovy is neither, but the
+encoder's own translations. `EncoderAuditTest` (JUnit) checks them against the runtime: 128 probe expressions —
+integer arithmetic and its wrap, `%`, `mod`, `intdiv`, `/`-then-truncate, `Math.floorDiv`/`floorMod`, shifts and
+bitwise ops, long arithmetic and narrowing, comparisons, ranges and `in`, Groovy truth and Elvis, casts, list / array /
+string methods with their edge cases (empty, negative and out-of-range indices) — each run on an edge-value grid
+(`MIN_VALUE`, `MAX_VALUE`, 31/32/33, empty and mixed lists, `''`…) for its runtime value V, about 2,500 points. At each
+point the verifier, pinned there by `@Requires`, is asked to prove `result != V`: a proof is the encoder believing a
+value the runtime doesn't produce. Its twin `result == V` is the precision check; a point where the runtime throws must
+draw some diagnostic. The probes run under `@CheckOverflow` (the strong claim: the JVM's wrap); a second test runs the
+wrapping probes without it and requires each wrong value the math-int default proves to be a point where the
+`@CheckOverflow` twin reports an overflow — so the documented assumption (README, Phase 44) is the default model's
+*only* divergence. Mutation-checked: reverting the cast fix fails it at 11 points.
+
+**Found and fixed:**
+
+- **A cast was transparent.** `x as boolean` translated as `x`, so `@Requires({ x == 7 }) @Ensures({ result != true })`
+  proved — at every non-zero point. A cast to `boolean` is now Groovy truth (`Encoder.groovyTruth`: non-zero, non-empty,
+  non-null; an unmodelled kind is a loud skip), and an integer `as String` its decimal text (it had compared an int
+  with a string).
+- **`@CheckOverflow` gaps.** `MIN_VALUE.intdiv(-1)` wraps exactly as `MIN_VALUE / -1` does, but only `/` carried the
+  obligation; `x << k` is `x * 2^k` and wraps like `*`; a narrowing cast (`(int) l`, `l as int`, to short / byte / char)
+  wraps outside the target's range and was the identity. All three are now overflow obligations (`OverflowSite` ops
+  `div` for `intdiv`, `shl` for a literal shift count — a non-literal count is a loud skip — and `narrow:<type>`
+  ranged by the target). A `<<` on a collection is an append, and draws none.
+- **`last()`** throws on an empty list, and only `first`/`head`/`pop`/`removeLast` carried the non-empty obligation.
+
+**Recorded, not changed:** Groovy's lenient indexing — `xs[5]` is `null` past the end, `xs[-1]` and `a[-1]` count from
+the end, `max()`/`min()` of an empty list are `null` — is read as Java's strict indexing: a bounds obligation that the
+runtime never throws, so wrong values there are proved only beside a loud warning (over-strict, never silent).
+`Math.floorDiv`/`floorMod`'s spec states only the throw, so its value is opaque (precision); a spec's `@ThrowsIf` is a
+survival fact, not a call-site obligation, so a call that always throws (`floorDiv(x, 0)`) draws no diagnostic
+(partial correctness — it never returns).
+
+**Shipped tests:** `EncoderAuditTest`, 2 tests; group `P368 the encoder audited`, 11 cases, 5 verifying before (a
+boolean cast's wrong value, `intdiv`, `<<` and a narrowing cast under `@CheckOverflow`, `last()` on a possibly-empty
+list), and 6 that prove, two of them new (`(x as boolean) == (x != 0)`, refuted before; `x as String`, skipped before).
+
 ---
 
 ## Definition of done, per increment

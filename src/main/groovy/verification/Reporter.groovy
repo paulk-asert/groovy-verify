@@ -899,9 +899,16 @@ class Reporter {
             (op == '*')   ? "multiplication" :
             (op == 'neg') ? "negation" :
             (op == 'div') ? "division" :
+            (op == 'shl') ? "left shift" :                                         // Phase 368
+            op?.startsWith('narrow:') ? "narrowing cast to ${op.substring(7)}" :     // Phase 368
                             "arithmetic"
         // Phase 44c — the bound follows the operation's promoted width (32-bit int, 64-bit long).
         String typeName = width == 64 ? 'Long' : 'Integer'
+        if (op?.startsWith('narrow:')) {
+            String to = op.substring(7)
+            typeName = to in ['int', 'Integer'] ? 'Integer' : to in ['short', 'Short'] ? 'Short' : to in ['byte', 'Byte'] ? 'Byte' : 'Character'
+            exprText = exprText.replaceFirst(/^\(\w+\)\s*/, '')   // the cast's operand is what must fit
+        }
         // Division's failure case is the specific pair MIN_VALUE / -1, not a general result-out-of-range —
         // phrase the obligation accordingly so the diagnostic reads true.
         String obligation = (op == 'div') ?
