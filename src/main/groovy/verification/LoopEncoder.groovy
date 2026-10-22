@@ -163,10 +163,27 @@ class LoopEncoder {
     }
 
     /** Execute a straight-line region (prefix or loop body), updating the store. */
+    /**
+     * Phase 373 — a statement that writes more than its top-level target (an assignment or `++` inside an expression,
+     * a closure literal that writes) or runs a callable can't be replayed as its top-level binding: the rest would read
+     * stale values. It is refused, so a replay havocs what it may write and a VC skips loudly. A `.each` the verifier
+     * desugars into a loop (Phase 310) is that loop's summary instead.
+     */
+    static void refuseHiddenWrites(Statement st) {
+        if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return
+        if (!Encoder.nestedTargets(st).isEmpty()) {
+            throw new UnsupportedConstructException("a statement that writes inside an expression (line ${st.lineNumber})")
+        }
+        if (Encoder.containsCallableCall(st)) {
+            throw new UnsupportedConstructException("a call of a callable, which may write anything it reaches (line ${st.lineNumber})")
+        }
+    }
+
     static void symExec(List<Statement> stmts, Encoder enc, SmtSession s) {
         // Expression-position `++`/`--` (`x = i++`, `a[i++] = v`) → an explicit two-statement sequence.
         stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
+            refuseHiddenWrites(st)
             LoopSpec innerSpec = (st instanceof LoopingStatement) ?
                 (LoopSpec) ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) : null
             if (st instanceof BlockStatement) {
@@ -202,6 +219,7 @@ class LoopEncoder {
     static void replay(List<Statement> stmts, Encoder enc, SmtSession s) {
         stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
+            refuseHiddenWrites(st)
             if (st instanceof BlockStatement) { replay(((BlockStatement) st).statements, enc, s); continue }
             if (st instanceof IfStatement) {
                 IfStatement ifs = (IfStatement) st

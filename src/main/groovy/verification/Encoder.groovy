@@ -1977,6 +1977,8 @@ class Encoder implements TheoryApi {
         v
     }
     private int havocCounter = 0
+    /** Phase 373 — the next havoc's number, so a caller can tell which havocs a step made. */
+    int havocMark() { havocCounter }
     private int storeLawCounter = 0
     private int instanceofCounter = 0   // Phase 238 — fresh-boolean mints for `instanceof` tests
 
@@ -7561,6 +7563,96 @@ class Encoder implements TheoryApi {
         Expression combined = new BinaryExpression(operand, baseTok, new ConstantExpression(Integer.valueOf(1)))
         Token assignTok = Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
         new BinaryExpression(operand, assignTok, combined)
+    }
+
+    /**
+     * Phase 373 — a call that runs a callable: {@code Closure.call}/{@code doCall}, or the single abstract method of a
+     * {@code @FunctionalInterface} value ({@code accept}, {@code apply}, {@code test}, {@code run}, {@code compare}, …).
+     * Its body is code the call site doesn't see, and it may write anything it reaches — {@code this}'s fields too.
+     */
+    static boolean isCallableCall(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.implicitThis) return false
+        String m = mce.methodAsString
+        ClassNode t = staticTypeOf(mce.objectExpression)
+        if (m == null || t == null) return false
+        if (t.isDerivedFrom(ClassHelper.CLOSURE_TYPE) || t.name == 'groovy.lang.Closure') return m == 'call' || m == 'doCall'
+        if (!t.isInterface()) return false
+        boolean functional = t.name.startsWith('java.util.function.') || t.name in CALLABLE_INTERFACES
+        if (!functional && t.isResolved()) {
+            try { functional = t.typeClass.isAnnotationPresent(FunctionalInterface) } catch (Throwable ignored) { }
+        }
+        if (!functional) return false
+        MethodNode sam = ClassHelper.findSAM(t)
+        sam != null && sam.name == m
+    }
+
+    private static final Set<String> CALLABLE_INTERFACES = ['java.lang.Runnable', 'java.util.concurrent.Callable',
+                                                             'java.util.Comparator'] as Set
+
+    /** The static type of {@code e} as STC inferred it, else its declared type (a parameter or local's). */
+    static ClassNode staticTypeOf(Expression e) {
+        ClassNode t = (ClassNode) e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
+        if (t != null) return t
+        if (e instanceof VariableExpression) {
+            org.codehaus.groovy.ast.Variable v = ((VariableExpression) e).accessedVariable
+            if (v != null) return v.originType ?: v.type
+        }
+        e.type
+    }
+
+    /** Phase 373 — does {@code st}'s own expression (not its sub-statements) run a callable, anywhere in it? */
+    static boolean containsCallableCall(Statement st) {
+        boolean[] found = [false]
+        for (Expression e : ownExpressions(st)) {
+            e.visit(new CodeVisitorSupport() {
+                @Override void visitMethodCallExpression(MethodCallExpression c) {
+                    if (isCallableCall(c)) found[0] = true
+                    super.visitMethodCallExpression(c)
+                }
+            })
+        }
+        found[0]
+    }
+
+    /**
+     * Phase 373 — the names {@code st}'s own expression writes BESIDES its top-level assignment: an assignment or
+     * `++`/`--` inside it (`int e = (d = 0) + 1`, `if ((n = m) > 0)`, `b ? (d = 0) : 1`, an unhoisted `x = i++ + i`), and
+     * what a closure literal in it writes (`3.times { d = 0 }` — the call may run it). A replay that bound only the
+     * top-level target read every one of them stale.
+     */
+    static Set<String> nestedTargets(Statement st) {
+        Set<String> out = new LinkedHashSet<String>()
+        Expression top = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
+        for (Expression e : ownExpressions(st)) {
+            e.visit(new CodeVisitorSupport() {
+                void target(Expression t) {
+                    if (t instanceof VariableExpression) out.add(((VariableExpression) t).name)
+                    else if (t instanceof BinaryExpression && ((BinaryExpression) t).operation.type == Types.LEFT_SQUARE_BRACKET) target(((BinaryExpression) t).leftExpression)
+                    else if (t instanceof PropertyExpression) out.add(((PropertyExpression) t).propertyAsString)
+                }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (!be.is(top) && Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) target(be.leftExpression)
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitDeclarationExpression(DeclarationExpression de) { super.visitDeclarationExpression(de) }
+                @Override void visitPostfixExpression(PostfixExpression pe) { if (!pe.is(top)) target(pe.expression); super.visitPostfixExpression(pe) }
+                @Override void visitPrefixExpression(PrefixExpression pe) { if (!pe.is(top)) target(pe.expression); super.visitPrefixExpression(pe) }
+            })
+        }
+        out
+    }
+
+    /** The expressions a statement evaluates itself — a condition, a returned or asserted value — not its sub-statements'. */
+    private static List<Expression> ownExpressions(Statement st) {
+        if (st instanceof ExpressionStatement) return [((ExpressionStatement) st).expression]
+        if (st instanceof ReturnStatement) return [((ReturnStatement) st).expression]
+        if (st instanceof org.codehaus.groovy.ast.stmt.IfStatement) return [(Expression) ((org.codehaus.groovy.ast.stmt.IfStatement) st).booleanExpression]
+        if (st instanceof org.codehaus.groovy.ast.stmt.AssertStatement) return [(Expression) ((org.codehaus.groovy.ast.stmt.AssertStatement) st).booleanExpression]
+        if (st instanceof org.codehaus.groovy.ast.stmt.ThrowStatement) return [((org.codehaus.groovy.ast.stmt.ThrowStatement) st).expression]
+        if (st instanceof SwitchStatement) return [((SwitchStatement) st).expression]
+        Collections.<Expression> emptyList()
     }
 
     /**

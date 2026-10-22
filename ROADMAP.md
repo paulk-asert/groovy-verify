@@ -16618,6 +16618,56 @@ Phase 371.
 `fails on: f()` for a closure parameter that never reaches the failure. A false warning before: a closure literal local's
 `c()`, twice. Plus a captured value nothing writes and an `.each` loop keeping its call.
 
+## Phase 373 — what a statement writes inside it  *(shipped — soundness: silent holes in evaluation order)*
+
+A sweep after Phase 372, over the shapes where a statement writes more than its top-level target, or runs in more than
+one order. A site was checked in the state BEFORE its statement, with the statements before it replayed, so a write
+inside the statement, or inside a try or switch, never reached the sites that read it. Measured, every one of these
+compiled cleanly and throws: `if ((n = m) >= 0 && 100.intdiv(n) > 0)` with `m = 0`, the same read in the if's body,
+`int x = b ? (d = 0) : 1; 100.intdiv(d)`, the elvis form, `int x = i++ + i; 100.intdiv(i - 1)`, a try block's
+`d = 0; return 100.intdiv(d)`, a catch or a finally reading what the try block wrote (after a return too), a case body
+entered by falling through from `case 1: d = 0`, and a closure parameter's `c()` (or a `Consumer`'s `accept(this)`)
+followed by `100.intdiv(count)` — the call was taken to write nothing, and `@Ensures({ count == 1 })` over `c()` proved.
+
+- **Writes inside a statement.** `Encoder.nestedTargets` names what a statement assigns or increments besides its
+  top-level target, and `isCallableCall` a call of a closure or a functional interface's method (Runnable, Callable,
+  Comparator, `java.util.function.*`, `@FunctionalInterface`). For a statement's own sites those names are havocked
+  first (`hiddenWrites`); a callable's call may write anything it reaches (`callableReach`: this object's fields and the
+  statics, each parameter of a mutable type and an object parameter's fields, and what any closure in the method
+  writes). Not when the callable runs last (`c()`, `int x = c.call()`): its receiver and arguments are evaluated before
+  its body. Replayed later, such a statement is refused (`LoopEncoder.refuseHiddenWrites`) and havocked whole; the
+  value-flow pass stops at it.
+- **Try and switch by their structure** (`dischargeTry`, `dischargeSwitch`). A try block runs in order; a catch is
+  entered after any prefix of it, so what the block writes is havocked there; a finally runs after the block or a catch,
+  by any exit, so what both write is havocked there. A case body is entered by its match or by falling through, so what
+  the cases falling into it write is havocked there.
+- **Frames.** A callable's call makes a method's inferred frame unbounded ("a call of the callable 'f', whose body may
+  write anything it reaches — declare @Modifies"), unless the callable is a local bound only to a closure literal,
+  whose writes its declaration already counts. Phase 369 had bounded it by the arguments: that let
+  `h(Function<Integer, Integer> f, int[] b) { f.apply(1) }` leave `a[0]` unwritten for `g(f, a)`, though `f` may hold
+  `a` itself. The postcondition engine skips over such a call the same way.
+- **The failing call is withheld** after any of these havocs, with a note ("no failing call: the failure rests on what a
+  statement writes inside it …"): the state there is not followed from entry, and `fails on: f(-2147483648)` (default
+  arm), `f(false)` (the ternary arm that writes nothing) and others were calls that don't fail. Havocked values say
+  where they come from: `d (in the finally) = 0`, `(in the catch)`, `(after a fall-through)`, `(after the try)`,
+  `(after the switch)`, `n (after a nested write)`, `count (after a callable's call)` — they all read "(after a loop)".
+- **A GString literal local is never null**: `GString g = "${-> …}"; g.toString()` drew a null-dereference warning.
+
+**Changed cases:** G413's "applying a function may write its argument" and "a closure literal handed to a helper" now
+expect the unbounded frame's reason, and "… an immutable argument isn't" (`ok:`, unsoundly) is renamed "… nor does an
+immutable argument bound it" and expects it too.
+
+**Boundary:** these states aren't followed from entry, so their warnings come without a failing call; a write inside a
+statement havocs the name for all of that statement's sites, including those evaluated before the write. The
+postcondition engine still skips a nested assignment, a finally, a fall-through or a callable's call, loudly.
+
+**Shipped tests:** group `P373 evaluation order`, 18 cases. Silent before: 12 — the finally (after a return and after
+normal completion), the try block's order, the catch, the fall-through, the assignments in a condition and in an if's
+condition read in its body, the ternary and elvis writes, the increment in an operand, a closure parameter's call and a
+`Consumer`'s. A wrong call or label before: after a switch (`f(-2147483648)`), after a try ("after a loop"). A wrong
+proof before: the postcondition over `c()`. A false warning before: the GString. Plus an increment in an index and in a
+stored value, kept.
+
 ---
 
 ## Definition of done, per increment

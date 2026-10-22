@@ -1400,6 +1400,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private boolean sawRefutation = false
     /** Phase 371 — while set, {@link #shown} withholds the failing call, with this note. */
     private String loopCallNote = null
+    /** Phase 373 — while set, {@link #shown} withholds the failing call, with this note: the replay havocked what a
+     *  statement writes inside (a nested assignment, a finally, a fall-through arm), and no run is followed there. */
+    private String havocCallNote = null
+    static final String HAVOC_CALL_NOTE = 'no failing call: the failure rests on what a statement writes inside it ' +
+        '(a nested assignment, a callable\'s call, a catch or finally, a fall-through), which the check takes as ' +
+        'unknown rather than following from entry'
+    /** Phase 373 — the region discharge's havocs by number: each entry labels the havocs from it on. */
+    private TreeMap<Integer, String> havocLabels = null
+
+    private String havocLabel(int n) {
+        Map.Entry<Integer, String> e = havocLabels?.floorEntry(n)
+        e?.value ?: 'after a loop'
+    }
+
+    /** Run {@code body}'s havocs under {@code label} (shown on their values); a non-loop one withholds the call. */
+    private void labelHavoc(Encoder enc, String label, Closure<?> body) {
+        if (havocLabels == null) { body(); return }
+        havocLabels.put(enc.havocMark(), label)
+        body()
+        havocLabels.put(enc.havocMark(), 'after a loop')
+        if (label != 'after a loop') havocCallNote = HAVOC_CALL_NOTE
+    }
     /** Phase 371 — the body is a channel desugar (Phases 119–275): its processes are closures and its receives ghost
      *  cursors, which no sequential replay runs, so its loop calls stand on those models' own witness (the trip count,
      *  the branch chosen) and aren't re-sought from entry. Nor are a method's that names a channel at all (its process
@@ -2536,7 +2558,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!r.notes.contains(note)) r.notes.add(note)
         }
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
-        String callNote = loopCallNote ?: closureCallNote   // Phase 372 — or a closure's call after earlier writes
+        // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
+        String callNote = loopCallNote ?: closureCallNote ?: havocCallNote
         if (r.failingCall != null && callNote != null) {
             r.failingCall = null
             if (!r.notes.contains(callNote)) r.notes.add(callNote)
@@ -2595,7 +2618,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     currentMapTypes.containsKey(stem) || elementArrays.contains(stem))) return
                 if (latestHavoc.get(base) == Integer.parseInt(hm.group(2)) && !base.contains('#') && !base.startsWith('$')) {
                     String shownBase = stem != null ? stem + sizeAccessor(stem) : base   // the size as the source spells it
-                    display.put(shownBase + (closureCallNote != null ? ' (when the closure runs)' : ' (after a loop)'), v)
+                    String label = closureCallNote != null ? 'when the closure runs' : havocLabel(Integer.parseInt(hm.group(2)))
+                    display.put(shownBase + ' (' + label + ')', v)
                 }
                 return
             }
@@ -4600,6 +4624,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // (which threads it via `preceding`), exactly as a plain `i = i + 1` already does.
         stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
+            // Phase 373 — a statement that writes inside an expression, or runs a callable, is bound by more than its
+            // top-level target: outside the value-flow fragment (the region pass havocs it)
+            if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null &&
+                (!Encoder.nestedTargets(st).isEmpty() || Encoder.containsCallableCall(st))) {
+                throw new UnsupportedConstructException("a statement that writes inside an expression, or runs a callable")
+            }
             if (st instanceof BlockStatement) {
                 collectVfObligations(((BlockStatement) st).statements, steps, assigned, out)
                 continue
@@ -5915,6 +5945,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
                 continue
             }
+            // Phase 373 — a statement whose expression writes more than its top-level target, or runs a callable: its
+            // own sites read what it writes inside (`if ((n = m) >= 0 && 100.intdiv(n) > 0)` reads the new n), so those
+            // names are havocked for them (and, replayed later, the statement is refused and havocked whole)
+            Set<String> hidden = hiddenWrites(st)
+            if (!hidden.isEmpty()) {
+                preceding = withHavoc(preceding, hidden, Encoder.containsCallableCall(st) ? 'after a callable\'s call' :
+                    'after a nested write')
+            }
+            // Phase 373 — try/catch/finally and switch, by their structure (they used to be checked whole, in the state
+            // before them: a try block's `d = 0; 100.intdiv(d)` read d == 1)
+            if (st instanceof TryCatchStatement) {
+                dischargeTry((TryCatchStatement) st, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
+                continue
+            }
+            if (st instanceof SwitchStatement) {
+                dischargeSwitch((SwitchStatement) st, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
+                continue
+            }
             // Phase 371 — an unannotated loop: its body at an arbitrary iteration, then the rest of the region after it
             if (st instanceof LoopingStatement) {
                 dischargeUnannotatedLoop((LoopingStatement) st, stmts.subList(i + 1, stmts.size()), reqAst, assumePos,
@@ -6081,13 +6129,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 continue
             }
             if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
+            if (st.getNodeMetaData(HAVOC_NAMES_KEY) != null) {
+                labelHavoc(enc, (String) st.getNodeMetaData(HAVOC_LABEL_KEY)) { ->
+                    for (String n : (Set<String>) st.getNodeMetaData(HAVOC_NAMES_KEY)) havocLocation(enc, n)
+                }
+                continue
+            }
             try {
                 LoopEncoder.replay([st] as List<Statement>, enc, s)
             } catch (Throwable ignored) {
                 List<Statement> rest = stmts.subList(i, stmts.size())
                 int lastReal = -1
                 for (int k = 0; k < rest.size(); k++) if (rest.get(k).getNodeMetaData(REPLAY_ASSUME_KEY) == null) lastReal = k
-                Set<String> havocked = havocWritesOf(rest, enc)
+                // Phase 373 — a try, a switch or a write inside a statement the replay can't follow is summarised:
+                // shown as such, its call withheld
+                String label = st instanceof TryCatchStatement ? 'after the try' : st instanceof SwitchStatement ?
+                    'after the switch' : st instanceof LoopingStatement ? 'after a loop' :
+                    Encoder.containsCallableCall(st) ? 'after a callable\'s call' :
+                    !Encoder.nestedTargets(st).isEmpty() ? 'after a nested write' : 'after a loop'
+                Set<String> havocked = null
+                labelHavoc(enc, label) { -> havocked = havocWritesOf(rest, enc) }
                 for (int k = 0; k < rest.size(); k++) {
                     Statement m = rest.get(k)
                     if (m.getNodeMetaData(REPLAY_ASSUME_KEY) == null) continue
@@ -6125,6 +6186,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (thisCall[0] && currentMethod?.declaringClass != null) {
             for (FieldNode f : currentMethod.declaringClass.fields) if (!f.isStatic()) names.add(f.name)
         }
+        // Phase 373 — a callable run on the way may write anything it reaches
+        boolean[] callable = [false]
+        for (Statement st : stmts) {
+            st.visit(new CodeVisitorSupport() {
+                @Override void visitMethodCallExpression(MethodCallExpression c) {
+                    if (Encoder.isCallableCall(c)) callable[0] = true
+                    super.visitMethodCallExpression(c)
+                }
+            })
+        }
+        if (callable[0]) names.addAll(callableReach())
         for (String n : names) havocLocation(enc, n)
         names
     }
@@ -6240,6 +6312,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession s = backend.session()
         // a witness decides no obligation, only which call is shown (Phase 337's auxiliary queries)
         if (entryPath != null && s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
+        TreeMap<Integer, String> prevLabels = havocLabels
+        String prevNote = havocCallNote
+        havocLabels = new TreeMap<Integer, String>()
+        havocCallNote = null
         try {
             Encoder enc = mkEncoder(s)
             // Phase 91b — an array-index bound (`0 ≤ idx < size`) depends only on the index arithmetic and
@@ -6290,6 +6366,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             dischargeObligationUnder(s, enc, site)
             return true
         } finally {
+            havocLabels = prevLabels
+            havocCallNote = prevNote
             try { s.close() } catch (Throwable ignored) {}
         }
     }
@@ -6316,7 +6394,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 assumeMarker((AssertStatement) st, enc, s, false, null)
                 continue
             }
-            if (inexactReplay(st)) return false
+            if (inexactReplay(st) || st.getNodeMetaData(HAVOC_NAMES_KEY) != null) return false
             try { LoopEncoder.replay([st] as List<Statement>, enc, s) } catch (Throwable ignored) { return false }
         }
         true
@@ -6444,6 +6522,119 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Statement m = new EmptyStatement()
         m.putNodeMetaData(HAVOC_LOOP_KEY, loop)
         m
+    }
+
+    /** Phase 373 — marks a synthetic statement whose replay havocs the names it carries. */
+    static final String HAVOC_NAMES_KEY = 'verification.havocNames'
+    /** Phase 373 — how a {@link #HAVOC_NAMES_KEY} marker's values are shown ("in the finally"). */
+    static final String HAVOC_LABEL_KEY = 'verification.havocLabel'
+
+    /** {@code preceding} followed by a marker havocking {@code names} (a new list), shown as {@code label}. */
+    private static List<Statement> withHavoc(List<Statement> preceding, Set<String> names, String label) {
+        Statement m = new EmptyStatement()
+        m.putNodeMetaData(HAVOC_NAMES_KEY, new LinkedHashSet<String>(names))
+        m.putNodeMetaData(HAVOC_LABEL_KEY, label)
+        List<Statement> out = new ArrayList<Statement>(preceding)
+        out.add(m)
+        out
+    }
+
+    /** Phase 373 — what {@code st}'s own expression may write besides its top-level target: its nested writes, and
+     *  for a callable call everything that reaches ({@link #callableReach}). */
+    private Set<String> hiddenWrites(Statement st) {
+        if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return Collections.<String> emptySet()
+        Set<String> out = new LinkedHashSet<String>(Encoder.nestedTargets(st))
+        if (Encoder.containsCallableCall(st) && !callableCallLast(st)) out.addAll(callableReach())
+        out
+    }
+
+    /** {@code c()}, {@code int x = c.call()}, {@code return c.accept(this)}: the callable runs last, after its receiver
+     *  and arguments, so none of the statement's own sites sees what it writes. */
+    private static boolean callableCallLast(Statement st) {
+        Expression e = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression :
+            st instanceof ReturnStatement ? ((ReturnStatement) st).expression : null
+        if (e instanceof DeclarationExpression) e = ((DeclarationExpression) e).rightExpression
+        if (!(e instanceof MethodCallExpression) || !Encoder.isCallableCall(e)) return false
+        MethodCallExpression mce = (MethodCallExpression) e
+        !Encoder.containsCallableCall(new ExpressionStatement(mce.objectExpression)) &&
+            !Encoder.containsCallableCall(new ExpressionStatement(mce.arguments))
+    }
+
+    /**
+     * Phase 373 — what a callable's body may write, seen from the method calling it: {@code this}'s fields and the
+     * class's statics (its closure may hold {@code this}), each parameter of a mutable type and an object parameter's
+     * fields (the caller may have handed it the same object), and whatever any closure literal in the method writes
+     * (it may be the one called).
+     */
+    private Set<String> callableReach() {
+        Set<String> out = new LinkedHashSet<String>()
+        if (currentMethod == null) return out
+        ClassNode dc = currentMethod.declaringClass
+        for (ClassNode c = dc; c != null && c.name != 'java.lang.Object'; c = c.superClass) {
+            for (FieldNode f : c.fields) if (!f.isFinal() || !isImmutableType(f.type)) out.add(f.name)
+        }
+        for (Parameter p : currentMethod.parameters) {
+            if (ClassHelper.isPrimitiveType(p.type) || isImmutableType(p.type)) continue
+            out.add(p.name)
+            ClassNode pt = currentObjectParams.get(p.name)
+            if (pt != null) for (FieldNode f : pt.fields) if (!f.isStatic()) out.add(p.name + '$' + f.name)
+        }
+        Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
+        if (body != null) {
+            body.visit(new CodeVisitorSupport() {
+                @Override void visitClosureExpression(ClosureExpression ce) {
+                    if (ce.code != null) out.addAll(writeTargetsOf([ce.code] as List<Statement>))
+                    super.visitClosureExpression(ce)
+                }
+            })
+        }
+        out
+    }
+
+    /**
+     * Phase 373 — a try statement: the try block runs in order; a catch is entered after any prefix of it, so what the
+     * block writes is havocked there; a finally runs after the block or a catch, by any exit (a return, a throw), so
+     * what both write is havocked there.
+     */
+    private void dischargeTry(TryCatchStatement tcs, Expression reqAst, List<Expression> assumePos, Expression assumeNeg,
+                              List<Statement> preceding, boolean handleAsserts) {
+        List<Statement> tryStmts = topStatements(tcs.tryStatement)
+        dischargeRegion(tryStmts, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
+        Set<String> written = new LinkedHashSet<String>(writesOf(tryStmts, currentMethod?.declaringClass))
+        if (tryStmts.any { Encoder.containsCallableCall(it) }) written.addAll(callableReach())
+        Set<String> tryWritten = new LinkedHashSet<String>(written)
+        for (CatchStatement cs : tcs.catchStatements) {
+            List<Statement> cstmts = topStatements(cs.code)
+            dischargeRegion(cstmts, reqAst, assumePos, assumeNeg, withHavoc(preceding, tryWritten, 'in the catch'), handleAsserts)
+            written.addAll(writesOf(cstmts, currentMethod?.declaringClass))
+        }
+        Statement fin = tcs.finallyStatement
+        if (fin != null && !(fin instanceof EmptyStatement)) {
+            dischargeRegion(topStatements(fin), reqAst, assumePos, assumeNeg, withHavoc(preceding, written, 'in the finally'), handleAsserts)
+        }
+    }
+
+    /**
+     * Phase 373 — a switch: its subject is evaluated first; each case body is entered by its match, or by falling
+     * through from the case before it, so what the falling-through cases above it write is havocked there.
+     */
+    private void dischargeSwitch(SwitchStatement sw, Expression reqAst, List<Expression> assumePos, Expression assumeNeg,
+                                 List<Statement> preceding, boolean handleAsserts) {
+        dischargeExpression(sw.expression, reqAst, assumePos, assumeNeg, preceding)
+        Set<String> fallen = new LinkedHashSet<String>()   // written by the run of cases falling into this one
+        List<Statement> arms = new ArrayList<Statement>()
+        for (CaseStatement cs : sw.caseStatements) {
+            dischargeExpression(cs.expression, reqAst, assumePos, assumeNeg, preceding)
+            arms.add(cs.code)
+        }
+        if (sw.defaultStatement != null && !(sw.defaultStatement instanceof EmptyStatement)) arms.add(sw.defaultStatement)
+        for (Statement arm : arms) {
+            List<Statement> body = topStatements(arm)
+            dischargeRegion(body, reqAst, assumePos, assumeNeg, fallen.isEmpty() ? preceding : withHavoc(preceding, fallen, 'after a fall-through'),
+                handleAsserts)
+            if (LoopEncoder.leaves(arm)) fallen.clear()
+            else fallen.addAll(writesOf(body, currentMethod?.declaringClass))
+        }
     }
 
     /** Everything {@code loop} may write, havocked — and a for-in's loop variable, which no assignment names. */
@@ -8311,6 +8502,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (de.leftExpression instanceof VariableExpression &&
                     (stripCasts(de.rightExpression) instanceof ConstructorCallExpression ||
                      stripCasts(de.rightExpression) instanceof ClosureExpression ||      // Phase 372 — a literal
+                     stripCasts(de.rightExpression) instanceof GStringExpression ||      // Phase 373 — so is a GString
                      ActorMailbox.isActorFactory(stripCasts(de.rightExpression)))) {   // Phase 289
                     news.add(((VariableExpression) de.leftExpression).name)
                 }
@@ -11566,6 +11758,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private boolean applyCrossClassCall(SmtSession s, Encoder enc, Expression call, MethodNode node = null) {
         if (!(call instanceof MethodCallExpression)) return false
+        // Phase 373 — a callable's body isn't the receiver's class's: it may write anything it reaches
+        if (Encoder.isCallableCall(call)) {
+            throw new UnsupportedConstructException("call '${clip(call.text)}' runs a callable, whose body may write " +
+                "anything it reaches — this object's fields among them")
+        }
         MethodCallExpression mce = (MethodCallExpression) call
         Expression recv = mce.objectExpression
         if (mce.implicitThis) return false
@@ -13817,6 +14014,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
             String m = mce.methodAsString
+            // Phase 373 — a callable's body may write anything it reaches; Phase 369's argument writes were too few.
+            // But a local bound only to a closure literal runs that literal, whose writes its declaration counted.
+            if (Encoder.isCallableCall(mce) && !literalCallable(mce.objectExpression)) {
+                return unbounded("a call of the callable '${clip(mce.objectExpression.text)}', whose body may write " +
+                    "anything it reaches")
+            }
             // Phase 343 — a static call on a class with no mutable statics (Tuple.tuple, Math.max, Integer.valueOf)
             // writes only what its arguments do
             if (mce.objectExpression instanceof ClassExpression && pureStaticClass(((ClassExpression) mce.objectExpression).type?.name)) {
@@ -14477,6 +14680,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (n == null || owner == null || owner.module == null || n == owner.name) return null
         for (ClassNode cn : owner.module.classes) if (!cn.is(owner) && (cn.name == n || cn.nameWithoutPackage == n)) return cn
         null
+    }
+
+    /** Phase 373 — {@code recv} is a local of the method being inferred declared from a closure literal (or one cast
+     *  to a functional interface) and never assigned again: calling it runs that literal. */
+    private static boolean literalCallable(Expression recv) {
+        if (!(recv instanceof VariableExpression)) return false
+        MethodNode m = WRITE_METHOD.get()
+        Statement body = m == null ? null :
+            (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body == null) return false
+        String rn = ((VariableExpression) recv).name
+        int[] literal = [0], other = [0]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression &&
+                    ((VariableExpression) be.leftExpression).name == rn) {
+                    if (be instanceof DeclarationExpression && stripCasts(be.rightExpression) instanceof ClosureExpression) literal[0]++
+                    else other[0]++
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) {   // a closure parameter of that name shadows it
+                if (ce.parameters?.any { it.name == rn }) other[0]++
+                super.visitClosureExpression(ce)
+            }
+        })
+        literal[0] == 1 && other[0] == 0 && !m.parameters.any { it.name == rn }
     }
 
     /** Phase 350 — the sibling class a receiver names, when it is a parameter of the method being inferred whose

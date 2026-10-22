@@ -98,9 +98,10 @@ class G413_p369_cleanup {
                         static int g(List<Integer> xs, int i) { xs.get(i) }
                     }''')],
 
-        // Before: verified — `apply` is a read of the function, so what it is handed was never written.
+        // Before: verified — `apply` is a read of the function, so what it is handed was never written. Phase 373: the
+        // function may write anything it reaches, not only its argument, so h's frame is unbounded and g is skipped.
         [group: "P369 cleanup", name: "applying a function may write its argument",
-         expect: "Cannot prove postcondition of g",
+         expect: "a call of the callable 'f', whose body may write anything it reaches",
          src: tc('''final class A {
                         @Requires({ f != null })
                         static int h(java.util.function.Function<int[], Integer> f, int[] b) { f.apply(b) }
@@ -109,7 +110,10 @@ class G413_p369_cleanup {
                         static void g(java.util.function.Function<int[], Integer> f, int[] a) { h(f, a) }
                     }''')],
 
-        [group: "P369 cleanup", name: "… an immutable argument isn't", ok: true,
+        // Phase 373 — this verified, unsoundly: f may capture the very array g is handed (`h({ x -> a[0] = 1; x }, a)`),
+        // so an immutable argument doesn't bound what it writes.
+        [group: "P369 cleanup", name: "… nor does an immutable argument bound it",
+         expect: "a call of the callable 'f', whose body may write anything it reaches", refute: "Cannot prove",
          src: tc('''final class A {
                         @Requires({ f != null })
                         static int h(java.util.function.Function<Integer, Integer> f, int[] b) { f.apply(1) }
@@ -119,8 +123,9 @@ class G413_p369_cleanup {
                     }''')],
 
         // Before: the reason named the generated closure class's `doCall` (`a call on 'error.getStackTrace()'`).
+        // Phase 373: the reason is h's call of the closure it is handed.
         [group: "P369 cleanup", name: "a closure literal handed to a helper is skipped for what it is",
-         expect: "standalone call 'A.h({ int[] x -> ... }, a)' has no usable @Ensures",
+         expect: "a call of the callable 'c', whose body may write anything it reaches", refute: "doCall",
          src: tc('''final class A {
                         @Requires({ c != null })
                         static void h(Closure c, int[] b) { c.call(b) }
