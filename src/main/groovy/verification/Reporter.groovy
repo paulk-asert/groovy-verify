@@ -378,7 +378,18 @@ class Reporter {
         "constants). The claim is allowed to proceed unchecked — groovy-test still checks it at runtime."
     }
 
+    /** Phase 361 — why the encoder refused a read (keyed by the read's text, e.g. {@code b.n}), so a skip whose
+     *  construct contains it can say why; reset per method by the checker. */
+    static final ThreadLocal<Map<String, String>> READ_NOTES = ThreadLocal.withInitial { (Map<String, String>) new LinkedHashMap<String, String>() }
+
+    static String withReadNote(String reason) {
+        if (reason == null) return reason
+        Map.Entry<String, String> n = READ_NOTES.get().entrySet().find { reason.contains(it.key) }
+        n != null ? "${reason}: ${n.value}" : reason
+    }
+
     static String formatPostconditionSkipped(String methodName, String reason) {
+        reason = withReadNote(reason)
         "Skipped verification of postcondition for ${methodName} (${reason}). " +
         "The body uses a construct or value outside the spike's supported " +
         "fragment (straight-line code, if/else, single-assignment locals, " +

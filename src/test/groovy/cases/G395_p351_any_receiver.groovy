@@ -87,13 +87,13 @@ class G395_p351_any_receiver {
                     }
                     final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a field and a parameter of the same class may alias: the Phase 194 boundary', expect: "call through 'c' — parameter 'o' of the same class may alias the receiver",
-         src: tc('''class A {
+         src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && o != null && o.count == 3 })
                         @Ensures({ result == 3 })
                         int f(Counter o) { c.incr(); return o.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         // Fixed (unsound before): `d` is `c`, but the call through it havoced the caller's `count` (none here) and left
         // `c$count` at 3, so f verified. A local declared from a modelled receiver and never reassigned IS that receiver.
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a local alias of a parameter: a value call', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"], refute: 'c = 0',
@@ -124,12 +124,12 @@ class G395_p351_any_receiver {
                     }''')],
         // Before: `d.count` was outside the fragment.
         [group: 'P351 a call through any receiver lands on that receiver', name: '… and a read through it is the receiver\'s field', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { Counter d = c; return d.count }
                     }
-                    class Counter { int count = 0 }''')],
+                    final class Counter { int count = 0 }''')],
         // Fixed (unsound before): `o.incr()` framed and assumed `count == old.count + 1` about `this.count`, so f verified
         // (false for any `o` that isn't `this`).
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a parameter of the caller\'s own class may be `this`: loud', expect: "call 'o.incr(…)' writes its receiver's field 'count', but 'o' isn't a receiver the verifier models",
@@ -197,14 +197,14 @@ class G395_p351_any_receiver {
                         static int f(int[] a) { put0(a); return 0 }
                     }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a helper aliasing its object parameter writes it', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null })
                         static void twice(Counter c) { Counter d = c; d.incr() }
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { twice(c); return c.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         // `int n = x` copies a value: an int parameter is no reference, so `n = n + 1` writes nothing of the caller's.
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a helper copying a value, not a reference, writes nothing', ok: true,
          src: tc('''class A {

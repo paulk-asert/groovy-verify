@@ -16110,10 +16110,51 @@ call; a sealed hierarchy of final classes closed, and a `non-sealed` subclass re
 TrustLedger entry (`report` lists the obligations a subclass author takes on, `deny` fails the build); then stamping
 the reliances into the class file, checked against a later checked unit's overrides.
 
-**Still out — found by this phase's probe, and the next soundness item: a property read through a user getter.**
+**Still out — found by this phase's probe, and the next soundness item: a property read through a user getter
+(Phase 361).**
 `b.n` from another class is modelled as the field `b$n`, but Groovy reads it through `getN()`. A class that declares
 its own getter — even a final one, `int getN() { n = n + 1; return n }` — makes `int x = b.n; int y = b.n` differ,
 and the verifier proves `x - y == 0`; under the open world a subclass's `getN()` override is the same hole.
+
+## Phase 361 — a property read is its getter  *(shipped — soundness: accessors, measured)*
+
+Phase 360's recorded follow-up. Phase 45 modelled `b.n`, for an object parameter `b`, as the field `b$n`. The
+runtime was measured first (a `@TypeChecked` / `@CompileStatic` probe with a subclass overriding `getN()`):
+
+| read | runs |
+|---|---|
+| `b.n` from another class, `@TypeChecked` or `@CompileStatic` | the getter — a subclass's override included |
+| `o.n` on a peer, inside the class | the getter |
+| `this.n`, bare `n` | the field |
+| `p.n` on a public field, a subclass declaring `getN()` (`@TypeChecked`) | the subclass's getter |
+
+So a user getter that writes (`int getN() { n = n + 1; return n }`) made `int x = b.n; int y = b.n` differ while
+the verifier proved `x - y == 0`, and — under Phase 360's open world — a subclass compiled elsewhere may give any
+open class such a getter.
+
+- **`propertyAccessorReason(t, n, write)`:** `x.n` (`x` not `this`) is the field only when `t`'s class is closed
+  (Phase 360: final, enum, record, closed sealed) and no class of its hierarchy — superclasses and permitted
+  subclasses — declares a getter (`getN`, `isN`) or, for a write, a setter beyond a `@Generated` one or a trivial
+  `return n` / `n = v`. Otherwise the reason names the open class or the accessor.
+- **Reads:** the encoder's object-field read returns no term — outside the fragment, and nothing later may take it
+  up (an uninterpreted function would make two reads agree). A postcondition skip now appends the reason
+  (`Reporter.READ_NOTES`): "precondition '…' is outside fragment: 'Box' can be subclassed elsewhere, and Groovy
+  reads 'n' through the getter 'getN', which a subclass may override — make the class final (or sealed)".
+- **Helpers:** a read through such a getter is a call that may write, and a write through a user setter may write
+  anything, so either makes the inferred frame unbounded, with the same reason.
+- **Field writes in a method body** (`b.n = 5`) were already outside the fragment, so are unchanged.
+- **The corpus:** 28 cases read fields of an open class from outside (P45, P89, P194, P350, P351, P357, P358) and
+  had their example classes closed, as in Phase 360; P360's open-class cases now claim about an array, so they still
+  test the method rule. The solver check count is unchanged (9,775).
+
+**Shipped tests:** group `P361 a property read is its getter`, 8 cases, 5 compiling cleanly before: two reads
+through a writing getter; a helper reading through one; an open class's field read, with the reason; a sealed
+hierarchy whose subclass declares a getter; a helper writing through a user setter (loud — conservative: that setter
+writes only its receiver); a trivial getter, a generated one on a final class, and a trivial setter, all the field.
+
+**Still out:** a user setter is not read for its own frame (one writing only its receiver is loud though sound);
+a user getter is not read as a value (a `@Ensures` on it is not used for `b.n`); `closedWorld: true` (Phase 360's
+slice 2) will relax the open-class rule for code that opts in.
 
 ---
 

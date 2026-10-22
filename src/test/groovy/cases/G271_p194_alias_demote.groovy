@@ -42,13 +42,13 @@ class G271_p194_alias_demote {
         // the incr() bumps c.count too and the method returns 4, not 3. Now a loud skip.
         [group: 'P194 alias demote', name: 'mutating call with a same-class sibling receiver: skips', expect: 'may alias',
          src: tc('''@Invariant({ count >= 0 })
-         class Counter {
+         final class Counter {
              int count
              @Ensures({ count == old.count + 1 })
              void incr() { count = count + 1 }
          }
          @TypeChecked(extensions = 'verification.VerifyChecker')
-         class C {
+         final class C {
              @Requires({ b != null && c != null && c.count == 3 })
              @Ensures({ result == 3 })
              static int f(Counter b, Counter c) {

@@ -82,13 +82,13 @@ class G402_p358_copy_reads {
                     final class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly.
         [group: "P358 a copy is a read, a user method is not", name: "… through a local", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static int peek(Box h) { Box b = h; b == null ? 0 : b.size() }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { peek(h) }
                     }
-                    class Box { int n; int size() { n = n + 1; return n } }''')],
+                    final class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly — the loop's write set read `h.size()` as pure, so `h.n == 0` stayed loop-stable.
         [group: "P358 a copy is a read, a user method is not", name: "… in a method body loop", expect: "Cannot prove postcondition of g",
          src: tc('''final class A {
@@ -104,24 +104,24 @@ class G402_p358_copy_reads {
                     final class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly.
         [group: "P358 a copy is a read, a user method is not", name: "… through a def local", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static int peek(Box h) { def b = h; b == null ? 0 : b.size() }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { peek(h) }
                     }
-                    class Box { int n; int size() { n = n + 1; return n } }''')],
+                    final class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly — a receiver with no name contributed only its own writes, though `id(h)` is `h`.
         [group: "P358 a copy is a read, a user method is not", name: "a call on a call's result is unbounded, loudly",
          expect: "a call on 'A.id(h)', which may be a parameter or field and may write it",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static Box id(Box h) { h }
                         static int peek(Box h) { id(h)?.size() ?: 0 }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { peek(h) }
                     }
-                    class Box { int n; int size() { n = n + 1; return n } }''')],
+                    final class Box { int n; int size() { n = n + 1; return n } }''')],
         [group: "P358 a copy is a read, a user method is not", name: "a sibling's own clone() that writes", expect: "Cannot prove postcondition of g",
          src: tc('''final class A {
                         static void dup(Box h) { if (h != null) h.clone() }

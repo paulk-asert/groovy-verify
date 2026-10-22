@@ -2921,12 +2921,73 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         !closedClass(dc)
     }
 
-    private static boolean closedClass(ClassNode c) {
+    static boolean closedClass(ClassNode c) {
         c = c.redirect()
         if (java.lang.reflect.Modifier.isFinal(c.modifiers) || c.isEnum() || c.isRecord()) return true
         if (!c.isSealed()) return false
         for (ClassNode p : c.permittedSubclasses) if (!closedClass(p)) return false
         true
+    }
+
+    /** Phase 361 — why {@code x.prop} (a read, or with {@code write} an assignment) on a receiver of type {@code t}
+     *  is not the field: Groovy runs the getter / setter for any receiver other than {@code this} — the class's own,
+     *  or a subclass's. Null when it is the field: {@code t}'s class is closed (Phase 360) and no class of its
+     *  hierarchy declares an accessor beyond a generated one or a trivial {@code return n} / {@code n = v}; null too
+     *  when {@code prop} is no field of {@code t}, which is not this rule's to judge. */
+    static String propertyAccessorReason(ClassNode t, String prop, boolean write) {
+        if (t == null || prop == null || prop.isEmpty()) return null
+        ClassNode c = t.redirect()
+        boolean isField = false
+        for (ClassNode k = c; k != null && !isField; k = k.superClass) isField = k.getDeclaredField(prop) != null
+        if (!isField) return null
+        String cap = prop.substring(0, 1).toUpperCase() + prop.substring(1)
+        List<String> names = write ? ['set' + cap, 'set' + prop] : ['get' + cap, 'is' + cap, 'get' + prop, 'is' + prop]
+        String kind = write ? 'setter' : 'getter'
+        if (!closedClass(c)) {
+            return "'${c.nameWithoutPackage}' can be subclassed elsewhere, and Groovy ${write ? 'writes' : 'reads'} '${prop}' " +
+                   "through the ${kind} '${names[0]}', which a subclass may override — make the class final (or sealed)"
+        }
+        List<ClassNode> hierarchy = new ArrayList<ClassNode>()
+        for (ClassNode k = c; k != null; k = k.superClass) hierarchy.add(k)
+        Deque<ClassNode> todo = new ArrayDeque<ClassNode>(c.permittedSubclasses ?: [])
+        while (!todo.isEmpty()) { ClassNode k = todo.pop().redirect(); hierarchy.add(k); todo.addAll(k.permittedSubclasses ?: []) }
+        for (ClassNode h : hierarchy) {
+            for (String n : names.unique(false)) for (MethodNode m : h.getDeclaredMethods(n)) {
+                if (m.isStatic() || m.parameters.length != (write ? 1 : 0)) continue
+                if (m.getAnnotations().any { it.classNode?.name == 'groovy.transform.Generated' }) continue
+                if (trivialAccessor(m, prop, write)) continue
+                return "Groovy ${write ? 'writes' : 'reads'} '${prop}' through '${h.nameWithoutPackage}.${m.name}(…)', a user ${kind} " +
+                       "that isn't the field"
+            }
+        }
+        null
+    }
+
+    /** Phase 361 — a user accessor that IS the field: {@code return n} (or {@code this.n}), or {@code n = v}. */
+    private static boolean trivialAccessor(MethodNode m, String prop, boolean write) {
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body instanceof BlockStatement && ((BlockStatement) body).statements.size() == 1) body = ((BlockStatement) body).statements[0]
+        Expression e = body instanceof ReturnStatement ? ((ReturnStatement) body).expression :
+                       body instanceof ExpressionStatement ? ((ExpressionStatement) body).expression : null
+        Closure<Boolean> isField = { Expression x ->
+            (x instanceof VariableExpression && ((VariableExpression) x).name == prop) ||
+            (x instanceof PropertyExpression && ((PropertyExpression) x).objectExpression instanceof VariableExpression &&
+                ((VariableExpression) ((PropertyExpression) x).objectExpression).name == 'this' &&
+                ((PropertyExpression) x).propertyAsString == prop)
+        }
+        if (!write) return e != null && isField(e)
+        e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN && isField(((BinaryExpression) e).leftExpression) &&
+            ((BinaryExpression) e).rightExpression instanceof VariableExpression &&
+            ((VariableExpression) ((BinaryExpression) e).rightExpression).name == m.parameters[0].name
+    }
+
+    /** Phase 361 — the declared type of a receiver read by name (a parameter, local or field), or null. */
+    private static ClassNode declaredTypeOf(Expression recv) {
+        if (!(recv instanceof VariableExpression)) return null
+        VariableExpression ve = (VariableExpression) recv
+        if (ve.name == 'this' || ve.name == 'super') return null
+        ClassNode t = ve.accessedVariable?.originType ?: ve.originType
+        t == null || t.redirect() == ClassHelper.OBJECT_TYPE ? null : t
     }
 
     /** Phase 360 — why an overridable method's body isn't its frame (null when it is closed). */
@@ -3343,6 +3404,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     @Override
     boolean beforeVisitMethod(MethodNode node) {
+        Reporter.READ_NOTES.get().clear()   // Phase 361
         currentFacts = new PathFacts()
         currentMethod = node
         WRITE_OWNER.set(node.declaringClass)
@@ -12442,7 +12504,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (e instanceof BooleanExpression) return collectWritesExpr(((BooleanExpression) e).expression, ws)
         if (e instanceof NotExpression) return collectWritesExpr(((NotExpression) e).expression, ws)
         if (e instanceof UnaryMinusExpression) return collectWritesExpr(((UnaryMinusExpression) e).expression, ws)
-        if (e instanceof PropertyExpression) return collectWritesExpr(((PropertyExpression) e).objectExpression, ws)
+        if (e instanceof PropertyExpression) {
+            // Phase 361 — `x.n` runs a getter unless it is the field: a user getter (or a subclass's) may write
+            PropertyExpression pe = (PropertyExpression) e
+            String why = propertyAccessorReason(declaredTypeOf(pe.objectExpression), pe.propertyAsString, false)
+            if (why != null) return unbounded("the read '${clip(pe.text)}': ${why}")
+            return collectWritesExpr(pe.objectExpression, ws)
+        }
         if (e instanceof TernaryExpression) {
             TernaryExpression te = (TernaryExpression) e
             return collectWritesExpr(te.booleanExpression, ws) &&
@@ -12835,6 +12903,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // the method's own class named `n` (which a parameter's field write was recorded as, so dropped)
             if (inferMode() && !(obj instanceof ClassExpression) &&
                     !(obj instanceof VariableExpression && ((VariableExpression) obj).name in ['this', 'super'])) {
+                // Phase 361 — and through its setter, unless that is the field: a user setter may write anything
+                String why = propertyAccessorReason(declaredTypeOf(obj), ((PropertyExpression) lhs).propertyAsString, true)
+                if (why != null) return unbounded("the write '${clip(lhs.text)} = …': ${why}")
                 return recordTarget(obj, ws)
             }
             ws.add(((PropertyExpression) lhs).propertyAsString); return true

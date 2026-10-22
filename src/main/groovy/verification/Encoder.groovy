@@ -4419,6 +4419,14 @@ class Encoder implements TheoryApi {
                 if (!objectParams.containsKey(recvName) && objectAliases.containsKey(recvName)) recvName = objectAliases.get(recvName)
                 if (objectParams.containsKey(recvName)) {
                     Set<String> fields = fieldsOfObjectParam(recvName)
+                    // Phase 361 — `b.n` runs b's getter (its class's own, or a subclass's): the field `b$n` models it
+                    // only when that is the field; otherwise the read is no term at all (outside the fragment — and
+                    // nothing below may take it up as one, since two reads of a getter needn't agree)
+                    String accessorWhy = fields.contains(prop) ? VerifyChecker.propertyAccessorReason(objectParams.get(recvName), prop, false) : null
+                    if (accessorWhy != null) {
+                        Reporter.READ_NOTES.get().putIfAbsent(obj.text + '.' + prop, accessorWhy)
+                        return null
+                    }
                     if (fields.contains(prop)) {
                         // Phase 89 — an alias-modelled receiver reads its Int field through the
                         // identity-keyed heap map, so `a.f` / `b.f` coincide iff `id(a) == id(b)`.

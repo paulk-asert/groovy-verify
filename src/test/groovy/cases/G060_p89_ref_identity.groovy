@@ -31,18 +31,18 @@ class G060_p89_ref_identity {
         // heap map indexed by object identity, so `a.is(b)`/`a === b` (identity equality) makes the fields
         // provably coincide. Here `a.is(b)` ⇒ a.balance == b.balance ⇒ a.balance + b.balance == 2 * a.balance.
         [group: 'P89 ref-identity', name: 'a.is(b) ⇒ fields coincide (identity model)', ok: true,
-         src: tc('''class Account { int balance }
+         src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class C {
+                    final class C {
                         @Requires({ a.is(b) })
                         @Ensures({ result == 2 * a.balance })
                         static int twice(Account a, Account b) { a.balance + b.balance }
                     }''')],
         // The `===` operator form, as a pure model tautology: equal identities ⇒ equal field reads.
         [group: 'P89 ref-identity', name: 'a === b ==> a.balance == b.balance', ok: true,
-         src: tc('''class Account { int balance }
+         src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class C {
+                    final class C {
                         @Ensures({ (a === b) ==> (a.balance == b.balance) })
                         static void f(Account a, Account b) { }
                     }''')],
@@ -50,9 +50,9 @@ class G060_p89_ref_identity {
         // is NOT provable (b.balance is unconstrained relative to a.balance). Refutes.
         [group: 'P89 ref-identity', name: 'no identity ⇒ fields need not coincide (refuted)',
          expect: 'Cannot prove postcondition',
-         src: tc('''class Account { int balance }
+         src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class C {
+                    final class C {
                         @Ensures({ result == 2 * a.balance })
                         static int twice(Account a, Account b) { a.balance + b.balance }
                     }''')],

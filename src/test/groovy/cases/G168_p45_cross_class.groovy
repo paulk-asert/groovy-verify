@@ -31,9 +31,9 @@ class G168_p45_cross_class {
         // Reading c.count under that invariant yields result >= 0 without any caller-side guard.
         [group: 'P45 cross-class', name: 'foreign invariant assumed at entry: c.count >= 0', ok: true,
          src: tc('''@Invariant({ count >= 0 && count <= max })
-                    class Counter { int count, max }
+                    final class Counter { int count, max }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
+                    final class Client {
                         @Requires({ c != null })
                         @Ensures({ result >= 0 })
                         static int read(Counter c) { c.count }
@@ -41,9 +41,9 @@ class G168_p45_cross_class {
         // Sub-fields independent: c.count and c.max are distinct SMT entities (receiver-qualified).
         [group: 'P45 cross-class', name: 'foreign invariant: c.count <= c.max verifies', ok: true,
          src: tc('''@Invariant({ count >= 0 && count <= max })
-                    class Counter { int count, max }
+                    final class Counter { int count, max }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
+                    final class Client {
                         @Requires({ c != null })
                         @Ensures({ result <= c.max })
                         static int read(Counter c) { c.count }
@@ -52,9 +52,9 @@ class G168_p45_cross_class {
         [group: 'P45 cross-class', name: 'foreign invariant: stronger claim refutes',
          expect: 'Cannot prove postcondition',
          src: tc('''@Invariant({ count >= 0 && count <= max })
-                    class Counter { int count, max }
+                    final class Counter { int count, max }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
+                    final class Client {
                         @Requires({ c != null })
                         @Ensures({ result > 0 })
                         static int read(Counter c) { c.count }
@@ -62,9 +62,9 @@ class G168_p45_cross_class {
         // Two class-typed receivers carry separate invariants and don't conflate.
         [group: 'P45 cross-class', name: 'two foreign receivers: invariants independent', ok: true,
          src: tc('''@Invariant({ count >= 0 })
-                    class Counter { int count }
+                    final class Counter { int count }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
+                    final class Client {
                         @Requires({ a != null && b != null })
                         @Ensures({ result >= 0 })
                         static int sum(Counter a, Counter b) { a.count + b.count }
@@ -92,13 +92,13 @@ class G168_p45_cross_class {
         // is discharged at the call site.
         [group: 'P45 cross-class', name: 'cross-class @Requires discharges from receiver context', ok: true,
          src: tc('''@Invariant({ count >= 0 && count <= max })
-                    class Counter {
+                    final class Counter {
                         int count, max
                         @Requires({ count < max })
                         void incr() { count = count + 1 }
                     }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
+                    final class Client {
                         @Requires({ c != null && c.count < c.max })
                         static int callIt(Counter c) {
                             c.incr()

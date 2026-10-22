@@ -162,12 +162,12 @@ class G394_p350_cross_class {
                         void weird() { def (a, b) = [count, count]; count = a + b }
                     }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: 'the Phase 194 alias boundary stands', expect: "call through 'c' — parameter 'd' of the same class may alias the receiver",
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && d != null && d.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c, Counter d) { int x = c.bump(); return d.count }
                     }
-                    class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
+                    final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
         // The collector reads `c.incr()` by incr's frame: a written field is the receiver, so twice's frame is {c}, and a
         // written OBJECT parameter at the call site means its fields.
         [group: 'P350 a cross-class call is framed by its writes', name: 'a same-class helper writing through an object parameter havocs its fields', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],

@@ -109,59 +109,59 @@ class G401_p357_alias_through_expression {
                     }''')],
         // Before: compiled cleanly — `h.n = 5` was recorded as a write of a field `n` of A, which has none, so dropped.
         [group: "P357 an alias through an expression", name: "a helper writing an object parameter's field", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static void put0(Box h) { if (h != null) h.n = 5 }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { put0(h) }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
         // Before: compiled cleanly.
         [group: "P357 an alias through an expression", name: "… or incrementing it", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static void bump(Box h) { if (h != null) h.n++ }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { bump(h) }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
         [group: "P357 an alias through an expression", name: "… or writing it through a local", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static void put0(Box h) { Box b = h; if (b != null) b.n = 5 }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { put0(h) }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
         // Before: compiled cleanly.
         [group: "P357 an alias through an expression", name: "an object ternary meets the Phase 194 boundary",
          expect: "writes through 'h' — parameter 'k' of the same class may alias it",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static void put0(Box h, Box k, boolean f) { Box b = f ? h : k; if (b != null) b.n = 5 }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h, Box k) { put0(h, k, true) }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
         // Before: compiled cleanly — a declared frame missing `h` passed the Phase 347 check.
         [group: "P357 an alias through an expression", name: "a declared frame missing the written object", expect: "Method 'put0' writes 'h', which is not in its @Modifies clause [k]",
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Modifies({ k })
                         static void put0(Box h, int[] k) { if (h != null) h.n = 5 }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
         [group: "P357 an alias through an expression", name: "… and one naming it", ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Modifies({ h })
                         static void put0(Box h) { if (h != null) h.n = 5 }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
         // Before: compiled cleanly (the loop itself is outside the loop fragment, which says so).
         [group: "P357 an alias through an expression", name: "a for-in variable aliases its collection", expect: "Method 'zap' writes 'bs', which is not in its @Modifies clause [k]",
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Modifies({ k })
                         static void zap(List<Box> bs, int[] k) { if (bs != null) for (Box r in bs) { if (r != null) r.n = 5 } }
                     }
-                    class Box { int n }''')],
+                    final class Box { int n }''')],
     ]
 }

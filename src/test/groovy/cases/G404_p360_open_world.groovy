@@ -35,33 +35,34 @@ class G404_p360_open_world {
     static final List<Map> CASES = [
 
         // Before: verified — Counter.incr()'s body {count} framed the call, though an app's subclass may override it.
+        // (The claim is about an array: a caller reading the open class's own fields meets Phase 361's getter rule first.)
         [group: "P360 an overridable body is no contract", name: "an open class's writer leaves the call unmodelled, loudly",
          expect: "'Counter.incr(…)' can be overridden by a subclass compiled elsewhere, so its body isn't its frame",
          src: tc('''final class A {
-                        @Requires({ c != null && c.count == 0 && c.total == 7 })
-                        @Ensures({ c.total == 7 })
-                        static void g(Counter c) { c.incr() }
+                        @Requires({ c != null && a != null && a.length > 0 && a[0] == 7 })
+                        @Ensures({ a[0] == 7 })
+                        static void g(Counter c, int[] a) { c.incr() }
                     }
                     class Counter { int count; int total; void incr() { count = count + 1 } }''')],
         [group: "P360 an overridable body is no contract", name: "… while a final class is trusted", ok: true,
          src: tc('''final class A {
-                        @Requires({ c != null && c.count == 0 && c.total == 7 })
-                        @Ensures({ c.total == 7 })
-                        static void g(Counter c) { c.incr() }
+                        @Requires({ c != null && a != null && a.length > 0 && a[0] == 7 })
+                        @Ensures({ a[0] == 7 })
+                        static void g(Counter c, int[] a) { c.incr() }
                     }
                     final class Counter { int count; int total; void incr() { count = count + 1 } }''')],
         [group: "P360 an overridable body is no contract", name: "… and so is a final method", ok: true,
          src: tc('''final class A {
-                        @Requires({ c != null && c.count == 0 && c.total == 7 })
-                        @Ensures({ c.total == 7 })
-                        static void g(Counter c) { c.incr() }
+                        @Requires({ c != null && a != null && a.length > 0 && a[0] == 7 })
+                        @Ensures({ a[0] == 7 })
+                        static void g(Counter c, int[] a) { c.incr() }
                     }
                     class Counter { int count; int total; final void incr() { count = count + 1 } }''')],
         [group: "P360 an overridable body is no contract", name: "… or a declared @Modifies, which an override is held to", ok: true,
          src: tc('''final class A {
-                        @Requires({ c != null && c.count == 0 && c.total == 7 })
-                        @Ensures({ c.total == 7 })
-                        static void g(Counter c) { c.incr() }
+                        @Requires({ c != null && a != null && a.length > 0 && a[0] == 7 })
+                        @Ensures({ a[0] == 7 })
+                        static void g(Counter c, int[] a) { c.incr() }
                     }
                     class Counter { int count; int total; @Modifies({ this.count }) void incr() { count = count + 1 } }''')],
         // Before: verified — Base.get()'s body was inlined as the value, though a subclass may return anything.
@@ -100,9 +101,9 @@ class G404_p360_open_world {
          expect: "'Base.get(…)' can be overridden by a subclass compiled elsewhere",
          src: tc('''final class A {
                         static int peek(Base h) { h == null ? 0 : h.get() }
-                        @Requires({ s != null && s.n == 0 })
-                        @Ensures({ s.n == 0 })
-                        static void g(Sub s) { peek(s) }
+                        @Requires({ s != null && a != null && a.length > 0 && a[0] == 7 })
+                        @Ensures({ a[0] == 7 })
+                        static void g(Sub s, int[] a) { peek(s) }
                     }
                     sealed class Base { int get() { 0 } }
                     non-sealed class Sub extends Base { int n; int get() { n } }''')],
