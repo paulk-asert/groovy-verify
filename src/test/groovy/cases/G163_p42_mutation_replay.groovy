@@ -73,7 +73,7 @@ class G163_p42_mutation_replay {
         // must see the size shrunk. Pre-Phase-42 it would have passed (size oracle unchanged from
         // the implicit-pass POV); post-Phase-42 it correctly refutes.
         [group: 'P42 mutation replay', name: 'removeLast then read at old-last refutes',
-         expect: 'IndexOutOfBoundsException',
+         expect: 'List index may be outside [0, size)',   // Phase 369 — xs[n - 1] past the end reads null
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() > 0 })
                         static int popThenRead(List<Integer> xs) {

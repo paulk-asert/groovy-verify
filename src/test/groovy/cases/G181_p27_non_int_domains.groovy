@@ -214,7 +214,7 @@ class G181_p27_non_int_domains {
                     }''')],
         // Index-bounds check still applies for non-Int element lists — same Phase-1 obligation.
         [group: 'P27 non-int domains', name: 'List<String> unguarded index refuted',
-         expect: 'IndexOutOfBoundsException',
+         expect: 'List index may be outside [0, size)',   // Phase 369 — a subscript reads null past the end, it doesn't throw
          src: tc('class C { static String g(List<String> xs, int i) { xs[i] } }')],
 
         // ---------- Phase 27: Map<Enum, V> ----------

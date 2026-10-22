@@ -741,7 +741,7 @@ class LoopEncoder {
                     else enc.mapPut(arr, k, mv)
                     return
                 }
-                Object idx = enc.translate(sub.rightExpression)
+                Object idx = enc.indexTerm(arr, sub.rightExpression)   // Phase 369 — `a[-1] = v` stores the last slot
                 Object val = enc.translate(be.rightExpression)
                 if (idx == null || val == null) enc.havocArray(arr)   // unmodelable update → contents unknown (sound)
                 else {

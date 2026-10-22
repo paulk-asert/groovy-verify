@@ -536,6 +536,33 @@ class Encoder implements TheoryApi {
      * routed here yet — they'd need to compose with the receiver-context machinery; out of scope
      * for this slice.
      */
+    /**
+     * Phase 369 — the index a subscript of the list or array {@code recvName} reads or writes. Groovy counts a negative
+     * index from the end ({@code xs[-1]} is the last element, measured by the encoder audit), so a negative CONSTANT
+     * {@code -k} is the index {@code size - k}; any other index translates as itself (a negative non-constant one is
+     * still bounded below by the obligation, so it's never mis-read). Maps and strings are untouched.
+     */
+    Object indexTerm(String recvName, Expression index) {
+        Long k = negativeConstant(index)
+        if (k != null && recvName != null && !isMapName(recvName) && !isStringReceiver(new VariableExpression(recvName))) {
+            return session.plus(sizeOf(recvName), session.intLit(k))
+        }
+        translate(index)
+    }
+
+    /** Phase 369 — {@code -k} for a negative integer constant index ({@code -1}, {@code -(2)}); null otherwise. */
+    static Long negativeConstant(Expression e) {
+        if (e instanceof ConstantExpression && (((ConstantExpression) e).value instanceof Integer || ((ConstantExpression) e).value instanceof Long)) {
+            long v = ((Number) ((ConstantExpression) e).value).longValue()
+            return v < 0 ? v : null
+        }
+        if (e instanceof UnaryMinusExpression && ((UnaryMinusExpression) e).expression instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) ((UnaryMinusExpression) e).expression).value
+            if ((v instanceof Integer || v instanceof Long) && ((Number) v).longValue() > 0) return -((Number) v).longValue()
+        }
+        null
+    }
+
     private boolean isStringReceiver(Expression recv) {
         if (recv == null) return false
         if (recv instanceof ConstantExpression) {
@@ -5421,7 +5448,9 @@ class Encoder implements TheoryApi {
                 Object kSort = sortFor(pair != null ? pair[0] : null)
                 idx = translateInSort(be.rightExpression, kSort)
             } else {
-                idx = translate(be.rightExpression)
+                // Phase 369 — `xs[-1]` is the last element
+                idx = bracketRecv instanceof VariableExpression ?
+                    indexTerm(((VariableExpression) bracketRecv).name, be.rightExpression) : translate(be.rightExpression)
             }
             if (idx == null) return null
             Object sel = session.select(arr, idx)

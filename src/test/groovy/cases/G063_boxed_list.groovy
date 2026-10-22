@@ -79,7 +79,7 @@ class G063_boxed_list {
                        @Requires({ 0 <= k && k < xs.size() })
                        static String get(List<String> xs, int k) { xs[k] }
                    }''')],
-        [group: 'boxed & list', name: 'List<String> unguarded index refuted', expect: 'IndexOutOfBoundsException',
+        [group: 'boxed & list', name: 'List<String> unguarded index refuted', expect: 'List index may be outside [0, size)',   // Phase 369 — a subscript reads null there
          src: tc('class C { static String g(List<String> xs, int i) { xs[i] } }')],
     ]
 }

@@ -38,7 +38,7 @@ class G298_p230_list_interface_specs {
                             return xs[xs.size() - 1]
                         }
                     }''')],
-        [group: 'P230 list interface specs', name: 'the -1 sentinel into get refutes without the found-check', expect: 'Possible IndexOutOfBoundsException',
+        [group: 'P230 list interface specs', name: 'the -1 sentinel into get refutes without the found-check', expect: 'List index may be outside [0, size)',   // Phase 369 — xs[-1] is the LAST element, no throw
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() > 0 })
                         static int find(List<Integer> xs, int v) {

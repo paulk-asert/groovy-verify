@@ -107,7 +107,7 @@ class G168_p45_cross_class {
                     }''')],
         // Soundness: without c.count < c.max in the caller's @Requires, the @Requires of
         // incr() can't be discharged — incr() is callable on a counter that's already at max.
-        // The counterexample names the receiver-qualified fields: c$count = 0, c$max = 0.
+        // The counterexample names the receiver-qualified fields: c.count = 0, c.max = 0.
         [group: 'P45 cross-class', name: 'cross-class @Requires without guard refutes',
          expect: 'Cannot prove precondition of incr',
          src: tc('''@Invariant({ count >= 0 && count <= max })

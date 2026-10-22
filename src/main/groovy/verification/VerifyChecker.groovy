@@ -2424,7 +2424,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (currentDecimalNames.contains(recv)) return
                 display.put(recv + sizeAccessor(recv), v)
             } else {
-                display.put(k, v)
+                // Phase 369 — an object parameter's field is shown as the source spells it, `c.count` (Phase 45's
+                // `c$count` is the encoder's name for it)
+                int dl = k.indexOf('$')
+                String owner = dl > 0 ? k.substring(0, dl) : null
+                ClassNode ot = owner == null ? null : currentObjectParams.get(currentObjectAliases.get(owner) ?: owner)
+                boolean isField = false
+                if (ot != null && k.indexOf('$', dl + 1) < 0) {
+                    for (ClassNode c = ot; c != null && !isField; c = c.superClass) isField = c.getDeclaredField(k.substring(dl + 1)) != null
+                }
+                if (isField) {   // (not Phase 89's `a$id` identity, which is no field)
+                    display.put(owner + '.' + k.substring(dl + 1), v)
+                } else {
+                    display.put(k, v)
+                }
             }
         }
         r.counterexample = display
@@ -2470,7 +2483,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (ce == null) { reproBreaksRequires = true; return null }
         List<String> args = new ArrayList<String>()
         for (Parameter p : currentMethod.parameters) {
-            args.add(renderArg(p, ce, sortedCe))
+            String a = renderArg(p, ce, sortedCe)
+            if (a == null) return null   // Phase 369 — an argument it can't build: no call, rather than a wrong one
+            args.add(a)
         }
         "${currentMethod.name}(${args.join(', ')})"
     }
@@ -2666,7 +2681,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (elems != null && elems.any { it != 0L }) return "[${elems.join(', ')}]"
             return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
         }
-        return 'null'   // best effort for an arbitrary object type
+        // Phase 369 — a non-null object: `new C(…)` with the properties the model fixed (Phase 45's `c$field`), when C
+        // can be built so — it rendered `null` here, so `g(C c)` under `@Requires({ c != null })` read `fails on: g(null)`.
+        // Null (no failing call at all) when it can't be.
+        objectLiteral(p, ce)
+    }
+
+    /** Phase 369 — a failing call's non-null object argument, or null when the class has no visible no-arg constructor. */
+    private static String objectLiteral(Parameter p, Map<String, Long> ce) {
+        ClassNode t = p.type?.redirect()
+        if (t == null || t.isInterface() || t.isAbstract() || t == ClassHelper.OBJECT_TYPE) return null
+        List<ConstructorNode> ctors = t.declaredConstructors
+        boolean noArg = ctors.isEmpty() || ctors.any { it.parameters.length == 0 && it.isPublic() }
+        if (!noArg) return null
+        List<String> props = new ArrayList<String>()
+        for (PropertyNode pn : t.properties) {
+            if (pn.isStatic()) continue
+            Long v = ce.get(p.name + '$' + pn.name)
+            if (v == null) continue
+            String tn = pn.type?.name
+            if (tn in INT_TYPE_NAMES) props.add("${pn.name}: ${v}".toString())
+            else if (tn in BOOL_TYPE_NAMES) props.add("${pn.name}: ${v == 1L}".toString())
+        }
+        "new ${t.nameWithoutPackage.replace('$', '.')}(${props.join(', ')})"
     }
 
     /** Strip the inner-class binary prefix from an enum's nameWithoutPackage (mirrors Encoder.enumSortName). */
@@ -2882,7 +2919,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ModuleNode mod = WRITE_OWNER.get()?.module ?: dc.module
         if (mod == null) return out
         for (ClassNode cn : mod.classes) {
-            if (cn.name == dc.name || !(cn.isDerivedFrom(dc) || cn.implementsInterface(dc))) continue
+            if (cn.name == dc.name || generatedCallable(cn) || !(cn.isDerivedFrom(dc) || cn.implementsInterface(dc))) continue
             for (MethodNode om : cn.getDeclaredMethods(m.name)) {
                 if (!om.isStatic() && om.parameters.length == m.parameters.length && om.code != null) out.add(om)
             }
@@ -2900,7 +2937,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (t == null || t == ClassHelper.OBJECT_TYPE || t.isPrimaryClassNode() || mod == null) return null
         List<MethodNode> out = new ArrayList<MethodNode>()
         for (ClassNode cn : mod.classes) {
-            if (cn.name == t.name || !(cn.isDerivedFrom(t) || cn.implementsInterface(t))) continue
+            if (cn.name == t.name || generatedCallable(cn) || !(cn.isDerivedFrom(t) || cn.implementsInterface(t))) continue
             for (MethodNode om : cn.getDeclaredMethods(m)) if (!om.isStatic() && om.parameters.length == as.size() && om.code != null) out.add(om)
         }
         out.isEmpty() ? null : out
@@ -2911,10 +2948,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ModuleNode mod = WRITE_OWNER.get()?.module
         if (t == null || mod == null) return false
         for (ClassNode cn : mod.classes) {
-            if (cn.name != t.name && (cn.isDerivedFrom(t) || cn.implementsInterface(t)) && !cn.getDeclaredMethods(m).isEmpty()) return true
+            if (cn.name != t.name && !generatedCallable(cn) && (cn.isDerivedFrom(t) || cn.implementsInterface(t)) && !cn.getDeclaredMethods(m).isEmpty()) return true
         }
         false
     }
+
+    /** Phase 369 — a class Groovy generates for a closure literal: a subclass of Closure only by construction, whose
+     *  `call`/`doCall` stood in as an "override" of every `Closure.call` (and named its own internals as the reason).
+     *  A closure's effects are its body's, counted where the literal is. */
+    private static boolean generatedCallable(ClassNode cn) {
+        cn.superClass?.name == 'groovy.lang.Closure' && cn.name.contains('_closure')   // a plain ClassNode by now (`A$_g_closure1`)
+    }
+
+    /** Phase 369 — the read-list names that APPLY a callable: they don't write the callable, but its body may write
+     *  what it is handed (`f.apply(b)` with `f = { it[0] = 1 }`), so their arguments are written. */
+    private static final Set<String> CALLABLE_APPLY = ['call', 'apply'] as Set
 
     /** Phase 360 — can a subclass compiled OUTSIDE this unit override {@code m}? Not a static, private or final
      *  method, a constructor, or a method of a closed class: final, an enum, a record, or sealed with every
@@ -5106,7 +5154,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // the type has no size() — the collection non-empty obligation would be factually
             // wrong here. (The receive's value contract is handled by tryBindChannelReceive.)
             if (currentChannelNames.contains(ix.receiver)) return
-            Object idx = enc.translate(ix.index)
+            Object idx = enc.indexTerm(ix.receiver, ix.index)   // Phase 369 — a negative constant counts from the end
             if (idx == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("array index",
                     "index '${ix.index.text}' is outside fragment"), ix.node)
@@ -5117,8 +5165,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             s.assertExpr(s.not(inBounds))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
+                // Phase 369 — `xs[-k]` is `xs[size - k]`, so its obligation reads so; and a list SUBSCRIPT (not `get`,
+                // not an array) past the end reads null rather than throws, which the head says
+                Long neg = Encoder.negativeConstant(ix.index)
+                String sizeText = ix.receiver + sizeAccessor(ix.receiver)
+                String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : ix.index.text
+                boolean listSubscript = neg == null && ix.node instanceof BinaryExpression && currentListNames.contains(ix.receiver)
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
-                    ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), r, 'IndexOutOfBoundsException'), ix), ix.node)
+                    idxText, sizeText, r, listSubscript), r, listSubscript ? null : 'IndexOutOfBoundsException'), ix), ix.node)
             }
             explainIfVerified(s, r, "${ix.receiver}[${ix.index.text}] in bounds")
             return
@@ -10381,7 +10435,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     boolean isMap = currentMapTypes.containsKey(st.arr)
                     Object idxSort = isMap ? enc.mapKeySort(st.arr) : session.intSort()
                     Object valSort = isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr)
-                    Object idx = enc.translateInSort(st.index, idxSort)
+                    Object idx = isMap ? enc.translateInSort(st.index, idxSort) : enc.indexTerm(st.arr, st.index)   // Phase 369
                     Object val = enc.translateInSort(st.value, valSort)
                     if (idx == null || val == null) {
                         throw new UnsupportedConstructException(
@@ -13119,6 +13173,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (!recordArgumentWrites(mce.arguments, ws)) return false
             } else {
                 if (!collectWritesExpr(mce.objectExpression, ws)) return false
+                // Phase 369 — applying a callable may write what it is handed
+                if (CALLABLE_APPLY.contains(m) && !recordArgumentWrites(mce.arguments, ws)) return false
             }
             return collectWritesArgs(mce.arguments, ws)
         }
@@ -15167,7 +15223,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     boolean isMap = currentMapTypes.containsKey(st.arr)
                     Object idxSort = isMap ? enc.mapKeySort(st.arr) : s.intSort()
                     Object valSort = isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr)
-                    Object idx = enc.translateInSort(st.index, idxSort)
+                    Object idx = isMap ? enc.translateInSort(st.index, idxSort) : enc.indexTerm(st.arr, st.index)   // Phase 369
                     Object val = enc.translateInSort(st.value, valSort)
                     if (idx != null && val != null) {
                         if (isMap) doMapPut(s, enc, st.arr, idx, val)

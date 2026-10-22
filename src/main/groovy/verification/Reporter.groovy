@@ -82,7 +82,7 @@ class Reporter {
      *  overflow, which wraps silently and throws nothing — so the repro is documentary, not a failing test). */
     static String formatRepro(String invocation, String exception, String name) {
         if (exception == null) {
-            return "    repro: ${invocation}   // verify-only — wraps at runtime, throws no exception".toString()
+            return "    repro: ${invocation}   // verify-only — throws no exception at runtime (it wraps, or reads null)".toString()
         }
         switch (REFUTATION_FORMAT) {
             case 'junit':
@@ -851,10 +851,15 @@ class Reporter {
 
     // ---- Implicit safety obligations (array bounds, division, null deref) ----
 
-    static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result) {
+    static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result, boolean listSubscript = false) {
         // Refuted heads mirror the exception a developer would actually hit (Phase 9). The general
         // IndexOutOfBoundsException covers both arrays (AIOOBE) and lists without inferring which.
-        implicit("Possible IndexOutOfBoundsException: index may be out of bounds",
+        // Phase 369 — but a LIST subscript `xs[i]` doesn't throw past the end: it reads null there (and a negative
+        // index counts from the end), which the verifier doesn't model, so the head says what would happen
+        String head = listSubscript ?
+            "List index may be outside [0, size): there the subscript reads null (or, when negative, counts from the end) rather than throwing, which the verifier doesn't model" :
+            "Possible IndexOutOfBoundsException: index may be out of bounds"
+        implicit(head,
             "0 <= ${indexText} && ${indexText} < ${sizeTerm}",
             "Could not decide array index bounds", result)
     }

@@ -16449,6 +16449,48 @@ survival fact, not a call-site obligation, so a call that always throws (`floorD
 boolean cast's wrong value, `intdiv`, `<<` and a narrowing cast under `@CheckOverflow`, `last()` on a possibly-empty
 list), and 6 that prove, two of them new (`(x as boolean) == (x != 0)`, refuted before; `x as String`, skipped before).
 
+## Phase 369 — cleanup: what the diagnostics say, and two audit findings  *(shipped)*
+
+Loose ends from Phases 365–368, each wrong or misleading output a user met.
+
+- **A failing call with a non-null object argument.** `renderArg` fell back to `null` for any object type, so
+  `g(C c)` under `@Requires({ c != null })` read `fails on: g(null)` — a call the precondition forbids. A non-null
+  object now renders as `new C(…)` with the properties the model fixed (`new C(count: 5)`, from Phase 45's
+  `c$count`), when its class has a visible no-arg constructor; otherwise the call is withheld rather than shown
+  wrong. And the counterexample names an object parameter's field as the source spells it, `c.count = 5` — only a
+  real field (Phase 89's `a$id` identity symbol is no field, and keeps its name).
+- **Groovy's negative indices.** `xs[-1]` is the last element and `a[-2] = v` stores into the last but one (measured
+  by the Phase 368 audit); the encoder read index −1. A negative CONSTANT index is now `size − k` in every path that
+  translates an index — the read, a straight-line or loop store, and the bounds obligation, which reads
+  `0 <= xs.size() - 1` (`Encoder.indexTerm`, `negativeConstant`). A non-constant index is unchanged: still bounded
+  below by the obligation, so never mis-read.
+- **A list subscript out of range doesn't throw.** Past the end `xs[i]` reads `null` (and a negative one counts from
+  the end); the warning said `Possible IndexOutOfBoundsException`. The value model still needs `[0, size)`, so the
+  obligation stands, but a list subscript's head now says what would happen — "List index may be outside [0, size):
+  there the subscript reads null (or, when negative, counts from the end) rather than throwing, which the verifier
+  doesn't model" — and its repro asserts no exception. `get(i)`, an array subscript and a negative constant (which
+  does throw on an empty list) keep the exception. Four cases' expectations moved with it; one of them, the `-1`
+  sentinel into `xs[i]`, is the clearest: Groovy returns the last element there, it never throws.
+- **Applying a callable writes what it is handed.** `call` and `apply` are on the read list ("applying a callable
+  doesn't write the callable"), and so their arguments were never written: a helper's `f.apply(b)` was framed as
+  writing nothing — a silent hole, found here. Their mutable arguments are now written, as an unknown call's are
+  (Phase 365) (`CALLABLE_APPLY`).
+- **A closure literal's class is no override.** The class Groovy generates for a closure literal (`A$_g_closure1`,
+  a `Closure` subclass) stood in, by Phase 359's dispatch rule, as an override of every `Closure.call` in the unit —
+  so a helper's `c.call(b)` was unbounded with the reason "call 'call(…)': call 'doCall(…)': a call on
+  'error.getStackTrace()'". Generated callables are no longer overriders (`generatedCallable`); a closure's effects
+  are its body's, counted where the literal is.
+
+**Not done, and why:** `@Modifies({ A.n })` — declaring a write to another class's static, which Phase 365 made a
+frame-check error — is rejected by groovy-contracts' own transform ("@Modifies elements must be field references
+(this.field) or parameter references"), so the stock annotation can't express it. It is the second item for the
+groovy-contracts `@Modifies` JIRA, beside `@Modifies({})`.
+
+**Shipped tests:** group `P369 cleanup`, 11 cases: the built object argument and its field's spelling; `xs[-1]`,
+`a[-2]` and a store through `a[-1]` proving (bounds warnings before); `xs[-1]` on a possibly-empty list; a list
+subscript's head and `get(i)`'s; `f.apply(b)` writing (verifying before) and an immutable argument not; a closure
+literal handed to a helper (the `doCall` reason before).
+
 ---
 
 ## Definition of done, per increment
