@@ -16525,13 +16525,61 @@ keeps the `s.length()` after it quiet (now asserted with `refute:`).
 **Found, not changed:** in a loop body, an implicit obligation's failing call is built from the parameters alone, so it
 may not enter the loop. A `floorMod(i, y)` (or `i % y`) in a `for (i < n)` body, under `@Requires({ n >= 0 })`, shows
 `fails on: f(0, 0)`, a call that never reaches the body. The warning is right (`y` may be zero) but the repro is not.
-This is older than Phase 370 (the built-in `%` does the same), and it is the next reporting item.
+This is older than Phase 370 (the built-in `%` does the same), and it is the next reporting item. *(Phase 371.)*
 
 **Shipped tests:** group `P370 spec throws`, 14 cases, 6 verifying before: `floorDiv` by a possibly-zero divisor and by
 zero, `max` of a possibly-empty collection, `nCopies` of a possibly-negative count, a declared throw of another exception
 (all compiled cleanly before), and a woven guard ruling out a division (warned before). Plus discharge by `@Requires`, a
 guard, a handler, a supertype handler, a loop invariant; the deliberate throwers; a declared throw. And `SpecAuditTest`'s
 fifth test, `throwingGuardsNameSpecsThatThrow`.
+
+## Phase 371 — a loop's failing call is a run from entry  *(shipped — reporting, and a soundness hole closed)*
+
+An obligation in a loop is checked at an arbitrary iteration: the invariant's for an annotated loop, a summary's for
+an unannotated one. That state needn't be reachable, and the failing call came from its model's parameters alone, so
+a `floorMod(i, y)` in a `for (i < n)` body showed `fails on: f(0, 0)`, a call that never enters the body.
+
+- **A witness from entry.** In a loop region the check runs as before with its diagnostics held. On a refutation it is
+  re-sought along exact paths from method entry (`loopEntryPaths`): the statements before the loop, then each of its
+  first eight iterations (guard, body), ending at the region's point, which is the guard about to be evaluated, an
+  iteration begun, or the loop left by its guard. A loop on the way, an earlier one or one nested in the body, is
+  unrolled the same way (`expansions`), and up to 32 paths are tried, shortest first. A path is replayed exactly
+  (`replayExact`): each statement as it runs, an early exit asserted not taken, each branch condition in full. The
+  region's facts (the invariant, the guard) are asserted too; they can only filter runs, never admit one that isn't
+  real. The first path that refutes is reported, and its call is a run that gets there. If none does, the original
+  diagnostic is reported with its call withheld and a note ("no failing call: the failure is at a loop iteration the
+  check reaches through the loop's summary, not from entry, and no run of its first eight iterations gets there…").
+  Witness sessions are auxiliary (Phase 337) and run only on a refutation.
+- **Soundness: an unannotated loop's body is checked at every iteration.** With no `@Invariant`, a loop's obligations
+  fell to `dischargeRegion`'s statement-wide fallback, which checked the body in the state BEFORE the loop:
+  `int i = 0; while (i < n) { s = 100.intdiv(i - 3); i++ }` proved the divisor non-zero from `i == 0`, and `f(4)`
+  throws. The same held for an index the loop moves (`a[i]` checked at `a[0]`), a divisor the loop writes, and a
+  do-while's later passes. A classic `for` escaped only because its counter is declared in the loop (so it was free).
+  Now `dischargeUnannotatedLoop` checks the guard and body with everything the loop writes havocked (a marker in the
+  replay, `HAVOC_LOOP_KEY`) and, in the body, the guard holding. The region after the loop follows as before. A
+  for-in over a collection havocs its loop variable and isn't unrolled.
+- **Display.** A loop summary havocs every name's size slot as well; `x.size (after a loop)` is now shown only for a
+  name that has a size.
+
+- **Channel programs keep their own witness.** A method that names a channel (a desugared pipeline, or processes under
+  rely/guarantee) isn't re-sought: its processes are closures and its receives ghost cursors, which no sequential replay
+  runs, and its calls stand on those models' witnesses (the Kerridge gallery's `overRead(0)`, the trip count at which
+  it hangs). The first measurement, without this, withheld five of their calls.
+
+Across the corpus (outside this phase's own cases), loop refutations now find a witness from entry, and one withholds
+its call: an over-strict bounds warning on an unannotated counting loop that no run fails. Three existing cases kept
+their expected calls only once earlier and nested loops were unrolled too (Phase 337's sequential repro, Phase 336/340's
+nested ones). No `ok:` case gained a warning from the soundness fix.
+
+**Boundary:** a failure first reachable after the eighth iteration keeps its warning without a call, even when the
+invariant's model happened to give a right one (`f(10)` for a divisor `i - 9`). A for-in over a collection, a loop in a
+branch on the way, and a closure all end the search there. Channel programs aren't searched (above).
+
+**Shipped tests:** group `P371 loop repros`, 11 cases, 8 verifying before. Silent before: an unannotated loop's divisor
+at its fourth pass, an index it moves, a divisor it writes, a do-while's second pass. A wrong call before: `f(0, 0)` now
+`f(1, 0)`, and `f(new int[0])` on a counting loop that never fails, now withheld. A failure past the eighth iteration
+(the boundary), and a run that leaves the loop. Plus a body guard still discharging, an annotated loop's call entering
+it, and a later iteration's failure.
 
 ---
 

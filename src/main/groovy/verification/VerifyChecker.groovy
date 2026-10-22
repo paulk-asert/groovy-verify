@@ -1390,6 +1390,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  catch type covers nothing, so the obligation keeps refuting). Rebuilt per method. */
     private List<Object[]> currentCatchCoverage = new ArrayList<Object[]>()
 
+    /** Phase 371 — while a loop region's obligations are discharged, exact paths from method entry to the region's
+     *  start state, one per unrolled iteration (empty: none exact; null outside a loop region). A refutation there is
+     *  re-sought along them, so the failing call shown is a run that gets there. */
+    private List<List<Statement>> loopEntryPaths = null
+    /** Phase 371 — diagnostics held, not emitted, while non-null (a loop refutation awaiting its witness). */
+    private List<Object[]> heldErrors = null
+    /** Phase 371 — set by {@link #shown} on each refutation, so a held run knows it refuted. */
+    private boolean sawRefutation = false
+    /** Phase 371 — while set, {@link #shown} withholds the failing call, with this note. */
+    private String loopCallNote = null
+    /** Phase 371 — the body is a channel desugar (Phases 119–275): its processes are closures and its receives ghost
+     *  cursors, which no sequential replay runs, so its loop calls stand on those models' own witness (the trip count,
+     *  the branch chosen) and aren't re-sought from entry. Nor are a method's that names a channel at all (its process
+     *  loops are checked under rely/guarantee, Phases 240–262). */
+    private boolean currentChannelDesugared = false
+
+    static final String LOOP_CALL_NOTE = 'no failing call: the failure is at a loop iteration the check reaches through ' +
+        'the loop\'s summary, not from entry, and no run of its first eight iterations gets there, so no call is known ' +
+        'to fail (it may not be reachable)'
+
+    @Override
+    void addStaticTypeError(String msg, ASTNode expr) {
+        if (heldErrors != null) { heldErrors.add([msg, expr] as Object[]); return }
+        super.addStaticTypeError(msg, expr)
+    }
+
     /** Catch-parameter simple name → the implicit-obligation exceptions it (super)covers. Curated: exact
      *  types, their JDK supertypes (NFE <: IllegalArgumentException; the broad RuntimeException /
      *  Exception / Throwable), nothing inferred. */
@@ -2492,6 +2518,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private CheckResult shown(CheckResult r) {
         if (r == null) return r
+        if (r.status == CheckResult.Status.REFUTED) sawRefutation = true
         boolean intEmpty = r.counterexample == null || r.counterexample.isEmpty()
         boolean sortedEmpty = r.sortedCounterexample == null || r.sortedCounterexample.isEmpty()
         if (intEmpty && sortedEmpty) return r
@@ -2507,6 +2534,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             r.failingCall = null
             String note = "no failing call: the failure rests on ${unmodelled.join(', ')}, a value the verifier doesn't model (an unmodelled call or expression), so no run is known to reach it".toString()
             if (!r.notes.contains(note)) r.notes.add(note)
+        }
+        // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
+        if (r.failingCall != null && loopCallNote != null) {
+            r.failingCall = null
+            if (!r.notes.contains(loopCallNote)) r.notes.add(loopCallNote)
         }
         // Phase 125 — array names whose Int-valued *elements* are meaningful to print: a parameter or instance
         // field reflects the actual input/entry state. A *local* array's model value is its arbitrary pre-state
@@ -2556,6 +2588,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             java.util.regex.Matcher hm = HAVOC_KEY.matcher(k)
             if (hm.matches()) {
                 String base = hm.group(1)
+                // Phase 371 — a summary havocs every name's size slot too: shown only for a name that has a size
+                String stem = base.endsWith('.size') ? base.substring(0, base.length() - 5) : null
+                if (stem != null && !(sizeAccessors.containsKey(stem) || currentListNames.contains(stem) ||
+                    currentMapTypes.containsKey(stem) || elementArrays.contains(stem))) return
                 if (latestHavoc.get(base) == Integer.parseInt(hm.group(2)) && !base.contains('#') && !base.startsWith('$')) {
                     display.put(base + ' (after a loop)', v)
                 }
@@ -3904,6 +3940,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentObjectAliases = collectObjectAliases(node, currentObjectParams)
         currentTupleParams = collectTupleParams(node)
         currentCatchCoverage = collectCatchCoverage(node)
+        currentChannelDesugared = false
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -4094,6 +4131,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Statement deChan = desugarChannels(body, currentChannelBounds, currentScalarTypes, paramNames(node), node, ghostErrors)
             deChan = desugarGuardedSelects(deChan)      // Phase 275 — a masked select's index, with or without a stream model
             for (Object[] ge : ghostErrors) addStaticTypeError(Reporter.formatGhostMisuse((String) ge[0], (String) ge[1]), (ASTNode) ge[2])   // Phase 259
+            currentChannelDesugared = !deChan.is(body)
             if (!deChan.is(body)) {
                 node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deChan)
                 body = deChan
@@ -5608,16 +5646,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 318 — the prefix facts the loop keeps hold at every point below, alongside the invariant.
             List<Expression> framed = new ArrayList<Expression>(spec.invariants)
             framed.addAll(loopFrameFacts(site))
-            for (Object s : sitesInExpression(spec.guard)) {
-                dischargeSeeded(s, stableReq, framed, null, Collections.<Statement>emptyList())
+            // Phase 371 — each region below is an arbitrary state the invariant allows; a refutation's call is sought
+            // along the exact paths from entry to it (the first iterations), else withheld
+            List<List<Statement>> bodyPaths = loopEntryPaths(site.originalPrefix, spec, 'body')
+            withEntryPaths(loopEntryPaths(site.originalPrefix, spec, 'head'), reqAst) {
+                for (Object s : sitesInExpression(spec.guard)) {
+                    dischargeSeeded(s, stableReq, framed, null, Collections.<Statement>emptyList())
+                }
             }
             // 3. Body: invariant ∧ guard, threaded through the (straight-line) body. handleAsserts=true so an
             // in-loop `assert` (the masking-fix class-invariant assert after a shared write) is discharged here.
             List<Expression> bodyAssumed = new ArrayList<Expression>(framed)
             bodyAssumed.add(spec.guard)
-            dischargeRegion(spec.body, stableReq, bodyAssumed, null, Collections.<Statement>emptyList(), true)
+            withEntryPaths(bodyPaths, reqAst) {
+                dischargeRegion(spec.body, stableReq, bodyAssumed, null, Collections.<Statement>emptyList(), true)
+            }
             // 4. The region after this loop up to the next one (or the method end): inv ∧ ¬guard.
-            dischargeRegion(site.segmentAfter, stableReq, framed, spec.guard)
+            withEntryPaths(loopEntryPaths(site.originalPrefix, spec, 'exit'), reqAst) {
+                dischargeRegion(site.segmentAfter, stableReq, framed, spec.guard)
+            }
             // 4b. Phase 312 — and from each `break`: an arbitrary iteration (inv ∧ guard), the body up to the break
             // with earlier exits not taken, the break's condition, its lead. The after-loop code must be safe from
             // every state the loop can be left in, not just inv ∧ ¬guard.
@@ -5633,7 +5680,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 atBreak = withAssume(atBreak, ex.guard)
                 atBreak.addAll(ex.lead)
-                dischargeRegion(site.segmentAfter, stableReq, iterEntry, null, atBreak)
+                withEntryPaths(bodyPaths, reqAst) {   // the iteration that breaks starts like any other
+                    dischargeRegion(site.segmentAfter, stableReq, iterEntry, null, atBreak)
+                }
             }
             // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
             // discharged in the INNER loop's own context (inner_inv ∧ inner_guard), where the inner index is
@@ -5645,7 +5694,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Statement> before = stmtsBefore(spec.body, innerLoop)
                 if (innerSpec.init != null) before.addAll(innerSpec.init)
                 innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
-                dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
+                withEntryPaths(innerEntryPaths(bodyPaths, before, innerSpec), reqAst) {
+                    dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
+                }
             }
             // Phase 335 — and those of a nested loop inside a branch of the body, with its path's stable conditions
             for (Object[] bl : branchInnerLoops(spec.body)) {
@@ -5656,9 +5707,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Statement> before = new ArrayList<Statement>((List<Statement>) bl[1])
                 if (innerSpec.init != null) before.addAll(innerSpec.init)
                 innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
-                dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
+                withEntryPaths(innerEntryPaths(bodyPaths, before, innerSpec), reqAst) {
+                    dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
+                }
             }
         }
+    }
+
+    /** Phase 371 — the paths into a nested loop's body: an outer iteration's start, the statements before the inner
+     *  loop (its branch path's conditions as markers), then the inner loop's own first iterations. */
+    private static List<List<Statement>> innerEntryPaths(List<List<Statement>> outerBody, List<Statement> before, LoopSpec inner) {
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (List<Statement> p : outerBody) {
+            List<Statement> base = new ArrayList<Statement>(p)
+            base.addAll(before)
+            out.addAll(loopEntryPaths(base, inner, 'body'))
+        }
+        out.size() > ENTRY_PATHS ? out.subList(0, ENTRY_PATHS) : out
     }
 
     /**
@@ -5699,6 +5764,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (st instanceof LoopingStatement &&
                 ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
                 continue
+            }
+            // Phase 371 — an unannotated loop: its body at an arbitrary iteration, then the rest of the region after it
+            if (st instanceof LoopingStatement) {
+                dischargeUnannotatedLoop((LoopingStatement) st, stmts.subList(i + 1, stmts.size()), reqAst, assumePos,
+                    assumeNeg, preceding, handleAsserts)
+                return
             }
             if (st instanceof IfStatement) {
                 IfStatement ifs = (IfStatement) st
@@ -5859,6 +5930,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 assumeMarker((AssertStatement) st, enc, s, stripQ, assumed)
                 continue
             }
+            if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
             try {
                 LoopEncoder.replay([st] as List<Statement>, enc, s)
             } catch (Throwable ignored) {
@@ -5960,10 +6032,64 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * statements (SSA semantics — correct even when the loop counter is
      * re-assigned), and discharge the obligation.
      */
+    /**
+     * Phase 371 — in a loop region, the state is an arbitrary one the invariant allows, so a refutation's model needn't
+     * be reachable: `fails on: f(0, 0)` for a body that `n = 0` never enters. The check runs as before with its call
+     * held back; on a refutation it is re-sought along each exact path from entry ({@link #loopEntryPaths}), and the
+     * first that refutes is reported: its call is a run that gets there. If none does, the original is, call withheld.
+     */
     private void dischargeSeeded(Object site, Expression reqAst,
                                  List<Expression> assumePos, Expression assumeNeg,
                                  List<Statement> preceding) {
+        if (loopEntryPaths == null || heldErrors != null || currentChannelDesugared || !currentChannelNames.isEmpty()) {
+            dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding)
+            return
+        }
+        List<List<Statement>> paths = loopEntryPaths
+        Object[] plain = held({ ->
+            loopCallNote = LOOP_CALL_NOTE
+            try { dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding) } finally { loopCallNote = null }
+            true
+        })
+        if ((boolean) plain[1]) {
+            for (List<Statement> path : paths) {
+                Object[] w = held({ -> dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding, path) })
+                if ((boolean) w[1]) { emitHeld((List<Object[]>) w[0]); return }
+            }
+        }
+        emitHeld((List<Object[]>) plain[0])
+    }
+
+    /** Run {@code body} with its diagnostics held: [the held diagnostics, whether it refuted (and returned true)]. */
+    private Object[] held(Closure<Boolean> body) {
+        List<Object[]> prev = heldErrors
+        boolean prevSaw = sawRefutation
+        heldErrors = new ArrayList<Object[]>()
+        sawRefutation = false
+        try {
+            boolean ok = body.call()
+            return [heldErrors, ok && sawRefutation] as Object[]
+        } finally {
+            heldErrors = prev
+            sawRefutation = prevSaw
+        }
+    }
+
+    private void emitHeld(List<Object[]> errs) {
+        for (Object[] e : errs) addStaticTypeError((String) e[0], (ASTNode) e[1])
+    }
+
+    /**
+     * {@code entryPath} (Phase 371) — the witness search: the state is reached exactly, from the full @Requires at
+     * entry along the path, then the region's facts (only filters now) and its preceding statements. False, with nothing
+     * reported, when a statement on the way can't be replayed exactly.
+     */
+    private boolean dischargeSeededAt(Object site, Expression reqAst,
+                                      List<Expression> assumePos, Expression assumeNeg,
+                                      List<Statement> preceding, List<Statement> entryPath = null) {
         SmtSession s = backend.session()
+        // a witness decides no obligation, only which call is shown (Phase 337's auxiliary queries)
+        if (entryPath != null && s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
         try {
             Encoder enc = mkEncoder(s)
             // Phase 91b — an array-index bound (`0 ≤ idx < size`) depends only on the index arithmetic and
@@ -5975,14 +6101,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // would discard the one fact that proves the bound. Keep quantifiers for those (the no-loop path
             // already does); the arithmetic-index case (`a[i*m+j]`) still strips, avoiding the NIA dead-end.
             boolean stripQ = (site instanceof IndexSite) && !indexReadsArrayContent(((IndexSite) site).index)
-            if (reqAst != null) {
-                Object p = enc.translate(stripQ ? dropQuantifierConjuncts(reqAst) : reqAst)
+            // Phase 371 — a witness starts at entry, where the whole @Requires holds (a quantified conjunct a check
+            // drops is re-checked against the call it renders, Phase 337)
+            Expression req = entryPath != null ? loopEntryReq : reqAst
+            if (req != null) {
+                Object p = enc.translate(stripQ ? dropQuantifierConjuncts(req) : req)
                 if (p != null) s.assertExpr(p)
             }
             // Phase 15a — class invariants are method-entry facts, in scope across the loop's
             // prefix/guard/body/suffix regions just like @Requires.
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
+            if (entryPath != null && !replayExact(entryPath, enc, s)) return false
             if (assumePos != null) {
                 for (Expression e : assumePos) {
                     Object h = enc.translate(stripQ ? dropQuantifierConjuncts(e) : e)
@@ -5994,7 +6124,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (h != null) s.assertExpr(s.not(h))
             }
             List<Expression> assumed = new ArrayList<Expression>()
-            replaySafely(preceding, enc, s, stripQ, assumed)
+            if (entryPath == null) replaySafely(preceding, enc, s, stripQ, assumed)
+            else if (!replayExact(afterCut(preceding), enc, s)) return false   // the path reaches the last cut exactly
             // Phase 91b — NIA monotonicity hint for array-index bounds (e.g. a flat `a[i*m + j]` fill,
             // where the bound `i*m + j < a.length` needs `i*m + m <= n*m` from `i < n ∧ m >= 0`, which Z3's
             // nonlinear tactic won't derive). Emit guarded ground lemmas for products that share a factor.
@@ -6007,8 +6138,246 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 emitMonotonicityLemmas(s, enc, ctx)
             }
             dischargeObligationUnder(s, enc, site)
+            return true
         } finally {
             try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Phase 371 — how many iterations a loop witness is sought along, and how many paths at most (nested loops). */
+    private static final int ENTRY_UNROLL = 8
+    private static final int ENTRY_PATHS = 32
+
+    /** Phase 371 — the full @Requires, for a witness that starts at entry (set beside {@link #loopEntryPaths}). */
+    private Expression loopEntryReq = null
+
+    /**
+     * Phase 371 — replay a path exactly: each statement as it runs (an early-exit `if` asserts its exit not taken), and
+     * each assume marker (a branch or short-circuit condition) in full, never quantifier-stripped — a path whose
+     * condition is weakened isn't known to be taken. False on anything the replay would summarise or can't do: a loop,
+     * a closure, an untranslatable condition.
+     */
+    private boolean replayExact(List<Statement> stmts, Encoder enc, SmtSession s) {
+        if (stmts == null) return true
+        for (Statement st : stmts) {
+            if (st instanceof AssertStatement && (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null ||
+                                                 st.getNodeMetaData(ASSUME_ONLY_KEY) != null)) {
+                if (enc.translate(((AssertStatement) st).booleanExpression.expression) == null) return false
+                assumeMarker((AssertStatement) st, enc, s, false, null)
+                continue
+            }
+            if (inexactReplay(st)) return false
+            try { LoopEncoder.replay([st] as List<Statement>, enc, s) } catch (Throwable ignored) { return false }
+        }
+        true
+    }
+
+    /** Phase 371 — a statement the replay summarises rather than runs: a loop (any nesting), or one holding a closure.
+     *  (A loop that is itself a statement of a path is unrolled first, {@link #expansions}.) */
+    private static boolean inexactReplay(Statement st) {
+        if (st instanceof LoopingStatement || st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return true
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitForLoop(ForStatement f) { found[0] = true }
+            @Override void visitWhileLoop(WhileStatement w) { found[0] = true }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression c) { found[0] = true }
+        })
+        found[0]
+    }
+
+    /**
+     * Phase 371 — exact paths from method entry ({@code base}, the statements before the loop) to a point of the loop,
+     * one per iteration up to {@link #ENTRY_UNROLL}: 'head' (its guard about to be evaluated), 'body' (an iteration
+     * begun) or 'exit' (left by its guard). A do-while's first pass runs before any guard. A loop on the way (an
+     * earlier one, or one nested in the body) is unrolled in turn ({@link #expansions}); the shortest paths are kept.
+     */
+    private static List<List<Statement>> loopEntryPaths(List<Statement> base, LoopSpec spec, String at) {
+        List<List<Statement>> sym = new ArrayList<List<Statement>>()
+        if (base == null) return sym
+        List<Statement> head = new ArrayList<Statement>(base)
+        if (spec.isDoWhile) {
+            if (at == 'body') sym.add(new ArrayList<Statement>(base))
+            head.addAll(spec.body)
+        }
+        for (int j = 0; sym.size() < ENTRY_UNROLL; j++) {
+            if (j > 0) {
+                head = withAssume(head, spec.guard)
+                head.addAll(spec.body)
+            }
+            sym.add(at == 'head' ? new ArrayList<Statement>(head) :
+                withAssume(head, at == 'exit' ? (Expression) new NotExpression(spec.guard) : spec.guard))
+        }
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (List<Statement> p : sym) out.addAll(expansions(p))
+        out.sort { List<Statement> p -> p.size() }
+        out.size() > ENTRY_PATHS ? new ArrayList<List<Statement>>(out.subList(0, ENTRY_PATHS)) : out
+    }
+
+    /** Phase 371 — the loop-free variants of a path: each loop in it unrolled 0..{@link #ENTRY_UNROLL}-1 times and left
+     *  by its guard (recursively, for a loop in its body). None when a statement can't be: a for-in over a collection
+     *  without its desugar, a loop inside a branch, a closure. */
+    private static List<List<Statement>> expansions(List<Statement> path) {
+        List<List<Statement>> acc = new ArrayList<List<Statement>>()
+        acc.add(new ArrayList<Statement>())
+        for (Statement st : path) {
+            List<List<Statement>> vs
+            if (st instanceof LoopingStatement) {
+                vs = loopVariants((LoopingStatement) st)
+            } else if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null || inexactReplay(st)) {
+                return Collections.<List<Statement>> emptyList()
+            } else {
+                vs = [[st] as List<Statement>]
+            }
+            if (vs.isEmpty()) return Collections.<List<Statement>> emptyList()
+            List<List<Statement>> next = new ArrayList<List<Statement>>()
+            for (List<Statement> a : acc) for (List<Statement> v : vs) {
+                if (next.size() >= 4 * ENTRY_PATHS) break
+                List<Statement> c = new ArrayList<Statement>(a)
+                c.addAll(v)
+                next.add(c)
+            }
+            acc = next
+        }
+        acc
+    }
+
+    /** One loop as run 0..{@link #ENTRY_UNROLL}-1 times, then left by its guard: its init, then guard and body. */
+    private static List<List<Statement>> loopVariants(LoopingStatement loop) {
+        LoopSpec spec = (LoopSpec) ((Statement) loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (spec == null) spec = rawLoopSpec(loop)
+        if (spec == null) return Collections.<List<Statement>> emptyList()
+        List<Statement> base = spec.init != null ? new ArrayList<Statement>(spec.init) : new ArrayList<Statement>()
+        return loopEntryPaths(base, spec, 'exit')
+    }
+
+    /** Phase 371 — an unannotated loop as the guard/body/update shape {@link LoopSpec} speaks (its init in
+     *  {@code init}); null for a for-in over a collection, which has no such shape before its desugar. */
+    private static LoopSpec rawLoopSpec(LoopingStatement loop) {
+        LoopSpec raw = new LoopSpec()
+        if (loop instanceof ForStatement) {
+            Expression col = ((ForStatement) loop).collectionExpression
+            if (!(col instanceof ClosureListExpression) || ((ClosureListExpression) col).expressions.size() != 3) return null
+            List<Expression> parts = ((ClosureListExpression) col).expressions
+            raw.init = new ArrayList<Statement>()
+            if (!(parts.get(0) instanceof EmptyExpression)) raw.init.add(new ExpressionStatement(parts.get(0)))
+            raw.guard = parts.get(1) instanceof EmptyExpression ? null : parts.get(1)
+            if (!(parts.get(2) instanceof EmptyExpression)) raw.update = new ExpressionStatement(parts.get(2))
+        } else if (loop instanceof WhileStatement) {
+            raw.guard = ((WhileStatement) loop).booleanExpression.expression
+        } else if (loop instanceof DoWhileStatement) {
+            raw.guard = ((DoWhileStatement) loop).booleanExpression.expression
+            raw.isDoWhile = true
+        } else {
+            return null
+        }
+        if (raw.guard == null) raw.guard = ConstantExpression.PRIM_TRUE
+        raw.body = new ArrayList<Statement>(topStatements(loop.loopBlock))
+        if (raw.update != null) raw.body.add(raw.update)
+        raw
+    }
+
+    /** Phase 371 — run {@code region} with {@code paths} as its witness paths (and the entry @Requires beside them). */
+    private void withEntryPaths(List<List<Statement>> paths, Expression entryReq, Closure region) {
+        List<List<Statement>> prev = loopEntryPaths
+        Expression prevReq = loopEntryReq
+        loopEntryPaths = paths
+        loopEntryReq = entryReq
+        try { region.call() } finally { loopEntryPaths = prev; loopEntryReq = prevReq }
+    }
+
+    /** Phase 371 — marks the synthetic statement standing for an unannotated loop's earlier iterations: replaying it
+     *  havocs everything the loop (its value) may write. */
+    static final String HAVOC_LOOP_KEY = 'verification.havocLoop'
+
+    private static Statement havocMarker(Statement loop) {
+        Statement m = new EmptyStatement()
+        m.putNodeMetaData(HAVOC_LOOP_KEY, loop)
+        m
+    }
+
+    /** Everything {@code loop} may write, havocked — and a for-in's loop variable, which no assignment names. */
+    private void havocLoop(Statement loop, Encoder enc) {
+        havocWritesOf([loop], enc)
+        if (loop instanceof ForStatement && ((ForStatement) loop).variable != null &&
+            !(((ForStatement) loop).collectionExpression instanceof ClosureListExpression)) {
+            havocLocation(enc, ((ForStatement) loop).variable.name)
+        }
+    }
+
+    /** Phase 371 — a point in {@code preceding} where the replay summarises (an unannotated loop, or its havoc marker):
+     *  a witness's entry path reaches it exactly, so only what follows is replayed after the path. */
+    private static boolean isCut(Statement st) {
+        st.getNodeMetaData(HAVOC_LOOP_KEY) != null ||
+            (st instanceof LoopingStatement && st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null)
+    }
+
+    private static List<Statement> afterCut(List<Statement> preceding) {
+        int last = -1
+        for (int k = 0; k < preceding.size(); k++) if (isCut(preceding.get(k))) last = k
+        last < 0 ? preceding : preceding.subList(last + 1, preceding.size())
+    }
+
+    /**
+     * Phase 371 — an unannotated loop's obligations. Its guard and body run at an arbitrary iteration, so they are
+     * checked with everything the loop writes havocked (a marker in {@code preceding}) and, in the body, the guard
+     * holding. They used to be checked in the state BEFORE the loop: `int i = 0; while (i < n) { 100.intdiv(i - 3); i++ }`
+     * proved its divisor non-zero from `i == 0`, and f(4) throws. Then the rest of the region, after the loop.
+     * A refutation's call is sought along the exact unrolled paths (a guard, a body and an update the replay runs).
+     */
+    private void dischargeUnannotatedLoop(LoopingStatement loop, List<Statement> rest, Expression reqAst,
+                                          List<Expression> assumePos, Expression assumeNeg, List<Statement> preceding,
+                                          boolean handleAsserts) {
+        Statement loopSt = (Statement) loop
+        LoopSpec raw = rawLoopSpec(loop)
+        boolean unrolls = raw != null    // a guard, a body and an update: the shape the witness paths unroll
+        if (raw == null) {
+            // a for-in over a collection: evaluated once, before the loop; its elements aren't unrolled
+            if (loop instanceof ForStatement) {
+                dischargeExpression(((ForStatement) loop).collectionExpression, reqAst, assumePos, assumeNeg, preceding)
+            }
+            raw = new LoopSpec()
+            raw.guard = ConstantExpression.PRIM_TRUE
+            raw.body = new ArrayList<Statement>(topStatements(loop.loopBlock))
+        }
+        List<Statement> init = raw.init != null ? raw.init : new ArrayList<Statement>()
+
+        Expression entryReq = loopEntryPaths != null ? loopEntryReq : reqAst
+        List<List<Statement>> bases = new ArrayList<List<Statement>>()
+        if (unrolls) {
+            for (List<Statement> p : (loopEntryPaths != null ? loopEntryPaths : [new ArrayList<Statement>()])) {
+                List<Statement> b = new ArrayList<Statement>(p)
+                b.addAll(afterCut(preceding))
+                b.addAll(init)
+                bases.add(b)
+            }
+        }
+        Closure<List<List<Statement>>> paths = { String at ->
+            List<List<Statement>> out = new ArrayList<List<Statement>>()
+            for (List<Statement> b : bases) out.addAll(loopEntryPaths(b, raw, at))
+            out.size() > ENTRY_PATHS ? out.subList(0, ENTRY_PATHS) : out
+        }
+
+        if (!init.isEmpty()) dischargeRegion(init, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
+        List<Statement> atHead = new ArrayList<Statement>(preceding)
+        atHead.addAll(init)
+        atHead.add(havocMarker(loopSt))
+        List<List<Statement>> heads = paths.call('head')
+        if (raw.guard != ConstantExpression.PRIM_TRUE) {
+            withEntryPaths(heads, entryReq) { dischargeExpression(raw.guard, reqAst, assumePos, assumeNeg, atHead) }
+        }
+        // the body: past the guard (a do-while's first pass isn't), so its paths are the heads with the guard marker
+        // in the body's own preceding; a do-while's are its iteration starts
+        boolean guarded = !raw.isDoWhile && raw.guard != ConstantExpression.PRIM_TRUE
+        withEntryPaths(raw.isDoWhile ? paths.call('body') : heads, entryReq) {
+            dischargeRegion(raw.body, reqAst, assumePos, assumeNeg, guarded ? withAssume(atHead, raw.guard) : atHead, handleAsserts)
+        }
+        if (rest.isEmpty()) return
+        List<Statement> after = new ArrayList<Statement>(preceding)
+        after.addAll(init)
+        after.add(loopSt)
+        withEntryPaths(paths.call('exit'), entryReq) {
+            dischargeRegion(rest, reqAst, assumePos, assumeNeg, after, handleAsserts)
         }
     }
 
