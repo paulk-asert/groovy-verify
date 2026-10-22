@@ -16363,6 +16363,52 @@ calling a pure method, fine.
 through; implicit bounds obligations on an alias still see its own length (a spurious warning, sound); a callee's
 `old.x` on a non-parameter in a static method is a groovy-contracts restriction.
 
+## Phase 367 — the trusted base, audited against the runtime  *(shipped)*
+
+The shipped JDK skeletons (`META-INF/groovy-verify/specs/`, 55 methods over 13 classes) and the method-name tables
+the frame inference reads (the pure-read lists, the fresh-result list, the pure static classes) are trusted: never
+proved, consumed at every call. `SpecAuditTest` (JUnit, four tests) now runs each against the runtime it describes.
+
+- **Skeletons:** each method is found on the runtime class by its skeleton signature (or, for a skeleton whose
+  formals are widened to `Object` or narrowed to exact types, the one runtime method they fit) and run on the cross
+  product of edge-heavy inputs (`MIN_VALUE`/`MAX_VALUE` and their neighbours, ASCII and non-ASCII chars, empty and
+  mixed-type lists, unsorted arrays, `LocalDate.MIN`…) that its `@Requires` admits — 14,743 runs. Each `@ThrowsIf` arm
+  is checked in its stated direction (an exhaustive arm both ways, a sufficient one only forward), the `@Ensures` on
+  every normal return (with `result` and `old`, the receiver's members for an instance spec), and the frame: an
+  argument or receiver outside `@Modifies` (all of them, for `@Pure`) must be unchanged, and a framed collection keep
+  its size (Phase 229's assumption). Mutation-checked: a wrong total spec (`abs`), an over-wide throw arm (`floorDiv`)
+  and a mutator marked `@Pure` (`sort`) each fail it.
+- **Name tables:** every read name is called on sample receivers (lists, sets, maps, strings, arrays, builders,
+  numbers, an iterator) with sample arguments (none, indices, closures, comparators, collections); a receiver or
+  argument changed is a failure. Every fresh-result name must return neither its receiver nor an argument, nor a view
+  (writing the result mustn't change the receiver). Every public static of each pure static class with a mutable
+  parameter is run, and must leave its arguments unchanged.
+
+**Found and fixed:**
+
+- `Collections.frequency(c, o) == c.count(o)` was **false** whenever the needle's boxed type differed from the
+  elements' (`frequency([5L], 5)` is 0, `[5L].count(5)` is 1 — `equals` against Groovy's `==`), and the int model can't
+  tell them apart: `frequency(xs, 5)` over a `List<Long>` proved `result == xs.count(5)`. The skeleton now names
+  **exact formals** — `frequency(Collection<Integer> c, Integer o)` and a `Long` twin — and the registry's typed lookup
+  (`SpecRegistry.accepts`, `exactFormal`, `typeKey`) matches a formal written as a boxed type, or with type arguments,
+  only to an actual of exactly that type (and never to an unknown one); callers now pass the actuals' type arguments.
+  `List<Integer>` with an `int` needle links as before.
+- `map.get(key, default)` — `get` is on the read list, but the GDK's two-argument form puts the default in when the
+  key is absent: a helper calling it was framed as writing nothing. Now that arity writes (`WRITING_ARITY`).
+- `Character.toChars(cp, dst, i)` — `Character` is a pure static class ("writes only what its arguments do"), but this
+  one fills `dst`. Now its arguments are written (`STATIC_ARG_WRITERS`), and a loop's write set, which can't name
+  them, bails.
+
+**Shipped tests:** `SpecAuditTest`, 4 tests; group `P367 the trusted base audited`, 7 cases, 5 verifying before:
+`map.get(key, default)` writing and resizing a helper's map, `toChars` writing a helper's array, and `frequency`'s link
+across mismatched boxed types, both ways; and two that still prove, a plain `map.get(key)` and `frequency` over a
+`List<Long>` with a `long` needle.
+
+**Boundaries, stated:** the audit samples — inputs a generator doesn't produce (an unspecced type, a value outside
+the edge sets) go untested, and the name tables are audited on common receivers, not every type a name can reach. A
+map whose reads write is beyond any name table: `[:].withDefault { 0 }` inserts on `get`, so a helper reading one is
+framed as a read (a runtime-type property the static types don't show).
+
 ---
 
 ## Definition of done, per increment

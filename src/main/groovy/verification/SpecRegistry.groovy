@@ -121,16 +121,77 @@ class SpecRegistry {
             // wildcard-aware: a null entry matches anything; partial knowledge narrows the overload
             // set instead of discarding it — the match must still be UNIQUE among candidates
             List<MethodNode> hits = byArity.findAll { MethodNode c ->
-                List<String> specTypes = c.parameters.collect { simpleTypeName(it.type.name) }
-                List<String> asked = paramTypeNames.collect { it == null ? null : simpleTypeName(it) }
-                (0..<arity).every { int i -> formalAccepts(specTypes.get(i), asked.get(i)) }
+                (0..<arity).every { int i -> accepts(c.parameters[i].type, paramTypeNames.get(i)) }
             }
             m = hits.size() == 1 ? hits.get(0) : null
         } else {
             m = byArity.size() == 1 ? byArity.get(0) : null
+            // Phase 367 — an exact formal is a claim about the actual's runtime type: unknown types don't meet it
+            if (m != null && m.parameters.any { exactFormal(it.type) }) m = null
         }
         if (m != null) m.putNodeMetaData(SPEC_KEY, Boolean.TRUE)
         m
+    }
+
+    /** Phase 367 — the boxed types a skeleton formal may name to mean EXACTLY that runtime class. */
+    private static final Set<String> BOXED = ['Integer', 'Long', 'Character', 'Short', 'Byte', 'Double', 'Float', 'Boolean'] as Set
+    private static final Map<String, String> BOX = [int: 'Integer', long: 'Long', char: 'Character', short: 'Short',
+                                                    byte: 'Byte', double: 'Double', float: 'Float', boolean: 'Boolean']
+
+    /**
+     * Phase 367 — a formal that speaks of the actual's exact runtime type: a boxed type ({@code Integer o}), or one
+     * with type arguments ({@code Collection<Integer> c}). The width classes the typed lookup otherwise matches on
+     * merge {@code char}, {@code short}, {@code Integer}, …, but {@code equals} tells their boxes apart, so a spec
+     * that is true only when they agree — {@code Collections.frequency(c, o) == c.count(o)} — names them exactly.
+     */
+    static boolean exactFormal(ClassNode t) {
+        if (t == null) return false
+        String s = t.name.contains('.') ? t.name.substring(t.name.lastIndexOf('.') + 1) : t.name
+        s in BOXED || (t.genericsTypes != null && t.genericsTypes.length > 0 && !t.genericsTypes.any { it.placeholder || it.wildcard })
+    }
+
+    /** Phase 367 — a type as the typed lookup is asked it: its name with its type arguments, `java.util.List<java.lang.Integer>`. */
+    static String typeKey(ClassNode t) {
+        if (t == null) return null
+        def gts = t.genericsTypes
+        if (gts == null || gts.length == 0) return t.name
+        if (gts.any { it.placeholder || it.wildcard || it.type == null }) return t.name
+        t.name + '<' + gts.collect { typeKey(it.type) }.join(',') + '>'
+    }
+
+    private static String rawSimple(String n) {
+        String b = n.contains('<') ? n.substring(0, n.indexOf('<')) : n
+        b = b.contains('.') ? b.substring(b.lastIndexOf('.') + 1) : b
+        BOX.get(b) ?: b
+    }
+
+    private static List<String> typeArgs(String n) {
+        int lt = n.indexOf('<')
+        if (lt < 0 || !n.endsWith('>')) return Collections.<String> emptyList()
+        String inner = n.substring(lt + 1, n.length() - 1)
+        List<String> out = []
+        int depth = 0, start = 0
+        for (int i = 0; i < inner.length(); i++) {
+            char ch = inner.charAt(i)
+            if (ch == ('<' as char)) depth++
+            else if (ch == ('>' as char)) depth--
+            else if (ch == (',' as char) && depth == 0) { out << inner.substring(start, i); start = i + 1 }
+        }
+        out << inner.substring(start)
+        out
+    }
+
+    /** Whether a skeleton formal of type {@code spec} accepts an actual the caller typed as {@code asked} (Phase 367:
+     *  exactly, for an exact formal — and an unknown type doesn't; else by {@link #formalAccepts}). */
+    static boolean accepts(ClassNode spec, String asked) {
+        if (!exactFormal(spec)) return asked == null || formalAccepts(simpleTypeName(spec.name), simpleTypeName(asked.contains('<') ? asked.substring(0, asked.indexOf('<')) : asked))
+        if (asked == null) return false
+        String specSimple = rawSimple(spec.name)
+        if (specSimple in BOXED) return rawSimple(asked) == specSimple
+        if (!formalAccepts(simpleTypeName(spec.name), simpleTypeName(asked.contains('<') ? asked.substring(0, asked.indexOf('<')) : asked))) return false
+        List<String> want = spec.genericsTypes.collect { rawSimple(it.type.name) }
+        List<String> got = typeArgs(asked).collect { rawSimple(it) }
+        want == got
     }
 
     /** Collection kinds a {@code Collection}-typed formal accepts (simple names, post-width-class). */

@@ -61,9 +61,16 @@ class Collections {
     @Ensures({ coll.every { result <= it } })
     static Object min(Collection coll) {}
 
+    // Phase 367 — `frequency` counts by `equals`, Groovy's `count` by `==`: they agree only when the needle and the
+    // elements are the same boxed type (frequency([1], 1L) is 0, [1].count(1L) is 1), so the exact link is stated
+    // for exact types — the formals' boxed type and type argument — and the registry applies it only to such actuals.
     @Pure
     @Ensures({ result >= 0 && result <= c.size() && result == c.count(o) })
-    static int frequency(Collection c, Object o) {}
+    static int frequency(Collection<Integer> c, Integer o) {}
+
+    @Pure
+    @Ensures({ result >= 0 && result <= c.size() && result == c.count(o) })
+    static int frequency(Collection<Long> c, Long o) {}
 
     // ── the size-preserving mutators (Phase 229) ──
 

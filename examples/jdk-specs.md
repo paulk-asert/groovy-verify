@@ -345,7 +345,12 @@ class C {
 
 `Collections.frequency` is the registry speaking the corpus's own vocabulary — its spec says
 `result == c.count(o)`, and that exact fact links to the caller's own `count` spelling (get the
-needle wrong and it refutes):
+needle wrong and it refutes). The link is true only when the needle and the elements are the same
+boxed type — `frequency` counts by `equals`, Groovy's `count` by `==`, so `frequency([5L], 5)` is 0
+while `[5L].count(5)` is 1 — so the skeleton names **exact formals**, `frequency(Collection<Integer> c,
+Integer o)` (and its `Long` twin): a formal written as a boxed type or with type arguments is matched
+only by an actual of exactly that type, and a `List<Long>` searched for an `int` gets no fact at all
+(Phase 367):
 
 <!-- doclint:case p225-collections-specs/frequency-is-count-the-exact-fact-links-list-name-registration -->
 ```groovy
@@ -388,10 +393,15 @@ class C {
 }
 ```
 
-That refusal is the registry's one absolute rule made visible: **only provably-true contracts ship**
+That refusal is the registry's one absolute rule made visible: **only true contracts ship**
 — partial truths stay partial, wrap behaviour is guarded (`Long.sum`'s ensures holds only in the
 non-overflowing range, because the runtime wraps), and anything a spec doesn't state, the verifier
-doesn't invent. Trust that is visible is trust that gets reviewed: the harness prints the ledger
+doesn't invent. Since Phase 367 the rule is tested, not just intended: `SpecAuditTest` runs every
+shipped skeleton against the runtime it describes — edge-heavy inputs its `@Requires` admits, each
+`@ThrowsIf` arm in its stated direction, the `@Ensures` on every normal return, the frame against the
+arguments and receiver — and audits the frame inference's method-name tables the same way. Its first
+run found `frequency`'s link false across boxed types (above), and two trusted names that write: the
+GDK's `map.get(key, default)`, and `Character.toChars(cp, dst, i)`. Trust that is visible is trust that gets reviewed: the harness prints the ledger
 beside its perf line, DocLint's trusted inventory lints every shipped skeleton, the runtime rung
 grid-tests the proofs — its spec-throw category type-checking any runtime throw against the very
 arms that predicted it — and `VERIFY_EXPLAIN` names, per proof, exactly which trusted facts carried

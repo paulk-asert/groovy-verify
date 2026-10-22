@@ -12239,6 +12239,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         'verification.Forall', 'verification.Sets', 'verification.Fib', 'verification.Trib', 'verification.Gcd',
         'verification.Lcm', 'Forall', 'Sets', 'Fib', 'Trib', 'Gcd', 'Lcm'] as Set
 
+    /** Phase 367 — the statics of a pure static class that write an argument, found by the trusted-base audit
+     *  (SpecAuditTest): `Character.toChars(cp, dst, i)` fills `dst`. Their arguments are written. */
+    private static final Set<String> STATIC_ARG_WRITERS = ['java.lang.Character#toChars'] as Set
+
+    private static boolean staticArgWriter(String fqn, String m) {
+        STATIC_ARG_WRITERS.contains(fqn + '#' + m)
+    }
+
+    /** A static of a pure static class writes what its arguments do — and, for one of {@link #STATIC_ARG_WRITERS}, the
+     *  arguments themselves (a loop's write set, which doesn't name them, can't bound it). */
+    private static boolean pureStaticCallWrites(String fqn, String m, Expression args, Set<String> ws) {
+        if (staticArgWriter(fqn, m)) {
+            if (!inferMode()) return false
+            if (!recordArgumentWrites(args, ws)) return false
+        }
+        collectWritesArgs(args, ws)
+    }
+
     private static boolean pureStaticClass(String fqn) {
         fqn in PURE_STATIC_CLASSES || (inferMode() && fqn in INFER_PURE_STATIC_CLASSES)
     }
@@ -12278,7 +12296,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  and its own frame (or the receiver-write fallback) says so; only the library's method is known pure. */
     private static boolean pureRead(MethodCallExpression mce, Set<String> names) {
         String m = mce.methodAsString
-        m in names && !userDeclared(mce.objectExpression, m) && !collectorOverload(mce)
+        m in names && !userDeclared(mce.objectExpression, m) && !collectorOverload(mce) && !writingOverload(mce)
+    }
+
+    /** Phase 367 — read names whose overload of this arity writes its receiver, found by the trusted-base audit
+     *  (SpecAuditTest): the GDK's `map.get(key, default)` puts the default in when the key is absent. */
+    private static final Map<String, Integer> WRITING_ARITY = [get: 2]
+
+    private static boolean writingOverload(MethodCallExpression mce) {
+        Integer n = WRITING_ARITY.get(mce.methodAsString)
+        n != null && mce.arguments instanceof TupleExpression && ((TupleExpression) mce.arguments).expressions.size() == n
     }
 
     /** Phase 365 — read names whose collector overload fills an argument: `xs.collect(dst) { … }`,
@@ -12971,7 +12998,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 343 — a static call on a class with no mutable statics (Tuple.tuple, Math.max, Integer.valueOf)
             // writes only what its arguments do
             if (mce.objectExpression instanceof ClassExpression && pureStaticClass(((ClassExpression) mce.objectExpression).type?.name)) {
-                return collectWritesArgs(mce.arguments, ws)
+                return pureStaticCallWrites(((ClassExpression) mce.objectExpression).type.name, m, mce.arguments, ws)
             }
             if (!inferMode()) {
                 // a loop's write set: the earlier reading, unchanged by Phase 347
@@ -13067,7 +13094,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : null
         String shown = (ownerFqn != null ? ownerFqn.substring(ownerFqn.lastIndexOf('.') + 1) + '.' : '') + m + '(…)'
         if (as == null) return unbounded("call '${shown}' with unusual arguments")
-        if (pureStaticClass(ownerFqn)) return collectWritesArgs(args, ws)
+        if (pureStaticClass(ownerFqn)) return pureStaticCallWrites(ownerFqn, m, args, ws)
         ClassNode sib = moduleClass(ownerFqn)   // Phase 350 — a sibling class's static, by its inferred frame
         if (sib != null) return collectSiblingCallWrites(sib, m, as, ws, null, true) && collectWritesArgs(args, ws)
         MethodNode spec = ownerFqn != null && SpecRegistry.hasSpec(ownerFqn) ? SpecRegistry.lookup(ownerFqn, m, as.size(), null) : null
@@ -15337,7 +15364,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (actuals == null) return
                 List<ClassNode> inferred = actuals.collect { Expression a -> self.inferredTypeOf(a) }
                 MethodNode spec = SpecRegistry.lookup(owner.name, ((MethodCall) call).methodAsString,
-                    actuals.size(), inferred.every { it != null } ? inferred.collect { it.name } : null)
+                    actuals.size(), inferred.every { it != null } ? inferred.collect { SpecRegistry.typeKey(it) } : null)
                 if (spec == null) return
                 List<Map<String, Object>> arms = SpecRegistry.throwsIfArms(spec)
                 if (arms.isEmpty()) return
@@ -15879,7 +15906,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             (ownerCarrierType(callExpr) ?: staticOwnerType(callExpr) ?: instanceReceiverType(callExpr))
         // Phase 219 — STC-inferred actual types, when all are known, disambiguate registry overloads.
         List<ClassNode> inferred = actuals.collect { Expression a -> inferredTypeOf(a) }
-        List<String> actualTypeNames = inferred.every { it != null } ? inferred.collect { it.name } : null
+        List<String> actualTypeNames = inferred.every { it != null } ? inferred.collect { SpecRegistry.typeKey(it) } : null
         MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve, actualTypeNames, callExpr)
         if (callee == null) return false
         // Phase 215 — a registry skeleton must match the actuals' types (the unique-arity fallback can
@@ -15901,10 +15928,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             for (int ti = 0; ti < actuals.size(); ti++) {
                 ClassNode at = inferredTypeOf(actuals.get(ti))
-                if (at == null) continue
+                // Phase 367 — an exact formal (a boxed type, or type arguments) needs the actual's type, exactly
+                if (at == null) {
+                    if (SpecRegistry.exactFormal(callee.parameters[ti].type)) return false
+                    continue
+                }
                 // Phase 226 — one acceptance rule shared with the typed lookup (Object wildcard,
                 // Collection/List kinds, width-classed equality)
-                if (!SpecRegistry.formalAccepts(specSimple(callee.parameters[ti].type.name), specSimple(at.name))) {
+                if (!SpecRegistry.accepts(callee.parameters[ti].type, SpecRegistry.typeKey(at))) {
                     return false
                 }
             }
