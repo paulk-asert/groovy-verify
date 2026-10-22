@@ -7685,6 +7685,9 @@ class Encoder implements TheoryApi {
         List<Object[]> incs = new ArrayList<Object[]>()   // each: [operand, isPre, opToken]
         collectIncDecs(e, incs)
         if (incs.isEmpty()) return null
+        // Phase 374 — one in the right operand of `&&`/`||` runs only when the left lets it: hoisted, it ran always
+        // (`boolean t = b && (i++ >= 0); 100.intdiv(i)` read i == 1 for b false). Left to the in-order lowering.
+        if (shortCircuitIncDec(e)) return null
         for (Object[] inc : incs) {
             if (!(inc[0] instanceof VariableExpression)) return null     // array-element/field target → skip
         }
@@ -7853,6 +7856,19 @@ class Encoder implements TheoryApi {
             collectIncDecs(((BinaryExpression) e).leftExpression, out)
             collectIncDecs(((BinaryExpression) e).rightExpression, out)
         }
+    }
+
+    /** Phase 374 — is there an inc/dec inside the right operand of a `&&` or `||` in {@code e}? */
+    private static boolean shortCircuitIncDec(Expression e) {
+        boolean[] found = [false]
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if ((op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) && anyIncDec(be.rightExpression)) found[0] = true
+                super.visitBinaryExpression(be)
+            }
+        })
+        found[0]
     }
 
     /** Replace every inc/dec (BinaryExpression-reachable) with its operand, preserving source positions. */

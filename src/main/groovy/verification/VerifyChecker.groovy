@@ -1403,6 +1403,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 373 — while set, {@link #shown} withholds the failing call, with this note: the replay havocked what a
      *  statement writes inside (a nested assignment, a finally, a fall-through arm), and no run is followed there. */
     private String havocCallNote = null
+    /** Phase 374 — set while a witness is sought along an exact path from entry (every condition on it translated). */
+    private boolean exactWitness = false
     static final String HAVOC_CALL_NOTE = 'no failing call: the failure rests on what a statement writes inside it ' +
         '(a nested assignment, a callable\'s call, a catch or finally, a fall-through), which the check takes as ' +
         'unknown rather than following from entry'
@@ -2543,7 +2545,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (r.status == CheckResult.Status.REFUTED) sawRefutation = true
         boolean intEmpty = r.counterexample == null || r.counterexample.isEmpty()
         boolean sortedEmpty = r.sortedCounterexample == null || r.sortedCounterexample.isEmpty()
-        if (intEmpty && sortedEmpty) return r
+        if (intEmpty && sortedEmpty) {
+            // Phase 374 — an exact witness whose model is empty depends on nothing: every call fails, `f()` among them
+            if (exactWitness && closureCallNote == null && currentMethod != null && currentMethod.parameters.length == 0) {
+                r.failingCall = currentMethod.name + '()'
+            }
+            return r
+        }
         reproBreaksRequires = false
         r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
         if (reproBreaksRequires && !r.notes.contains(REPRO_BREAKS_REQUIRES)) r.notes.add(REPRO_BREAKS_REQUIRES)
@@ -5950,8 +5958,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // names are havocked for them (and, replayed later, the statement is refused and havocked whole)
             Set<String> hidden = hiddenWrites(st)
             if (!hidden.isEmpty()) {
-                preceding = withHavoc(preceding, hidden, Encoder.containsCallableCall(st) ? 'after a callable\'s call' :
-                    'after a nested write')
+                boolean callable = Encoder.containsCallableCall(st)
+                preceding = withHavoc(preceding, hidden, callable ? 'after a callable\'s call' : 'after a nested write',
+                    callable ? null : st)
             }
             // Phase 373 — try/catch/finally and switch, by their structure (they used to be checked whole, in the state
             // before them: a try block's `d = 0; 100.intdiv(d)` read d == 1)
@@ -6263,20 +6272,48 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void dischargeSeeded(Object site, Expression reqAst,
                                  List<Expression> assumePos, Expression assumeNeg,
                                  List<Statement> preceding) {
-        if (loopEntryPaths == null || heldErrors != null || currentChannelDesugared || !currentChannelNames.isEmpty()) {
+        if (heldErrors != null || currentChannelDesugared || !currentChannelNames.isEmpty()) {
             dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding)
             return
         }
-        List<List<Statement>> paths = loopEntryPaths
+        boolean inLoop = loopEntryPaths != null
+        // Phase 374 — after a loop's last cut, or from entry outside one, the statements may hold Phase 373's havoc
+        // points: each is replaced by the exact ways it runs ({@link #exactPaths}), and a witness sought along them
+        List<Statement> tail = inLoop ? afterCut(preceding) : preceding
+        boolean exact = needsExact(tail)
+        if (!inLoop && (!exact || (assumePos != null && !assumePos.isEmpty()) || assumeNeg != null)) {
+            dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding)
+            return
+        }
+        List<List<Statement>> tails = exact ? exactPaths(tail, site.hasProperty('node') ? (ASTNode) site['node'] : null) :
+            [tail] as List<List<Statement>>
+        List<List<Statement>> paths = inLoop ? loopEntryPaths : [new ArrayList<Statement>()] as List<List<Statement>>
+        if (inLoop && paths.any { needsExact(it) }) {   // an unrolled iteration may hold such a statement too
+            List<List<Statement>> expanded = new ArrayList<List<Statement>>()
+            for (List<Statement> p : paths) {
+                if (expanded.size() >= ENTRY_PATHS) break
+                expanded.addAll(needsExact(p) ? exactPaths(p, null) : [p] as List<List<Statement>>)
+            }
+            paths = expanded
+        }
+        Expression entryReq = inLoop ? loopEntryReq : reqAst
         Object[] plain = held({ ->
-            loopCallNote = LOOP_CALL_NOTE
+            loopCallNote = inLoop ? LOOP_CALL_NOTE : null
             try { dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding) } finally { loopCallNote = null }
             true
         })
         if ((boolean) plain[1]) {
+            int tries = 0
             for (List<Statement> path : paths) {
-                Object[] w = held({ -> dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding, path) })
-                if ((boolean) w[1]) { emitHeld((List<Object[]>) w[0]); return }
+                for (List<Statement> t : tails) {
+                    if (tries++ >= 2 * ENTRY_PATHS) break
+                    // a witness only picks the call shown: one that can't be sought (a term the replay can't take) is none
+                    Object[] w = held({ ->
+                        try { dischargeSeededAt(site, reqAst, assumePos, assumeNeg, t, path, entryReq) }
+                        catch (Throwable ignored) { false }
+                    })
+                    if ((boolean) w[1]) { emitHeld((List<Object[]>) w[0]); return }
+                }
             }
         }
         emitHeld((List<Object[]>) plain[0])
@@ -6308,7 +6345,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private boolean dischargeSeededAt(Object site, Expression reqAst,
                                       List<Expression> assumePos, Expression assumeNeg,
-                                      List<Statement> preceding, List<Statement> entryPath = null) {
+                                      List<Statement> preceding, List<Statement> entryPath = null,
+                                      Expression entryReq = null) {
         SmtSession s = backend.session()
         // a witness decides no obligation, only which call is shown (Phase 337's auxiliary queries)
         if (entryPath != null && s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
@@ -6329,7 +6367,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean stripQ = (site instanceof IndexSite) && !indexReadsArrayContent(((IndexSite) site).index)
             // Phase 371 — a witness starts at entry, where the whole @Requires holds (a quantified conjunct a check
             // drops is re-checked against the call it renders, Phase 337)
-            Expression req = entryPath != null ? loopEntryReq : reqAst
+            Expression req = entryPath != null ? (entryReq ?: loopEntryReq) : reqAst
             if (req != null) {
                 Object p = enc.translate(stripQ ? dropQuantifierConjuncts(req) : req)
                 if (p != null) s.assertExpr(p)
@@ -6363,7 +6401,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ctx.add(((IndexSite) site).index)
                 emitMonotonicityLemmas(s, enc, ctx)
             }
-            dischargeObligationUnder(s, enc, site)
+            boolean prevExact = exactWitness
+            exactWitness = entryPath != null
+            try { dischargeObligationUnder(s, enc, site) } finally { exactWitness = prevExact }
             return true
         } finally {
             havocLabels = prevLabels
@@ -6529,13 +6569,191 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 373 — how a {@link #HAVOC_NAMES_KEY} marker's values are shown ("in the finally"). */
     static final String HAVOC_LABEL_KEY = 'verification.havocLabel'
 
-    /** {@code preceding} followed by a marker havocking {@code names} (a new list), shown as {@code label}. */
-    private static List<Statement> withHavoc(List<Statement> preceding, Set<String> names, String label) {
+    /** Phase 374 — a havoc marker's exact ways: the statement whose inner writes it stands for (lowered up to the
+     *  site, {@link EvalOrder}), or the statement lists that may run in its place (a finally's try block, a case's
+     *  fall-through run). A marker with neither (a catch, a callable's reach) has none. */
+    static final String HAVOC_STMT_KEY = 'verification.havocStmt'
+    static final String HAVOC_EXACT_KEY = 'verification.havocExact'
+
+    /** {@code preceding} followed by a marker havocking {@code names} (a new list), shown as {@code label}; replaced by
+     *  {@code stmt}'s lowering or by one of {@code exact} in a witness. */
+    private static List<Statement> withHavoc(List<Statement> preceding, Set<String> names, String label,
+                                             Statement stmt = null, List<List<Statement>> exact = null) {
         Statement m = new EmptyStatement()
         m.putNodeMetaData(HAVOC_NAMES_KEY, new LinkedHashSet<String>(names))
         m.putNodeMetaData(HAVOC_LABEL_KEY, label)
+        if (stmt != null) m.putNodeMetaData(HAVOC_STMT_KEY, stmt)
+        if (exact != null) m.putNodeMetaData(HAVOC_EXACT_KEY, exact)
         List<Statement> out = new ArrayList<Statement>(preceding)
         out.add(m)
+        out
+    }
+
+    /** Phase 374 — does a witness need {@link #exactPaths} here: a Phase 373 havoc marker, or a statement the replay
+     *  havocs whole (a try, a switch, one writing inside its expression or running a callable)? */
+    private static boolean needsExact(List<Statement> stmts) {
+        stmts.any { Statement st ->
+            st.getNodeMetaData(HAVOC_NAMES_KEY) != null || st instanceof TryCatchStatement || st instanceof SwitchStatement ||
+                (st.getNodeMetaData(REPLAY_ASSUME_KEY) == null && st.getNodeMetaData(ASSUME_ONLY_KEY) == null &&
+                    st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null &&
+                    (!Encoder.nestedTargets(st).isEmpty() || Encoder.containsCallableCall(st)))
+        }
+    }
+
+    /**
+     * Phase 374 — the exact ways {@code stmts} run, each a list the replay follows exactly ({@link #replayExact}): a
+     * statement writing inside its expression lowered in evaluation order ({@link EvalOrder}); its own marker lowered
+     * up to the site {@code stop} (the conditions the region assumed of it are in that lowering, so they are dropped);
+     * a try run through to its finally; a switch by each entry and the run falling from it; a finally's or a case's
+     * marker by the ways it carries. None (an empty list) when one of them has no exact way: a catch (no exception is
+     * followed), a callable's call, a closure, a loop.
+     */
+    private List<List<Statement>> exactPaths(List<Statement> stmts, ASTNode stop) {
+        List<List<Statement>> acc = [new ArrayList<Statement>()] as List<List<Statement>>
+        Set<Statement> skip = Collections.newSetFromMap(new IdentityHashMap<Statement, Boolean>())
+        List<List<Statement>> none = Collections.<List<Statement>> emptyList()
+        for (int i = 0; i < stmts.size(); i++) {
+            Statement st = stmts.get(i)
+            if (skip.contains(st)) continue
+            List<List<Statement>> ways
+            if (st.getNodeMetaData(HAVOC_NAMES_KEY) != null) {
+                Statement own = (Statement) st.getNodeMetaData(HAVOC_STMT_KEY)
+                List<List<Statement>> alts = (List<List<Statement>>) st.getNodeMetaData(HAVOC_EXACT_KEY)
+                if (own != null) {
+                    if (stop == null) return none
+                    ways = EvalOrder.lowerStatement(own, stop)
+                    if (ways == null) return none
+                    for (int k = i + 1; k < stmts.size(); k++) if (ownCondition(stmts.get(k), own)) skip.add(stmts.get(k))
+                } else if (alts != null && !alts.isEmpty()) {
+                    ways = new ArrayList<List<Statement>>()
+                    for (List<Statement> a : alts) ways.addAll(exactPaths(a, null))
+                } else {
+                    return none
+                }
+            } else if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null || st.getNodeMetaData(ASSUME_ONLY_KEY) != null) {
+                ways = [[st] as List<Statement>] as List<List<Statement>>
+            } else if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) {
+                return none
+            } else if (st instanceof TryCatchStatement) {
+                TryCatchStatement tcs = (TryCatchStatement) st
+                if (LoopEncoder.leaves(tcs.tryStatement)) return none   // the code after it isn't reached through it
+                List<Statement> way = topStatements(tcs.tryStatement)
+                Statement fin = tcs.finallyStatement
+                if (fin != null && !(fin instanceof EmptyStatement)) way.addAll(topStatements(fin))
+                ways = exactPaths(way, null)
+            } else if (st instanceof SwitchStatement) {
+                ways = new ArrayList<List<Statement>>()
+                for (List<Statement> way : switchEntries((SwitchStatement) st)) ways.addAll(exactPaths(way, null))
+            } else if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null &&
+                       (!Encoder.nestedTargets(st).isEmpty() || Encoder.containsCallableCall(st))) {
+                if (Encoder.containsCallableCall(st)) return none
+                ways = EvalOrder.lowerStatement(st, null)
+                if (ways == null) return none
+            } else {
+                ways = [[st] as List<Statement>] as List<List<Statement>>
+            }
+            if (ways.isEmpty()) return none
+            List<List<Statement>> next = new ArrayList<List<Statement>>()
+            for (List<Statement> a : acc) for (List<Statement> w : ways) {
+                if (next.size() >= 4 * ENTRY_PATHS) break
+                List<Statement> c = new ArrayList<Statement>(a)
+                c.addAll(w)
+                next.add(c)
+            }
+            acc = next
+        }
+        acc.sort { List<Statement> p -> p.size() }
+        acc.size() > ENTRY_PATHS ? new ArrayList<List<Statement>>(acc.subList(0, ENTRY_PATHS)) : acc
+    }
+
+    /** Phase 374 — is {@code m} an assume marker over (a part of) {@code own}'s own expression — a short-circuit or
+     *  branch condition the region assumed, which {@code own}'s lowering states itself? */
+    private static boolean ownCondition(Statement m, Statement own) {
+        if (!(m instanceof AssertStatement) || m.getNodeMetaData(REPLAY_ASSUME_KEY) == null) return false
+        Expression c = ((AssertStatement) m).booleanExpression.expression
+        while (c instanceof NotExpression || c instanceof BooleanExpression) {
+            c = c instanceof NotExpression ? ((NotExpression) c).expression : ((BooleanExpression) c).expression
+        }
+        Expression ownExpr = own instanceof IfStatement ? ((IfStatement) own).booleanExpression :
+            own instanceof ExpressionStatement ? ((ExpressionStatement) own).expression :
+            own instanceof ReturnStatement ? ((ReturnStatement) own).expression : null
+        ownExpr != null && EvalOrder.contains(ownExpr, c)
+    }
+
+    /** Phase 374 — a try block run through to its end: a final `return`'s value is evaluated (it writes nothing),
+     *  then the finally runs. Null when the block leaves otherwise, or its return writes. */
+    private static List<Statement> tryThrough(List<Statement> tryStmts) {
+        List<Statement> out = new ArrayList<Statement>(tryStmts)
+        if (!out.isEmpty() && out.get(out.size() - 1) instanceof ReturnStatement) {
+            Expression rv = ((ReturnStatement) out.get(out.size() - 1)).expression
+            if (rv != null && EvalOrder.writes(rv)) return null
+            out.remove(out.size() - 1)
+        }
+        if (!out.isEmpty() && LoopEncoder.leaves(out.get(out.size() - 1))) return null
+        out
+    }
+
+    /** Phase 374 — each arm's own entry condition, aligned with the arms (the cases, then the default): its case
+     *  matches and no case before it does; the default's, that none does. Null unless every case is a constant. */
+    private static List<Expression> switchGuards(SwitchStatement sw) {
+        if (sw.expression == null || EvalOrder.writes(sw.expression)) return null
+        List<Expression> eqs = new ArrayList<Expression>()
+        for (CaseStatement cs : sw.caseStatements) {
+            if (!(cs.expression instanceof ConstantExpression) || ((ConstantExpression) cs.expression).value == null) return null
+            eqs.add(new BinaryExpression(sw.expression, Token.newSymbol(Types.COMPARE_EQUAL, -1, -1), cs.expression))
+        }
+        List<Expression> out = new ArrayList<Expression>()
+        for (int k = 0; k <= eqs.size(); k++) {
+            Expression g = k < eqs.size() ? eqs.get(k) : null
+            for (int j = 0; j < k; j++) {
+                Expression not = new NotExpression(eqs.get(j))
+                g = g == null ? not : new BinaryExpression(g, Token.newSymbol(Types.LOGICAL_AND, -1, -1), not)
+            }
+            out.add(g ?: ConstantExpression.PRIM_TRUE)
+        }
+        boolean hasDefault = sw.defaultStatement != null && !(sw.defaultStatement instanceof EmptyStatement)
+        if (!hasDefault) out.remove(out.size() - 1)
+        out
+    }
+
+    /** Phase 374 — a switch's exact ways: each entry, with its condition assumed, and the arms it runs until one leaves
+     *  by a `break` (an arm leaving by a return or throw ends the way; it doesn't reach past the switch); without a
+     *  default, no case matching. */
+    private static List<List<Statement>> switchEntries(SwitchStatement sw) {
+        List<Expression> guards = switchGuards(sw)
+        if (guards == null) return Collections.<List<Statement>> emptyList()
+        List<Statement> arms = new ArrayList<Statement>()
+        for (CaseStatement cs : sw.caseStatements) arms.add(cs.code)
+        boolean hasDefault = sw.defaultStatement != null && !(sw.defaultStatement instanceof EmptyStatement)
+        if (hasDefault) arms.add(sw.defaultStatement)
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (int k = 0; k < arms.size(); k++) {
+            List<Statement> way = [EvalOrder.assume(guards.get(k))] as List<Statement>
+            boolean dead = false
+            for (int m = k; m < arms.size(); m++) {
+                List<Statement> body = topStatements(arms.get(m))
+                if (LoopEncoder.leaves(arms.get(m))) {
+                    Statement last = body.isEmpty() ? null : body.get(body.size() - 1)
+                    if (last instanceof BreakStatement && ((BreakStatement) last).label == null) {
+                        way.addAll(body.subList(0, body.size() - 1))
+                    } else {
+                        dead = true
+                    }
+                    break
+                }
+                way.addAll(body)
+            }
+            if (!dead) out.add(way)
+        }
+        if (!hasDefault) {
+            Expression none = null   // no case matches
+            for (CaseStatement cs : sw.caseStatements) {
+                Expression not = new NotExpression(new BinaryExpression(sw.expression,
+                    Token.newSymbol(Types.COMPARE_EQUAL, -1, -1), cs.expression))
+                none = none == null ? not : new BinaryExpression(none, Token.newSymbol(Types.LOGICAL_AND, -1, -1), not)
+            }
+            out.add([EvalOrder.assume(none ?: ConstantExpression.PRIM_TRUE)] as List<Statement>)
+        }
         out
     }
 
@@ -6610,7 +6828,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Statement fin = tcs.finallyStatement
         if (fin != null && !(fin instanceof EmptyStatement)) {
-            dischargeRegion(topStatements(fin), reqAst, assumePos, assumeNeg, withHavoc(preceding, written, 'in the finally'), handleAsserts)
+            // Phase 374 — its exact way: the try block run through (to its return, whose value is evaluated first)
+            List<List<Statement>> ways = new ArrayList<List<Statement>>()
+            List<Statement> through = tryThrough(tryStmts)
+            if (through != null) ways.add(through)
+            dischargeRegion(topStatements(fin), reqAst, assumePos, assumeNeg,
+                withHavoc(preceding, written, 'in the finally', null, ways), handleAsserts)
         }
     }
 
@@ -6628,11 +6851,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             arms.add(cs.code)
         }
         if (sw.defaultStatement != null && !(sw.defaultStatement instanceof EmptyStatement)) arms.add(sw.defaultStatement)
-        for (Statement arm : arms) {
+        List<Expression> guards = switchGuards(sw)   // Phase 374 — each arm's own entry, for the exact ways in
+        int from = 0                                  // the first arm of the run falling into this one
+        for (int i = 0; i < arms.size(); i++) {
+            Statement arm = arms.get(i)
             List<Statement> body = topStatements(arm)
-            dischargeRegion(body, reqAst, assumePos, assumeNeg, fallen.isEmpty() ? preceding : withHavoc(preceding, fallen, 'after a fall-through'),
-                handleAsserts)
-            if (LoopEncoder.leaves(arm)) fallen.clear()
+            List<List<Statement>> ways = null
+            if (!fallen.isEmpty() && guards != null) {
+                ways = new ArrayList<List<Statement>>()
+                for (int k = from; k <= i; k++) {
+                    List<Statement> way = [EvalOrder.assume(guards.get(k))] as List<Statement>
+                    for (int j = k; j < i; j++) way.addAll(topStatements(arms.get(j)))
+                    ways.add(way)
+                }
+            }
+            dischargeRegion(body, reqAst, assumePos, assumeNeg,
+                fallen.isEmpty() ? preceding : withHavoc(preceding, fallen, 'after a fall-through', null, ways), handleAsserts)
+            if (LoopEncoder.leaves(arm)) { fallen.clear(); from = i + 1 }
             else fallen.addAll(writesOf(body, currentMethod?.declaringClass))
         }
     }

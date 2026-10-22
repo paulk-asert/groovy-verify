@@ -24,7 +24,8 @@ import static cases.CaseDsl.*
  * switch is not one run through: a catch is entered after any prefix of the try block, a finally after the block or a
  * catch, by any exit, a case body by falling through from the case above. Sites inside and after these were checked
  * in the state before them, so their writes were missed — silently. They are now followed or havocked, and a failure
- * that rests on a havocked value has its failing call withheld, with a note.
+ * that rests on a havocked value has its failing call withheld, with a note — Phase 374 then seeks it along the exact
+ * ways the statement runs, so only the catch and the callables below keep the note.
  */
 class G417_p373_evaluation_order {
 
@@ -37,7 +38,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly — the finally's divisor was read as d == 1.
         [group: "P373 evaluation order", name: "a finally after a return",
-         expect: ["Possible ArithmeticException: Division by zero", "d (in the finally) = 0", NOTE], refute: "fails on",
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(0)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         @Requires({ n >= 0 })
                         static int f(int n) {
@@ -53,7 +54,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly.
         [group: "P373 evaluation order", name: "a finally after normal completion",
-         expect: ["Possible ArithmeticException: Division by zero", "d (in the finally) = 0", NOTE],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(0)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(int n) {
                             int d = 1
@@ -99,7 +100,7 @@ class G417_p373_evaluation_order {
 
         // Before: reported — the try, which the replay can't follow, was havocked whole — but shown as "after a loop".
         [group: "P373 evaluation order", name: "after a try with a finally",
-         expect: ["Possible ArithmeticException: Division by zero", "d (after the try) = 0", NOTE],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f()"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f() {
                             int d = 1
@@ -114,7 +115,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly — case 2's body was checked as if only entered by its own match.
         [group: "P373 evaluation order", name: "a case body entered by falling through",
-         expect: ["Possible ArithmeticException: Division by zero", "d (after a fall-through) = 0", NOTE],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(1)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(int k) {
                             int d = 1
@@ -130,7 +131,7 @@ class G417_p373_evaluation_order {
 
         // Before: reported, but with `fails on: f(-2147483648)`, a call that takes the default arm and doesn't fail.
         [group: "P373 evaluation order", name: "after a switch with fall-through",
-         expect: ["Possible ArithmeticException: Division by zero", "d (after the switch) = 0", NOTE], refute: "fails on",
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(1)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(int k) {
                             int d = 1
@@ -145,7 +146,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly — the right operand read the old n.
         [group: "P373 evaluation order", name: "an assignment in a condition",
-         expect: ["Possible ArithmeticException: Division by zero", "n (after a nested write) = 0", NOTE],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(0)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(int m) {
                             int n = 1
@@ -156,7 +157,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly — the branch read the old n.
         [group: "P373 evaluation order", name: "an assignment in an if's condition, read in its body",
-         expect: ["Possible ArithmeticException: Division by zero", "n (after a nested write) = 0"],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(0)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(int m) {
                             int n = 1
@@ -168,7 +169,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly.
         [group: "P373 evaluation order", name: "a write in a ternary arm",
-         expect: ["Possible ArithmeticException: Division by zero", "d (after a nested write) = 0", NOTE],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(true)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(boolean b) {
                             int d = 1
@@ -179,7 +180,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly.
         [group: "P373 evaluation order", name: "a write in an elvis arm",
-         expect: ["Possible ArithmeticException: Division by zero", "d (after a nested write) = 0"],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(0)"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f(Integer x) {
                             int d = 1
@@ -190,7 +191,7 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly.
         [group: "P373 evaluation order", name: "an increment inside an operand",
-         expect: ["Possible ArithmeticException: Division by zero", "i (after a nested write) = 1"],
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f()"],  // Phase 374 — its exact witness
          src: tc('''class A {
                         static int f() {
                             int i = 0

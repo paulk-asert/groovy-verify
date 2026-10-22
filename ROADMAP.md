@@ -16668,6 +16668,46 @@ condition read in its body, the ternary and elvis writes, the increment in an op
 proof before: the postcondition over `c()`. A false warning before: the GString. Plus an increment in an index and in a
 stored value, kept.
 
+## Phase 374 — the exact ways a statement runs  *(shipped — witnesses, and a hoist that ran a conditional increment always)*
+
+Phase 373 traded calls for soundness: every failure behind a nested write, a finally, a fall-through or a switch lost
+its `fails on:` call, though most are a plain call from entry (`f(0)` for a finally reading `d = n`, `f(1)` for a case
+falling into the divide). The havocked check still decides the obligation; on a refutation, the call is now sought
+the way Phase 371 seeks a loop's: along exact paths from entry, through each of the statement's ways.
+
+- **Evaluation order** (`EvalOrder`, new). A statement writing inside its expression is lowered into straight-line
+  assignments in the order Java evaluates it: `(n = m) >= 0 && 100.intdiv(n) > 0` is `n = m`, assume `n >= 0`, then the
+  divide. A value read before a later write to what it reads is snapshotted into a `$eoN` temp; `&&`, `||`, a ternary
+  and an elvis branch into one path per way, each with its condition assumed (a value that isn't a condition, the elvis
+  operand, by its Groovy truth, `(x as boolean)`). For the statement's own sites, the lowering stops at the site and
+  keeps only the ways that reach it; the conditions the region assumed of the statement are in it, so they are dropped.
+- **Try and switch.** A try is run through to its finally (a final `return`'s value evaluated first; an early return in
+  it not taken); a finally's sites take the try block's way. A switch is entered at each case, with its match assumed
+  and no earlier case's, or by none (the default, or past the switch), and runs the arms it falls through until one
+  breaks; an arm leaving by a return ends that way. Only constant cases have an exact entry: a range keeps the note.
+- **Composed with Phase 371.** A loop region's exact tail, and its unrolled entry iterations, are lowered the same way:
+  `int x = (i == 2) ? (d = 0) : 1` in a loop body gives `fails on: f(3)`.
+- **No witness for a catch** (no exception is followed) or a callable's call (its body is unknown): their note stays.
+  A witness attempt that the replay can't take is no witness; it never stops the check. An exact witness whose model
+  is empty depends on nothing, so a method with no parameters shows `fails on: f()`.
+- **Soundness: an increment under a short circuit.** `Encoder.expandIncDecStatements` hoisted every `i++` in a
+  statement, the right operand of `&&`/`||` included, where it runs only when the left lets it: `int i = 0; boolean t =
+  b && (i++ >= 0); 100.intdiv(i)` read `i == 1` for `b == false` and compiled cleanly, and `@Ensures({ result == 1 })`
+  over `i` proved. Such a statement is no longer hoisted: Phase 373 havocs it, and the lowering gives `fails on: f(false)`.
+  A ternary's arms were already refused.
+
+**Changed cases:** G417's ten cases whose call Phase 373 withheld now expect it (`f(0)`, `f(1)`, `f(true)`, `f()`);
+its catch case keeps the note.
+
+**Boundary:** a catch's sites, a callable's reach and a switch over non-constant cases keep the note. A path is
+sought among at most 32 per site (64 tries with a loop's entries). The postcondition engine still skips these
+statements, loudly.
+
+**Shipped tests:** group `P374 exact witness`, 11 cases. Silent before: an increment under `&&` and under `||`. A wrong
+proof before: a postcondition over the `&&` increment. A call withheld before: a ternary arm's increment, a try in a
+try, a switch with no default, a string switch falling through, a finally after an early return not taken, a nested
+write in a loop body. Plus an always-evaluated increment (still hoisted) and a range switch (its note kept).
+
 ---
 
 ## Definition of done, per increment
