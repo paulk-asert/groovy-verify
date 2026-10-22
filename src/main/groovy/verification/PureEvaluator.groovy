@@ -654,6 +654,8 @@ class PureEvaluator {
             name = name.substring(q + 1)
             sibling = true
         }
+        // Phase 365 — the call carries no types here, so of several same-arity overloads none is known to be the one run
+        if (VerifyChecker.ambiguousOverload(in, name, arity)) return null
         for (MethodNode m : in.getMethods(name)) {
             if (sibling && !m.isStatic()) continue
             // A contracted method is the inter-procedural/induction path's territory (its @Ensures is

@@ -16273,6 +16273,56 @@ cleaned (over-strict, never unsound — Gradle's full recompile cleans it; incre
 a subclass compiled without the checker (the residual, now ledgered, stated in the jar, and checkable by anyone who
 runs the checker); 3c, the class-file annotation carrier, only if shading (which may drop `META-INF`) matters.
 
+## Phase 365 — a soundness sweep  *(shipped)*
+
+A probe sweep of ~150 shapes neighbouring Phases 357–364 — traits, interface `default` methods, closures and
+callables, constructors and initialisers, overloads, default arguments, varargs, nested and inner classes, statics,
+field shadowing, in-place JDK/GDK mutators and views, exceptions — found four families of silent holes. Traits,
+default methods, constructors, the collection layer and closures stored or passed on were already loud or refuted.
+
+- **Overloads resolved by name and arity.** `resolveContractedCallee` took the first same-arity overload, so for
+  `h(a)` on an `int[]` the frame of `h(Object)` (empty) stood in for `h(int[])`'s, and with contracts its `@Ensures`
+  and `@Modifies`; `PureEvaluator` evaluated `h(long)`'s body as the value of `h(1)`, which runs `h(int)`. A call now
+  resolves to the method STC chose (`stcTarget`: the call's `methodTarget` / `DIRECT_METHOD_CALL_TARGET`), matched by
+  erased signature; with no target and several same-arity overloads up the hierarchy (`ambiguousOverload`) — the
+  PureEvaluator's case, which carries no types — none is assumed. A carrier operator (`Encoder.singleArgMethod`)
+  likewise declines an overloaded name. The frame collector already took the union of the overloads.
+- **Fields another class owns.** A frame names fields bare, read as the writing method's class's (or, through a
+  receiver, the receiver's). So `A.n = 1` written from class C was recorded as C's `n`, and dropped for a caller in A;
+  a static nested class's bare `n = 1` (the outer static), and an inner class's `n = 1` or `A.this.n = 1` (the
+  enclosing instance's field), were read as locals; `C.s()` calling `A.setN(1)` was framed `A$n` (Phase 350's name
+  for a sibling's static) and dropped as invisible; and a superclass method writing the static its subclass caller
+  inherits was framed as the receiver's field `c$k`. Now a write to a static of another class of the unit is
+  recorded as `Sib$field` (`foreignStaticName`) and kept in the frame (`unitStatic`), and a caller whose class or
+  superclass owns it reads it under its own name (`callerOwnStatic`) — in `assumeCalleeEnsures`, in the collector,
+  and in the frame check (which names it `A.n` for a method of another class). An enclosing instance's field is
+  unbounded, loudly ("a field of A, which a frame of A.In can't name").
+- **A written formal handed `this`.** `c.w(this)`, where `w(A a)` writes `a.n`, havocked a variable named `this`,
+  leaving the caller's fields framed. Now loud, in the collector and at the call ("which is passed 'this' — the
+  caller's own fields").
+- **An unknown call writes what it is handed.** Phase 347 read an unknown method as mutating its receiver "and
+  nothing else nameable", but `r.nextBytes(b)`, `s.getChars(0, n, dst, 0)`, `rdr.read(buf)`, `q.drainTo(ys)`,
+  `f.accept(b)` and `c.call(b)` fill their arguments; and `collect`, `collectEntries`, `collectMany`,
+  `collectNested` and `toArray` are reads only without a collector argument. Each mutable argument of an unknown
+  call is now written and may be resized (`recordArgumentWrites`, beside the receiver), a read name's collector
+  overload is no read (`collectorOverload`), and a callable called by name (`k(b)` on a closure field or parameter)
+  writes its arguments too. A constant, an immutable-typed value or a closure literal is no write.
+
+**Shipped tests:** group `P365 soundness sweep`, 26 cases, 22 verifying before: an overloaded callee's frame,
+value, `@Ensures` and `@Modifies`, and on another class's receiver; another class writing the caller's static,
+through an instance method and by calling back into the caller's class; a nested class writing its outer static;
+a superclass's write to an inherited static; an inner class's and `A.this.n`'s writes to the enclosing instance
+(loud); a written `this` (loud); `nextBytes`, `getChars`, `read`, `toArray`, `accept`, a closure field, `collect(dst)`,
+`collectEntries(map)` and `drainTo`. And four that still prove: the chosen overload's `@Ensures` (refuted before), a
+same-named static of another class, a plain `collect { … }`, an immutable argument.
+
+**Boundaries, stated:** a `@TypeChecked` call still dispatches through the metaclass at run time, so a metaclass
+change or category made by code outside the proof (`C.metaClass.get = { -> 1 }`, `use (Cat) { … }`) can replace a
+method's behaviour, even a final class's; every proof assumes the statically chosen method runs (`@CompileStatic`
+callers dispatch directly). An instance method of a final class is framed by its body but its value is still opaque
+(over-strict). A `Sib$field` written through a chain of calls is havocked under that name by a caller that can't
+read it, harmlessly.
+
 ---
 
 ## Definition of done, per increment

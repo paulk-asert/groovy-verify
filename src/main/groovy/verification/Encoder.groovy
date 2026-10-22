@@ -1371,11 +1371,12 @@ class Encoder implements TheoryApi {
         mc != null ? (String) mc[0] : null
     }
 
-    /** The single-argument method named {@code name} on {@code ct}, or null. */
+    /** The single-argument method named {@code name} on {@code ct}, or null — null too when it is overloaded
+     *  (Phase 365: the name alone can't say which one the operator runs). */
     private static MethodNode singleArgMethod(ClassNode ct, String name) {
         if (ct == null) return null
-        for (MethodNode mn : (ct.methods ?: [])) if (mn.name == name && mn.parameters.length == 1) return mn
-        null
+        List<MethodNode> ms = (ct.methods ?: []).findAll { MethodNode mn -> mn.name == name && mn.parameters.length == 1 }
+        ms.size() == 1 ? ms[0] : null
     }
     /** The (implicit-return) value expression of a single-statement method body, or null. Reads the clean
      *  pre-contract snapshot when groovy-contracts has rewritten the body (e.g. a `@Requires` guard). */

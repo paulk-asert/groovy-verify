@@ -3356,6 +3356,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (valueParams.contains(w)) continue
                 if (visible.contains(w)) out.add(w)
                 else if (rebound) continue   // a local rebound — no write through it
+                // Phase 365 — another class's static (`Sib$f`, Phase 350) is no location of this class, but it is one of
+                // Sib's: a caller in Sib (or a subclass) names it, so the frame keeps it rather than dropping it
+                else if (unitStatic(w, mod) != null) out.add(w)
                 else if (held.containsKey(w)) out.addAll(held.get(w))
             }
             outSizes = new LinkedHashSet<String>()
@@ -3393,8 +3396,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<MethodNode> candidates = new ArrayList<MethodNode>()
         for (ClassNode c = owner; c != null; c = c.superClass) candidates.addAll(c.getMethods(name))
         // no such method anywhere up the hierarchy: the SAM / closure call shorthand on a callable in scope
-        // (`cs(r)` on a Function parameter), whose own body's writes count where it is defined — its arguments' do here
-        if (candidates.isEmpty()) return true
+        // (`cs(r)` on a Function parameter), whose own body's writes count where it is defined — its arguments' do here,
+        // and (Phase 365) the arguments themselves, which the callable may write (`k(b)` with `k = { b -> b[0] = 1 }`)
+        if (candidates.isEmpty()) return recordArgumentWrites(new ArgumentListExpression(actuals), ws)
         for (MethodNode c : new ArrayList<MethodNode>(candidates)) candidates.addAll(overriders(c))   // Phase 359
         collectCallWritesAmong(candidates, name, actuals, ws, null)
     }
@@ -3436,6 +3440,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (int i = 0; i < m.parameters.length; i++) if (m.parameters[i].name == w) { fi = i; break }
                 if (fi < 0) {                                             // a field (same class, same name)
                     String rec = fieldAs == null ? w : fieldAs.endsWith('$') ? fieldAs + w : fieldAs
+                    // Phase 365 — a static of the writer's own class (or a superclass) is its own location, whichever
+                    // class's method wrote it: `C.s()` calling `A.setN(…)`, or `c.w()` writing the static it inherits
+                    String own = callerOwnStatic(w, m.declaringClass, WRITE_OWNER.get())
+                    if (own != null) rec = own
                     ws.add(rec)
                     if (sz != null && (sizes == null || sizes.contains(w))) sz.add(rec)
                     continue
@@ -3443,6 +3451,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression act = actuals.get(fi)
                 if (!(act instanceof VariableExpression)) {               // can't name what is written
                     return unbounded("call '${name}(…)' writes its parameter '${w}', but the argument '${clip(act.text)}' isn't a named variable")
+                }
+                // Phase 365 — `this` handed on is the caller's own object: the callee writes its fields, none named here
+                if (((VariableExpression) act).name in ['this', 'super']) {
+                    return unbounded("call '${name}(…)' writes its parameter '${w}', which is passed '${((VariableExpression) act).name}' — the caller's own fields")
                 }
                 ws.add(((VariableExpression) act).name)
                 if (sz != null && (sizes == null || sizes.contains(w))) sz.add(((VariableExpression) act).name)
@@ -3481,7 +3493,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> inferred = calleeWrites(node)
         if (inferred != null) {
             MethodNode sk = inheritedSkeletonOf(node, 'modifies')   // Phase 363 — say where an inherited frame is from
-            for (String loc : inferred) if (!declared.contains(loc)) {
+            for (String loc0 : inferred) {
+                // Phase 365 — a static of another class: its own name when it is this class's, else `Sib.f`
+                String own = unitStatic(loc0, node.declaringClass?.module) != null ?
+                    callerOwnStatic(loc0, node.declaringClass, node.declaringClass) : loc0
+                String loc = own ?: loc0.substring(0, loc0.lastIndexOf('$')).replaceFirst(/^.*\./, '') + '.' +
+                    loc0.substring(loc0.lastIndexOf('$') + 1)
+                if (declared.contains(loc)) continue
                 String msg = Reporter.formatModifiesViolation(node.name, loc, declared)
                 if (sk != null) msg += " The clause is inherited from the skeleton of ${sk.declaringClass.name}#${sk.name}, which this override is held to."
                 addStaticTypeError(msg, node)
@@ -12245,7 +12263,52 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  and its own frame (or the receiver-write fallback) says so; only the library's method is known pure. */
     private static boolean pureRead(MethodCallExpression mce, Set<String> names) {
         String m = mce.methodAsString
-        m in names && !userDeclared(mce.objectExpression, m)
+        m in names && !userDeclared(mce.objectExpression, m) && !collectorOverload(mce)
+    }
+
+    /** Phase 365 — read names whose collector overload fills an argument: `xs.collect(dst) { … }`,
+     *  `xs.collectEntries(map) { … }`, `xs.toArray(arr)`. */
+    private static final Set<String> COLLECTOR_OVERLOADS = ['collect', 'collectEntries', 'collectMany', 'collectNested',
+                                                            'toArray'] as Set<String>
+
+    private static boolean collectorOverload(MethodCallExpression mce) {
+        if (!(mce.methodAsString in COLLECTOR_OVERLOADS)) return false
+        List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
+        as == null || as.any { Expression a -> !(a instanceof ClosureExpression) && !(a instanceof MethodPointerExpression) && !immutableArgument(a) }
+    }
+
+    /** Phase 365 — an argument a call can't write in place: a constant, an immutable-typed value, a closure literal. */
+    private static boolean immutableArgument(Expression a) {
+        if (a instanceof ConstantExpression || a instanceof GStringExpression || a instanceof ClosureExpression ||
+            a instanceof MethodPointerExpression || a instanceof ClassExpression) return true
+        if (a instanceof VariableExpression && WRITE_IMMUTABLE.get()?.contains(((VariableExpression) a).name)) return true
+        ClassNode t = declaredTypeOf(a)
+        if (t == null) {
+            Object it = a.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+            if (it instanceof ClassNode) t = (ClassNode) it
+        }
+        t != null && isImmutableType(t)
+    }
+
+    /** Phase 365 — a call that may write what it is handed: each argument that isn't immutable is written, as an
+     *  unknown call's receiver is ({@link #recordReceiverWrite}: its name, or nothing for a fresh value, else loud). */
+    private static boolean recordArgumentWrites(Expression args, Set<String> ws) {
+        List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : null
+        if (as == null) return unbounded("a call with unusual arguments")
+        for (Expression a : as) {
+            if (a instanceof MapExpression) {   // named arguments: their values
+                for (MapEntryExpression me : ((MapExpression) a).mapEntryExpressions) {
+                    if (immutableArgument(me.valueExpression)) continue
+                    if (!recordReceiverWrite(me.valueExpression, ws)) return false
+                    noteSizeChange(me.valueExpression)
+                }
+                continue
+            }
+            if (immutableArgument(a)) continue
+            if (!recordReceiverWrite(a, ws)) return false
+            noteSizeChange(a)   // Phase 349 — and may resize it (`q.drainTo(ys)`, `xs.collect(dst) { … }`)
+        }
+        true
     }
 
     /** Phase 358 — the receiver's declared type (a parameter, local or field read by name) or a supertype of it is a
@@ -12843,6 +12906,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             int t = be.operation.type
             if (Types.ofType(t, Types.ASSIGNMENT_OPERATOR)) {
                 if (t == Types.ASSIGN && be.leftExpression instanceof VariableExpression) {
+                    // Phase 365 — an enclosing class's field isn't a local of the writer's either
+                    String foreign = inferMode() ? foreignFieldWrite(be.leftExpression) : null
+                    if (foreign != null) {
+                        String st = foreignStaticName(be.leftExpression)
+                        if (st == null) return unbounded("the write '${clip(be.leftExpression.text)} = …': ${foreign}")
+                        ws.add(st)
+                        return collectWritesExpr(be.rightExpression, ws)
+                    }
                     recordRebind(((VariableExpression) be.leftExpression).name, ws)
                     return collectWritesExpr(be.rightExpression, ws)
                 }
@@ -12939,10 +13010,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     return collectCallWritesAmong(unitImpls, m, as, ws, ((VariableExpression) mce.objectExpression).name) &&
                            collectWritesArgs(mce.arguments, ws)
                 }
-                // Phase 347 — an unknown method may mutate its receiver in place (`xs.sort()`), and nothing else
-                // nameable: record the receiver (unless its type is immutable), rather than give up
+                // Phase 347 — an unknown method may mutate its receiver in place (`xs.sort()`): record the receiver
+                // (unless its type is immutable), rather than give up
                 if (!recordReceiverWrite(mce.objectExpression, ws)) return false
                 noteSizeChange(mce.objectExpression)   // Phase 349 — and it may resize it
+                // Phase 365 — and what it is handed: `r.nextBytes(b)`, `s.getChars(0, n, dst, 0)`, `q.drainTo(ys)`,
+                // `c.call(b)` fill or write their arguments, which "nothing else nameable" let a frame miss
+                if (!recordArgumentWrites(mce.arguments, ws)) return false
             } else {
                 if (!collectWritesExpr(mce.objectExpression, ws)) return false
             }
@@ -13025,6 +13099,98 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Phase 350 — is {@code cls} {@code t} itself or one of its superclasses (by name)? */
+    /** Phase 365 — a frame names a field by its bare name, read as one of the writing method's class (or, onto a receiver,
+     *  that receiver's): a field ANOTHER class owns has no such name — `A.n = v` from class C, an outer class's field
+     *  written from an inner class (`n = v`, `A.this.n = v`) — and was recorded as the writer's own, so a caller in A
+     *  saw it as a field of C and dropped it. The reason it is unnameable, or null for the writer's own field. */
+    private static String foreignFieldWrite(Expression lhs) {
+        ClassNode owner = WRITE_OWNER.get()
+        if (owner == null) return null
+        Expression base = lhs
+        if (base instanceof BinaryExpression && ((BinaryExpression) base).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            base = ((BinaryExpression) base).leftExpression
+        }
+        ClassNode fieldClass = null
+        String what = null
+        if (base instanceof VariableExpression) {
+            Variable av = ((VariableExpression) base).accessedVariable
+
+            if (av instanceof FieldNode) fieldClass = ((FieldNode) av).declaringClass
+            else if (av instanceof PropertyNode) fieldClass = ((PropertyNode) av).declaringClass
+            boolean st = av instanceof FieldNode ? ((FieldNode) av).isStatic() : av instanceof PropertyNode && ((PropertyNode) av).isStatic()
+            what = "${st ? 'a static field' : 'a field'} of ${fieldClass?.nameWithoutPackage}"
+        } else if (base instanceof PropertyExpression) {
+            Expression obj = ((PropertyExpression) base).objectExpression
+            if (obj instanceof ClassExpression) {
+                fieldClass = obj.type
+                what = ((PropertyExpression) base).propertyAsString == 'this' ?
+                    "through the instance of the enclosing ${fieldClass.nameWithoutPackage}" :
+                    "a static field of ${fieldClass.nameWithoutPackage}"
+            } else if (obj instanceof PropertyExpression && ((PropertyExpression) obj).objectExpression instanceof ClassExpression &&
+                    ((PropertyExpression) obj).propertyAsString == 'this') {
+                fieldClass = ((PropertyExpression) obj).objectExpression.type   // `A.this.n`
+                what = "a field of the enclosing ${fieldClass.nameWithoutPackage} instance"
+            }
+        }
+        if (fieldClass == null || isClassOrSuper(owner, fieldClass)) return null
+        "${what}, which a frame of ${owner.nameWithoutPackage.replace('$', '.')} can't name"
+    }
+
+    /** Phase 365 — the caller's own name for a frame location {@code loc} of a method of {@code calleeClass}, when it is a
+     *  static field of the caller's class or a superclass: a bare static the callee's class inherits from there, or a
+     *  {@code Sib$field} (Phase 350's name for a sibling's static) whose {@code Sib} is one of them. Null otherwise. */
+    /** Phase 365 — the class of the compilation unit whose static {@code loc} names, in Phase 350's {@code Sib$field}
+     *  spelling; null when it isn't one. */
+    private static ClassNode unitStatic(String loc, ModuleNode mod) {
+        int q = loc != null ? loc.lastIndexOf('$') : -1
+        if (q <= 0 || mod == null) return null
+        String cls = loc.substring(0, q), f = loc.substring(q + 1)
+        for (ClassNode cn : mod.classes) {
+            if (cn.name == cls) { FieldNode fn = cn.getDeclaredField(f); return fn != null && fn.isStatic() ? cn : null }
+        }
+        null
+    }
+
+    private static String callerOwnStatic(String loc, ClassNode calleeClass, ClassNode callerClass) {
+        if (loc == null || calleeClass == null || callerClass == null) return null
+        int q = loc.lastIndexOf('$')
+        if (q > 0) {
+            String cls = loc.substring(0, q), f = loc.substring(q + 1)
+            for (ClassNode c = callerClass; c != null; c = c.superClass) {
+                if (c.name == cls) { FieldNode fn = c.getDeclaredField(f); return fn != null && fn.isStatic() ? f : null }
+            }
+            return null
+        }
+        for (ClassNode c = calleeClass; c != null; c = c.superClass) {
+            FieldNode fn = c.getDeclaredField(loc)
+            if (fn != null) return fn.isStatic() && isClassOrSuper(callerClass, c) ? loc : null
+        }
+        null
+    }
+
+    /** Phase 365 — a write to a STATIC field of another class of the compilation unit, in Phase 350's {@code Sib$field}
+     *  spelling (which {@link #callerOwnStatic} maps back for a caller in that class); null for anything else. */
+    private static String foreignStaticName(Expression lhs) {
+        Expression base = lhs
+        if (base instanceof BinaryExpression && ((BinaryExpression) base).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            base = ((BinaryExpression) base).leftExpression
+        }
+        ClassNode cls = null
+        String f = null
+        if (base instanceof VariableExpression && ((VariableExpression) base).accessedVariable instanceof FieldNode) {
+            FieldNode fn = (FieldNode) ((VariableExpression) base).accessedVariable
+            if (fn.isStatic()) { cls = fn.declaringClass; f = fn.name }
+        } else if (base instanceof PropertyExpression && ((PropertyExpression) base).objectExpression instanceof ClassExpression) {
+            cls = ((PropertyExpression) base).objectExpression.type
+            f = ((PropertyExpression) base).propertyAsString
+            FieldNode fn = cls?.getDeclaredField(f)
+            if (fn == null || !fn.isStatic()) return null
+        }
+        if (cls == null || f == null) return null
+        ModuleNode mod = WRITE_OWNER.get()?.module
+        unitStatic(cls.name + '$' + f, mod) != null ? cls.name + '$' + f : null
+    }
+
     private static boolean isClassOrSuper(ClassNode t, ClassNode cls) {
         for (ClassNode c = t; c != null; c = c.superClass) if (c.name == cls.name) return true
         false
@@ -13174,6 +13340,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Record an assignment/mutation target's base name (a local, a `this.field`, or `a[i]`'s array). */
     private static boolean recordTarget(Expression lhs, Set<String> ws) {
+        String foreign = inferMode() ? foreignFieldWrite(lhs) : null
+        if (foreign != null) {
+            String st = foreignStaticName(lhs)
+            if (st != null) { ws.add(st); return true }
+            return unbounded("the write '${clip(lhs.text)} = …': ${foreign}")
+        }
         if (lhs instanceof VariableExpression) { ws.add(((VariableExpression) lhs).name); return true }
         if (lhs instanceof PropertyExpression) {
             Expression obj = ((PropertyExpression) lhs).objectExpression
@@ -14342,7 +14514,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                 MethodNode hoistCallee = (e instanceof MethodCall) ? resolveContractedCallee(node,
                                     ((MethodCall) e).methodAsString,
                                     collectArgumentExpressions((MethodCall) e)?.size() ?: -1,
-                                    hasDecreases(node), null) : null
+                                    hasDecreases(node), null, null, e) : null
                                 ClassNode hrt = hoistCallee?.returnType
                                 Object hSort = (hrt != null && !isIntElement(hrt)) ? enc.sortForType(hrt) : null
                                 Object fresh = hSort != null ?
@@ -14415,7 +14587,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (forResolve == null) return null
         MethodNode callee = resolveContractedCallee(currentMethod, ((MethodCall) e).methodAsString,
-            collectArgumentExpressions((MethodCall) e).size(), true, forResolve)
+            collectArgumentExpressions((MethodCall) e).size(), true, forResolve, null, e)
         (callee != null && Encoder.isCarrier(callee.returnType)) ? callee.returnType : null
     }
 
@@ -14630,19 +14802,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * which needs {@code @Decreases} for well-foundedness and is a later slice.
      */
     private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity, boolean allowSelf,
-                                                      ClassNode receiverType = null, List<String> actualTypeNames = null) {
+                                                      ClassNode receiverType = null, List<String> actualTypeNames = null,
+                                                      Expression call = null) {
         if (name == null) return null
+        // Phase 365 — the method STC chose: name + arity alone picked the FIRST overload (`h(Object)` for `h(a)` on an
+        // int[], whose frame is empty), so another overload's contract, frame or value stood in for the one called
+        MethodNode target = stcTarget(call)
         // Phase 351 — a receiver of ANOTHER class resolves on that class (and its superclasses) only: the caller's
         // same-named method is a different method (`b.incr()` is not the caller's `incr()`)
         boolean foreignReceiver = receiverType != null && caller?.declaringClass != null && receiverType.name != caller.declaringClass.name
-        MethodNode m = foreignReceiver ? null : resolveContractedIn(caller?.declaringClass, caller, name, arity, allowSelf)
+        MethodNode m = foreignReceiver ? null : resolveContractedIn(caller?.declaringClass, caller, name, arity, allowSelf, target)
         if (m != null) return m
         // Phase 133 — an instance call `recv.m(args)` whose method lives on the *receiver's* (carrier) type rather
         // than the caller's class — e.g. a record's `plus`. Search there too (a different class, so no self-call).
         if (receiverType != null && !receiverType.is(caller?.declaringClass)) {
             for (ClassNode c = receiverType; c != null && m == null; c = c.superClass) {
                 boolean own = caller?.declaringClass != null && c.name == caller.declaringClass.name
-                m = resolveContractedIn(c, own ? caller : null, name, arity, own ? allowSelf : true)
+                m = resolveContractedIn(c, own ? caller : null, name, arity, own ? allowSelf : true, target)
             }
             if (m != null) return m
             // Phase 215 — the external-spec registry: a trusted skeleton contract for a library class
@@ -14681,7 +14857,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (name == null || actuals == null) return false
         ClassNode forResolve = receiverCarrierType(call) ?: ownerCarrierType(call) ?:
             staticOwnerType(call) ?: instanceReceiverType(call)
-        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), true, forResolve)
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), true, forResolve, null, call)
         if (callee == null) return false
         // a registry skeleton parses only to CONVERSION, so its return type may be the UNRESOLVED
         // simple name ('List') — accept it alongside the resolved forms
@@ -14856,13 +15032,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
-    private static MethodNode resolveContractedIn(ClassNode dc, MethodNode caller, String name, int arity, boolean allowSelf) {
+    private static MethodNode resolveContractedIn(ClassNode dc, MethodNode caller, String name, int arity, boolean allowSelf,
+                                                  MethodNode target = null) {
         if (dc == null) return null
+        // Phase 365 — an overload is the one STC chose; unknown which (no target) among several, none is
+        boolean ambiguous = target == null && ambiguousOverload(dc, name, arity)
         for (MethodNode m : dc.getMethods(name)) {
             // A self-call is the inductive hypothesis; only honour it when the caller carries a
             // termination measure (@Decreases) — its well-foundedness is checked separately.
             if (m.is(caller) && !allowSelf) continue
             if (m.parameters.length != arity) continue
+            if (ambiguous || (target != null && !sameSignature(m, target))) continue
             // Usable if it has an @Ensures to assume, or an @Modifies whose effect (a havoc) we model — or, Phase 347,
             // a body the frame is inferred from (a contract-free writer; a contract-free FUNCTION never gets here,
             // the encoder evaluates it)
@@ -14870,6 +15050,40 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return m
         }
         null
+    }
+
+    /** Phase 365 — the method STC resolved a call to, or null (no call, or one STC didn't type). */
+    static MethodNode stcTarget(Expression call) {
+        if (call == null) return null
+        MethodNode t = call instanceof MethodCallExpression ? ((MethodCallExpression) call).methodTarget : null
+        if (t == null) {
+            Object md = call.getNodeMetaData(StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+            if (md instanceof MethodNode) t = (MethodNode) md
+        }
+        t
+    }
+
+    /** Phase 365 — the same method signature: name and erased parameter types (an override, or the method itself). */
+    static boolean sameSignature(MethodNode a, MethodNode b) {
+        if (a.name != b.name || a.parameters.length != b.parameters.length) return false
+        for (int i = 0; i < a.parameters.length; i++) {
+            if (a.parameters[i].type.redirect().name != b.parameters[i].type.redirect().name) return false
+        }
+        true
+    }
+
+    /** Phase 365 — more than one {@code arity}-parameter method named {@code name} on {@code dc} or its superclasses,
+     *  by signature (an override is the same method): name + arity alone can't say which a call runs. */
+    static boolean ambiguousOverload(ClassNode dc, String name, int arity) {
+        List<MethodNode> seen = new ArrayList<MethodNode>()
+        for (ClassNode c = dc; c != null; c = c.superClass) {
+            for (MethodNode m : c.getMethods(name)) {
+                if (m.parameters.length != arity || seen.any { MethodNode o -> sameSignature(o, m) }) continue
+                seen.add(m)
+                if (seen.size() > 1) return true
+            }
+        }
+        false
     }
 
     /** Phase 133 — the carrier (record/wrapper) type of an instance call's receiver (`recv.m(…)`), or null. */
@@ -15295,7 +15509,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 347 — the result in the callee's return sort (a String-returning `glue(acc, x)` needs a String
                 // handle for its @Ensures to bind), as the straight-line hoist does (Phase 206)
                 MethodNode callee = (call instanceof MethodCall) ? resolveContractedCallee(node, ((MethodCall) call).methodAsString,
-                    collectArgumentExpressions((MethodCall) call)?.size() ?: -1, hasDecreases(node), null) : null
+                    collectArgumentExpressions((MethodCall) call)?.size() ?: -1, hasDecreases(node), null, null, call) : null
                 ClassNode rt = callee?.returnType
                 Object sort = (rt != null && !isIntElement(rt)) ? enc.sortForType(rt) : null
                 String nm = '$call$' + (hoistSeq++)
@@ -15325,7 +15539,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 219 — STC-inferred actual types, when all are known, disambiguate registry overloads.
         List<ClassNode> inferred = actuals.collect { Expression a -> inferredTypeOf(a) }
         List<String> actualTypeNames = inferred.every { it != null } ? inferred.collect { it.name } : null
-        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve, actualTypeNames)
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve, actualTypeNames, callExpr)
         if (callee == null) return false
         // Phase 215 — a registry skeleton must match the actuals' types (the unique-arity fallback can
         // still collide with a JDK overload set: abs(int) spec vs an abs(double) call — sort crash).
@@ -15421,7 +15635,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (ClassNode c = callee.declaringClass; c != null; c = c.superClass) {
                     for (FieldNode f : c.fields) if (!formalNames.contains(f.name)) calleeFields.add(f.name)
                 }
-                String written = foreignStatic ? null : modSet.find { String l -> !formalNames.contains(l) }
+                // (Phase 365 — a `Sib$field` is another class's static, not a field of the receiver: mapped below)
+                String written = foreignStatic ? null : modSet.find { String l ->
+                    !formalNames.contains(l) && unitStatic(l, caller.declaringClass.module) == null }
                 String read = mentionedName(ensuresAst, calleeFields)
                 String recvText = callExpr instanceof MethodCallExpression ? ((MethodCallExpression) callExpr).objectExpression.text : callee.declaringClass.nameWithoutPackage
                 if (written != null) {
@@ -15551,10 +15767,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object> savedSize = new LinkedHashMap<String, Object>()   // Phase 349
         if (modSet != null) {
             for (String loc : modSet) {
+                boolean isFormal = formals.any { Parameter fp -> fp.name == loc }
+                // Phase 365 — a static of the caller's own class (or a superclass), though another class wrote it
+                String ownStatic = isFormal ? null : callerOwnStatic(loc, callee.declaringClass, caller?.declaringClass)
                 // Phase 351 — another class's static field: not a location of the caller's (see foreignStatic above)
-                if (foreignStatic && !formals.any { Parameter fp -> fp.name == loc }) continue
-                String callerLoc = callerSideLocation(loc, formals, actuals)
-                if (crossRecv != null && callerLoc == loc && !formals.any { Parameter fp -> fp.name == loc }) {
+                if (foreignStatic && !isFormal && ownStatic == null) continue
+                String callerLoc = ownStatic ?: callerSideLocation(loc, formals, actuals)
+                if (crossRecv != null && ownStatic == null && callerLoc == loc && !isFormal) {
                     callerLoc = crossRecv + '$' + loc   // Phase 350 — the receiver's field
                 }
                 if (callerLoc != null) {   // Phase 351 — a local alias of an object receiver is that receiver
@@ -15583,6 +15802,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         if (h != null) s.assertExpr(h)
                     }
                     continue
+                }
+                // Phase 365 — a written formal handed `this` writes the caller's own fields, which `this` as a name doesn't
+                if (callerLoc in ['this', 'super']) {
+                    throw new UnsupportedConstructException(
+                        "call '${name}(…)' modifies its parameter '${loc}', which is passed '${callerLoc}' — the caller's own fields, " +
+                        "which the frame doesn't name")
                 }
                 // Phase 347 — a modified parameter whose actual has no name can't be havocked: the call isn't modelled
                 if (callerLoc == null) {

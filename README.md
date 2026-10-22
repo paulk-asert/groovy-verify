@@ -529,6 +529,11 @@ and evidence-backed: no visible registration, no blessing — the code stays a c
 `@TypeChecked` demands. Metaprogramming the pack cannot faithfully model is not quietly admitted; it
 simply remains outside.
 
+One assumption follows from the posture: a `@TypeChecked` call still dispatches through the metaclass at run
+time, so every proof assumes the method the type checker chose is the one that runs. A metaclass change or
+category made by code outside the proof (`Counter.metaClass.incr = { … }`, `use (Cat) { … }`) can break that,
+even for a final class; `@CompileStatic` callers dispatch directly.
+
 ## Building & using
 
 Built with JDK 25 against `org.apache.groovy:6.0.0`; the published
