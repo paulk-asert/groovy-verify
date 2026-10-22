@@ -1010,6 +1010,130 @@ class Encoder implements TheoryApi {
         out
     }
 
+    /** Phase 375 — an array-typed parameter, local or field of the method (or a pre-call snapshot of one). */
+    boolean isArrayTyped(String name) {
+        if (name == null) return false
+        if (arraySnapshots.contains(name)) return true
+        if (arrayNames == null) arrayNames = declaredArrayNames(vcMethod)
+        arrayNames.contains(name)
+    }
+    private Set<String> arrayNames
+    private final Set<String> arraySnapshots = new HashSet<String>()
+    private int reassignCounter = 0
+
+    private static Set<String> declaredArrayNames(MethodNode m) {
+        Set<String> out = new HashSet<String>()
+        if (m == null) return out
+        for (Parameter p : m.parameters) if (p.type?.isArray()) out.add(p.name)
+        for (ClassNode c = m.declaringClass; c != null && c.name != 'java.lang.Object'; c = c.superClass) {
+            for (FieldNode f : c.fields) if (f.type?.isArray()) out.add(f.name)
+        }
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        body?.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    VariableExpression v = (VariableExpression) de.leftExpression
+                    ClassNode t = v.originType ?: v.type
+                    if (t?.isArray()) out.add(v.name)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+        out
+    }
+
+    /**
+     * Phase 375 — {@code name} now holds a different array: fresh contents, length and nullity, and no factory record.
+     * A re-assignment used to rebind only its scalar handle, so `v = grow(v)` (or `v = w`) left `v.length`, `v[i]` and
+     * `v.sum()` reading the OLD array's facts — a false invariant over them was preserved.
+     */
+    void freshArray(String name) {
+        int n = reassignCounter++
+        Object[] sorts = arraySortsFor(name)
+        String an = name + '#arr#ra' + n
+        arrEnv.put(name, sorts[0] == session.intSort() && sorts[1] == session.intSort() ? session.arrayVar(an) :
+            session.arrayVarOfSort(an, sorts[0], sorts[1]))
+        Object size = session.intVar(name + '#size#ra' + n)
+        session.assertExpr(session.ge(size, session.intLit(0L)))
+        sizeEnv.put(name + '.size', size)
+        nullEnv.put(name, session.boolVar(name + '?null#ra' + n))
+        localFactories.remove(name)
+    }
+
+    /** Phase 375 — {@code name = src} on arrays: the same object, so the same length and nullity, and the same
+     *  contents while neither is written through (a store into one rebinds only its own contents here, so once
+     *  either is written the other's would go stale: they are fresh instead). */
+    void aliasArray(String name, String src) {
+        Object size = sizeOf(src), nul = nullityOf(src)
+        boolean written = mayWriteArray(name) || mayWriteArray(src)
+        if (written) {
+            freshArray(name)
+        } else {
+            arrEnv.put(name, arrayFor(src))
+            FactoryContainer f = localFactories.get(src)
+            if (f != null) localFactories.put(name, f) else localFactories.remove(name)
+        }
+        // an array's length never changes; a list's does, so once either is written its size is fresh too
+        if (!written || (isArrayTyped(name) && isArrayTyped(src))) sizeEnv.put(name + '.size', size)
+        nullEnv.put(name, nul)
+    }
+
+    /** Phase 375 — may the method write into {@code name}'s array: a store {@code name[i] = …}, a call on it, or a
+     *  call handed it (which may fill it)? */
+    boolean mayWriteArray(String name) {
+        if (writtenArrays == null) {
+            writtenArrays = new HashSet<String>()
+            Statement body = vcMethod == null ? null :
+                (Statement) vcMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: vcMethod.code
+            body?.visit(new CodeVisitorSupport() {
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof BinaryExpression &&
+                        ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                        ((BinaryExpression) be.leftExpression).leftExpression instanceof VariableExpression) {
+                        writtenArrays.add(((VariableExpression) ((BinaryExpression) be.leftExpression).leftExpression).name)
+                    }
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                    if (mce.objectExpression instanceof VariableExpression) writtenArrays.add(((VariableExpression) mce.objectExpression).name)
+                    argNames(mce.arguments)
+                    super.visitMethodCallExpression(mce)
+                }
+                @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                    argNames(sce.arguments)
+                    super.visitStaticMethodCallExpression(sce)
+                }
+                void argNames(Expression args) {
+                    if (args instanceof TupleExpression) for (Expression a : ((TupleExpression) args).expressions) {
+                        if (a instanceof VariableExpression) writtenArrays.add(((VariableExpression) a).name)
+                    }
+                }
+            })
+        }
+        writtenArrays.contains(name)
+    }
+    private Set<String> writtenArrays
+
+    /** Phase 375 — a name standing for {@code name}'s array as it is now (a call's actual, read before its result is
+     *  assigned to {@code name}): its contents, length, nullity and element type. */
+    String snapshotArray(String name) {
+        String tmp = '$pre$' + name + '#' + (reassignCounter++)
+        arrEnv.put(tmp, arrayFor(name))   // the state now, copied: nothing writes the snapshot
+        sizeEnv.put(tmp + '.size', sizeOf(name))
+        nullEnv.put(tmp, nullityOf(name))
+        FactoryContainer f = localFactories.get(name)
+        if (f != null) localFactories.put(tmp, f)
+        Object v = env.get(name)
+        if (v != null) env.put(tmp, v)
+        if (listElementTypes.containsKey(name)) {
+            try { listElementTypes.put(tmp, listElementTypes.get(name)) } catch (Throwable ignored) { }
+        }
+        arraySnapshots.add(tmp)
+        if (isListName(name) || isListTyped(name)) registerListName(tmp)
+        tmp
+    }
+
     boolean isListName(String name) {
         if (name == null) return false
         // Strip old$ for snapshot keys — they still refer to a List.
@@ -3014,9 +3138,10 @@ class Encoder implements TheoryApi {
         //      what the factory's runtime size actually is, modulo Set dedup which is a known
         //      limit). Map factories don't need a size pin: {@code m.size()} folds via the
         //      factory fold, and the underlying map-vals/key-set handles aren't queried directly.
-        session.assertExpr(session.not(nullityOf(name)))
+        // Phase 375 — bound, not asserted: on a re-assignment the handles are the old container's
+        bindNullity(name, session.boolLit(false))
         if (f.kind == 'list' || f.kind == 'set') {
-            session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
+            bindSize(name, session.intLit((long) f.entryCount()))
         }
         true
     }
@@ -3279,10 +3404,12 @@ class Encoder implements TheoryApi {
             if (sizeH == null) return false
             localFactories.remove(name)                                          // drop any stale factory record
             bindSize(name, sizeH)
-            session.assertExpr(session.not(nullityOf(name)))
+            bindNullity(name, session.boolLit(false))   // Phase 375 — the new array's, not asserted of the old one's
             Object[] sorts = arraySortsFor(name)
             if (sorts[1] == session.intSort()) {
                 bindArray(name, session.constIntArray(session.intLit(0L)))
+            } else {
+                havocArray(name)   // Phase 375 — fresh contents (a re-assignment's old ones are another array's)
             }
             return true
         } catch (Exception ignored) {

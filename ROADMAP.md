@@ -16708,6 +16708,54 @@ proof before: a postcondition over the `&&` increment. A call withheld before: a
 try, a switch with no default, a string switch falling through, a finally after an early return not taken, a nested
 write in a loop body. Plus an always-evaluated increment (still hoisted) and a range switch (its note kept).
 
+## Phase 375 — a re-assigned array holds the new array  *(shipped — soundness: an external report from the ClearSplit port)*
+
+Reported from the ClearSplit port: a conservation theorem written as a fold, `bal = afterExpenseRow(bal, …)` in a loop
+with the invariant `bal.sum() == 0`, still verified with its key precondition deleted. Reproduced at Phases 372–374
+alike, and wider than the report: re-assigning an array (or list) local rebound only its scalar handle, so its
+contents, length and nullity kept reading the array it held BEFORE. In a loop, `v = grow(v)` (`result.length ==
+a.length + 1`) preserved a false `v.length == m`; `v = w` kept v's own length; `v = inc0(v)` kept `v[0] == 0`; a list
+parameter's `xs = grow(xs)` and `xs = ys` kept `xs.size()`. Straight-line, `v = grow(v); v.length` proved a false
+`@Ensures({ result == m })`. And the callee's facts never reached the caller's array: an array formal read its own
+oracles (`a.length` in `grow`'s contract wasn't `v.length`), so the TRUE invariant `v.length == m + i` was refuted.
+
+- **Fresh oracles on re-assignment** (`Encoder.freshArray`, used by the loop replay's `rebindArray`, the prefix replay's
+  `replayArrayAssign`, and the path and value-flow passes' `arrayReassign`): a re-assigned array or list name gets
+  fresh contents, length and nullity, and loses any factory record, then:
+  - a contracted call (`listLocalFromCall`, Phase 225's list route, now taking arrays) assumes the callee's `@Ensures`
+    with `result` read as the name; an argument naming it is read through a snapshot of it as it was before the call
+    (`snapshotArray`, `withActualSnapshot`) — minted first, the fresh oracles would be the argument's too;
+  - an allocation or literal is recorded, reading the old state first (`v = new int[v.length + 1]`), its nullity and
+    size bound rather than asserted of the old handles; a non-int allocation's contents are fresh;
+  - another array name is aliased (`aliasArray`): its length and nullity always (an array's length never changes),
+    its contents only while neither is written through (a store rebinds only one name's contents here). A list
+    alias shares its size only then too. The path pass's own alias stays Phase 366's, which skips loudly;
+  - anything else leaves them fresh (unknown).
+- **An array formal reads its named actual**, as a list formal does (Phase 226): `a.length`, `a[i]`, `a.sum()` in a
+  callee's contract are the caller's array's.
+- **A stale factory record made a proof vacuous:** `List<Integer> v = [1, 2]; v = grow(v)` folded `v.size()` to 2
+  through the literal, against the callee's `result.size() == a.size() + 1`. The contradiction proved `@Ensures({
+  result == 42 })` once the argument read the snapshot; the record is now dropped with the old oracles.
+- **A replayed allocation is recorded:** a callee precondition's prefix replay havocked `int[] v = new int[m]`, so
+  `g(v)` under `@Requires({ a.length > 0 })` was refuted for `m > 0`.
+
+**Boundary:** an invariant or postcondition over an array's `.sum()` across such a call, the reported shape itself,
+is now reported but undecided (`Could not decide … (solver: timeout)`): refuting it needs a model of the sum's
+quantified axioms, which the callee's own `result.sum() == a.sum() + 1` also times out on. A list local aliased before a
+loop (`List<Integer> v = xs`) is still refuted at loop entry, as before. An array field re-assigned in a loop
+(`data = grow(data)`, `this.data = …`) is covered. The report's second finding, a call-site precondition over a field
+argument's length under a class invariant (`@Invariant({ data.length == n })`, `bump(data, i)` needing `i < a.length`),
+is still refuted, the invariant not reaching the call. A re-assigned field's non-nullity now comes from the callee's
+contract only: `data = bump(data, i)` under an invariant `data != null` needs `@Ensures({ result != null … })`, where
+before the field's old non-null fact was kept.
+
+**Shipped tests:** group `P375 array re-assignment`, 14 cases. Silent before: a false invariant across `v = grow(v)`, an
+element fact across `v = inc0(v)`, an array alias and a list alias in a loop, a list parameter re-assigned from a call
+in a loop. A wrong proof before: the straight-line false postcondition. A false refutation before: the true array and
+list invariants, the true straight-line postcondition, a callee precondition over `new int[m]`'s length, a list's true
+size after `v = grow(v)`. Plus guards: an alias whose source is written (skipped loudly), an allocation sized by the
+array it replaces, a list literal re-assigned from a call on itself.
+
 ---
 
 ## Definition of done, per increment

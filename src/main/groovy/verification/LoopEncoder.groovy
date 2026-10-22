@@ -31,6 +31,8 @@ import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.expr.CastExpression
+import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.AssertStatement
@@ -119,6 +121,9 @@ class LoopEncoder {
         /** Phase 347 — the call as a VALUE: frame its writes and assume its {@code @Ensures} over a fresh result
          *  handle in the callee's return sort, which is returned; null when the call isn't modelled. */
         Object handleValue(Expression call, Encoder enc, SmtSession s)
+        /** Phase 375 — {@code name = call} for an array or list {@code name}: give it fresh oracles constrained by
+         *  the callee's {@code @Ensures} ({@code result} read as {@code name}). False when the call isn't modelled. */
+        boolean handleArrayAssign(String name, Expression call, Encoder enc, SmtSession s)
     }
 
     /** Installed by {@link VerifyChecker} around the loop verification of a method; read by {@link #applyAssign}.
@@ -858,6 +863,9 @@ class LoopEncoder {
      * only on them — can still be reasoned about.
      */
     private static void rebind(Encoder enc, SmtSession s, String name, Expression rhs) {
+        // Phase 375 — an array name re-assigned holds another array: rebinding its scalar handle alone left its
+        // contents, length and nullity those of the old one (`v = grow(v)` kept `v.length == m` across the loop)
+        if ((enc.isArrayTyped(name) || enc.isListTyped(name)) && rebindArray(enc, s, name, rhs)) return
         // Phase 38b/35 — try the materialised-set and factory-record paths first, so a loop
         // prefix like {@code List<Integer> positive = []} pins the size/nullity oracles the
         // invariant check sees. Without this, the assign would havoc {@code positive} and the
@@ -873,6 +881,35 @@ class LoopEncoder {
         }
         if (h == null) enc.havoc(name, 'unmodelled')   // Phase 346 — no run is known to give the value it takes
         else enc.bind(name, h)
+    }
+
+    /** Phase 375 — {@code name = rhs} on an array or list: another such name is aliased, a contracted call's result
+     *  is assumed of fresh oracles, an allocation, literal or derived list recorded (reading the old state first:
+     *  `v = new int[v.length + 1]`); anything else leaves them fresh (unknown). */
+    private static boolean rebindArray(Encoder enc, SmtSession s, String name, Expression rhs) {
+        Expression r = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (r instanceof VariableExpression && (enc.isArrayTyped(((VariableExpression) r).name) ||
+                                                enc.isListTyped(((VariableExpression) r).name))) {
+            String src = ((VariableExpression) r).name
+            if (src != name) {
+                enc.aliasArray(name, src)
+                Object h = enc.translate(r)
+                if (h != null) enc.bind(name, h)
+            }
+            return true
+        }
+        if (r instanceof ConstantExpression && ((ConstantExpression) r).value == null) return false   // `v = null`: as before
+        if (r instanceof MethodCallExpression || r instanceof StaticMethodCallExpression) {
+            LoopCallHandler h = callHandler.get()
+            if (h != null && h.handleArrayAssign(name, r, enc, s)) return true
+            enc.freshArray(name)
+            return true
+        }
+        if (enc.tryRecordFactoryAssign(name, rhs)) return true
+        enc.freshArray(name)
+        Object h = enc.translate(rhs)
+        if (h != null) enc.bind(name, h)
+        true
     }
 
     private static boolean containsCall(Expression e) {

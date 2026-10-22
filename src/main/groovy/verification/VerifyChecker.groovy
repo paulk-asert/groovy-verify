@@ -4863,6 +4863,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Object step : v.steps) {
                 if (step instanceof Assign) {
                     Assign a = (Assign) step
+                    if (enc.isArrayTyped(a.name) && arrayReassign(s, enc, a.name, a.rhs, node)) continue   // Phase 375
                     if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
                     if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
                     // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await
@@ -11391,6 +11392,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.bindSize(a.name, enc.sizeOf(src))
                         enc.bindNullity(a.name, enc.nullityOf(src))
                     }
+                    if (enc.isArrayTyped(a.name) && arrayReassign(session, enc, a.name, a.rhs, node)) continue   // Phase 375
                     // Phase 35 — Set<X> u = a + b / Set<X> u = a.intersect(b): if the RHS is a
                     // recognised set union/intersection over a single element sort, the encoder
                     // materialises u as a first-class set with the membership iff axiom, skipping
@@ -16537,21 +16539,84 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out != null ? out : actuals
     }
 
+    /** Phase 375 — {@code call} with each actual naming {@code name} read through a snapshot of it as it is now. */
+    private static Expression withActualSnapshot(Expression call, String name, Encoder enc) {
+        Expression args = call instanceof MethodCallExpression ? ((MethodCallExpression) call).arguments :
+            call instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) call).arguments : null
+        if (!(args instanceof TupleExpression)) return call
+        List<Expression> as = ((TupleExpression) args).expressions
+        if (!as.any { it instanceof VariableExpression && ((VariableExpression) it).name == name }) return call
+        if (!enc.isArrayTyped(name) && !enc.isListTyped(name)) return call
+        String tmp = enc.snapshotArray(name)
+        ArgumentListExpression nargs = new ArgumentListExpression(as.collect { Expression a ->
+            a instanceof VariableExpression && ((VariableExpression) a).name == name ? (Expression) new VariableExpression(tmp, a.type) : a
+        })
+        Expression out
+        if (call instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) call
+            MethodCallExpression c = new MethodCallExpression(mce.objectExpression, mce.method, nargs)
+            c.implicitThis = mce.implicitThis
+            c.safe = mce.safe
+            c.spreadSafe = mce.spreadSafe
+            c.methodTarget = mce.methodTarget
+            out = c
+        } else {
+            StaticMethodCallExpression sce = (StaticMethodCallExpression) call
+            StaticMethodCallExpression c = new StaticMethodCallExpression(sce.ownerType, sce.method, nargs)
+            c.metaMethod = sce.metaMethod
+            out = c
+        }
+        out.copyNodeMetaData(call)
+        out.setSourcePosition(call)
+        out
+    }
+
+    /**
+     * Phase 375 — {@code name = rhs} for an array name: it holds another array now. Its contents, length and nullity
+     * used to stay the old array's (only the scalar handle was rebound), so `v = grow(v); v.length` read the old
+     * length. A contracted call's result is assumed of fresh oracles ({@link #listLocalFromCall}); an allocation or
+     * literal is recorded on fresh ones; anything else leaves them fresh and falls through (false). An alias
+     * (`v = w`) is Phase 366's.
+     */
+    private boolean arrayReassign(SmtSession s, Encoder enc, String name, Expression rhs, MethodNode caller) {
+        Expression r = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (r instanceof VariableExpression) return false
+        if (isCallExpr(r)) {
+            if (!listLocalFromCall(s, enc, name, r, caller)) enc.freshArray(name)
+            return true
+        }
+        if (r instanceof ArrayExpression && enc.tryRecordFactoryAssign(name, rhs)) return true   // reads the old state first
+        enc.freshArray(name)
+        false
+    }
+
     /** Phase 225 — a list-typed local assigned from a contracted call: mint the local's fresh list
      *  oracles (nullity, size, element array) so the callee's renamed {@code @Ensures} can constrain
      *  them, then assume it. Returns false (caller falls through) when the callee has nothing usable. */
     private boolean listLocalFromCall(SmtSession s, Encoder enc, String name, Expression call, MethodNode caller) {
+        // Phase 375 — `v = f(v)`: the argument is v as it is before the call, so it is read through a snapshot; minted
+        // first, the fresh oracles below would be the argument too (`result.size() == a.size() + 1` over one size)
+        call = withActualSnapshot(call, name, enc)
+        boolean array = enc.isArrayTyped(name)
         Object savedNull = enc.peekNullity(name)
         Object savedSize = enc.peekSize(name)
         Object savedArr = enc.peekArray(name)
         int v = ++havocCounter
-        enc.bindNullity(name, s.boolVar(name + '?null#lfc' + v))
-        enc.bindSize(name, s.intVar(name + '#size#lfc' + v))
-        enc.bindArray(name, s.arrayVar(name + '#arr#lfc' + v))
+        if (array) {
+            enc.freshArray(name)   // Phase 375 — an array result: its element sort, a non-negative length
+        } else {
+            // Phase 375 — and no factory record: `v = [1, 2]; v = grow(v)` still folded v.size() to 2, against the
+            // callee's `result.size() == a.size() + 1` — a contradiction, so the method's postcondition proved
+            enc.clearFactoryRecord(name)
+            enc.bindNullity(name, s.boolVar(name + '?null#lfc' + v))
+            enc.bindSize(name, s.intVar(name + '#size#lfc' + v))
+            enc.bindArray(name, s.arrayVar(name + '#arr#lfc' + v))
+        }
         if (assumeCalleeEnsures(s, enc, call, caller, null, hasDecreases(caller), name)) {
-            enc.registerListName(name)   // Phase 323 — so it can be spread or concatenated (`[x] + rest`)
+            if (!array) enc.registerListName(name)   // Phase 323 — so it can be spread or concatenated (`[x] + rest`)
             return true
         }
+        if (array) return false   // the caller leaves an array fresh: its old oracles are another array's
         // nothing assumable: restore, so the fresh-handle fallback behaves exactly as before
         if (savedNull != null) enc.bindNullity(name, savedNull)
         if (savedSize != null) enc.bindSize(name, savedSize)
@@ -16961,6 +17026,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 375 — an array name assigned in a replayed prefix: `new int[m]` records its length (it was havocked, so
+     *  `int[] v = new int[m]; g(v)` refuted g's `a.length > 0`), another array name is aliased, a contracted call's
+     *  result assumed; anything else leaves fresh oracles. False for a non-array name, or `null` (as before). */
+    private boolean replayArrayAssign(Encoder enc, SmtSession s, String name, Expression rhs) {
+        boolean list = !enc.isArrayTyped(name) && enc.isListTyped(name)
+        if (!enc.isArrayTyped(name) && !list) return false
+        Expression r = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (r instanceof ConstantExpression && ((ConstantExpression) r).value == null) return false
+        if (list && !(r instanceof VariableExpression) && !isCallExpr(r)) {
+            // a list literal or derived list: recorded as the other paths do, else fresh (never the old list's)
+            if (enc.tryRecordFactoryAssign(name, rhs)) return true
+            enc.freshArray(name)
+            return false
+        }
+        if (r instanceof VariableExpression && (enc.isArrayTyped(((VariableExpression) r).name) ||
+                                                enc.isListTyped(((VariableExpression) r).name))) {
+            if (((VariableExpression) r).name != name) {
+                enc.aliasArray(name, ((VariableExpression) r).name)
+                Object h = enc.translate(r)
+                if (h != null) enc.bind(name, h)
+            }
+            return true
+        }
+        arrayReassign(s, enc, name, rhs, currentMethod)
+        true
+    }
+
     /** Apply one straight-line mutation expression to the encoder; false if it is not one we model precisely. */
     private boolean replayMutation(Expression e, Encoder enc, SmtSession s) {
         if (e instanceof DeclarationExpression) {
@@ -16968,6 +17060,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (de.leftExpression instanceof VariableExpression) {
                 String name = ((VariableExpression) de.leftExpression).name
                 ClassNode declType = ((VariableExpression) de.leftExpression).originType ?: de.leftExpression.type
+                if (replayArrayAssign(enc, s, name, de.rightExpression)) return true   // Phase 375
                 Object rhs = enc.translate(de.rightExpression)
                 if (rhs != null) enc.bind(name, rhs)
                 else if (!replayCarrierCall(enc, s, name, de.rightExpression, declType) &&
@@ -17009,6 +17102,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression lhs = be.leftExpression
             if (lhs instanceof VariableExpression) {
                 String name = ((VariableExpression) lhs).name
+                if (replayArrayAssign(enc, s, name, be.rightExpression)) return true   // Phase 375
                 Object rhs = enc.translate(be.rightExpression)
                 if (rhs != null) enc.bind(name, rhs)
                 else {
@@ -17172,6 +17266,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String nm = '$call$' + (hoistSeq++)
                 Object fresh = sort != null ? s.varOfSort(nm, sort) : s.intVar(nm)
                 return assumeCalleeEnsures(s, enc, call, node, fresh, hasDecreases(node)) ? fresh : null
+            }
+            @Override boolean handleArrayAssign(String name, Expression call, Encoder enc, SmtSession s) {
+                return listLocalFromCall(s, enc, name, call, node)   // Phase 375 — an array result, as a list's
             }
         }
     }
@@ -17354,7 +17451,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // a scalar handle can't carry element/size facts across the boundary. A formal the callee
             // @Modifies is aliased AFTER the framing havoc instead (Phase 229): pre-havoc aliasing would
             // pin the spec's post-state ensures to the stale array.
-            if (specSimple(ft.name) in ['Collection', 'List'] &&
+            // Phase 375 — and an array formal bound to a named array: `a.length`, `a[i]`, `a.sum()` in the contract are
+            // the actual's (they read the formal's own oracles, which nothing tied to the caller's array)
+            boolean arrayFormal = ft?.isArray() && actuals.get(i) instanceof VariableExpression &&
+                enc.isArrayTyped(((VariableExpression) actuals.get(i)).name)
+            if ((specSimple(ft.name) in ['Collection', 'List'] || arrayFormal) &&
                     !(modSet != null && formals[i].name in modSet) &&
                     actuals.get(i) instanceof VariableExpression) {
                 String an = ((VariableExpression) actuals.get(i)).name
@@ -17369,7 +17470,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 228 — and REGISTER it as a list name: `c.count(o)` in the spec must take the
                 // same bounded-bcount encoding as the caller's `xs.count(5)` (the name-set dispatch
                 // otherwise routes the formal to the whole-array count UF, which never unifies)
-                enc.registerListName(formals[i].name)
+                if (!arrayFormal) enc.registerListName(formals[i].name)
                 if (h == null) h = enc.varFor(formals[i].name)   // placeholder scalar; the oracles carry the facts
             }
             if (h == null) {   // can't faithfully substitute → don't assume
