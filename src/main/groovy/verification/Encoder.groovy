@@ -5882,6 +5882,7 @@ class Encoder implements TheoryApi {
             MethodNode cm = (MethodNode) c[2]
             VerifyChecker.trustClosedWorld("${cm.declaringClass.name}#${cm.name}",
                 'frame read off its body []: a subclass compiled elsewhere must write no more')
+            VerifyChecker.recordFrameReliance(cm, Collections.<String> emptySet())   // Phase 364
         }
         List<String> formals = (List<String>) c[0]
         Expression ensuresExpr = (Expression) c[1]

@@ -102,6 +102,14 @@ Each body or field its proofs then rely on is a ledger fact of kind `closed worl
 `-Dverify.trust=report` lists exactly the obligations a subclass's author takes on, and `deny:world` fails on
 them. Overrides and accessors the compilation unit can see are still checked, and the option is per class.
 
+The reliances on classes compiled in the same unit are also **written with them** (Phase 364), as relied
+skeletons in the classes directory — `META-INF/groovy-verify/relied/<fqn>.groovy`, so they ship in the jar: a
+frame as `@Modifies`, a value as `@Ensures({ result == … })` (or `@NoOverride` when no single expression states
+it), a field read as its getter's contract. A later build that extends the library and runs the checker holds its
+overrides to them (see [examples/jdk-specs.md](examples/jdk-specs.md), "Overrides"); one that doesn't run the
+checker is the residual, stated in the file and in the library's ledger. An in-memory compile has nowhere to write,
+so its reliances are ledgered as unwritten instead.
+
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 
 <!-- doclint:ignore Tool-knobs walkthrough scaffold — illustrative unguarded method shared by the three knob examples -->

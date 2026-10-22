@@ -2943,6 +2943,139 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (closedWorld()) TrustLedger.record(TrustLedger.CLOSED_WORLD, where, what, CLOSED_WORLD_SITE.get())
     }
 
+    // ── Phase 364 — relied skeletons: the closed-world reliances on THIS unit's classes, written as contracts ──────
+    // Each reliance on a member of a class compiled here is kept structurally — per class, per member: its
+    // declaration, the frame read off its body, the value its body gave — and, when the class's checking ends, written
+    // to the output directory as META-INF/groovy-verify/relied/<fqn>.groovy, the dialect Phase 363 holds a later
+    // unit's overrides to. A reliance on a class compiled elsewhere stays ledger-only: its relied file is its own.
+
+    /** fqn → member key → [sig: String, frame: Set&lt;String&gt;, value: String, noOverride: Boolean]. */
+    private static final ThreadLocal<Map<String, Map<String, Map<String, Object>>>> RELIANCES =
+        ThreadLocal.withInitial { (Map<String, Map<String, Map<String, Object>>>) new LinkedHashMap<String, Map<String, Map<String, Object>>>() }
+    /** The compile the recorded reliances belong to (its source units' class loader), so a daemon's next compile starts clean. */
+    private static final ThreadLocal<Object> RELIANCE_COMPILE = new ThreadLocal<Object>()
+    /** Classes whose relied file this compile has written (or found unwritable) — the stale one is replaced once. */
+    private static final ThreadLocal<Set<String>> RELIANCE_WRITTEN = ThreadLocal.withInitial { (Set<String>) new HashSet<String>() }
+
+    private static void startCompile(Object id) {
+        if (!RELIANCE_COMPILE.get().is(id)) {
+            RELIANCE_COMPILE.set(id)
+            RELIANCES.get().clear()
+            RELIANCE_WRITTEN.get().clear()
+        }
+    }
+
+    private static Map<String, Object> relianceEntry(ClassNode owner, String key, String sig) {
+        if (!closedWorld() || owner == null || !owner.redirect().isPrimaryClassNode()) return null
+        Map<String, Map<String, Object>> byMember = RELIANCES.get().computeIfAbsent(owner.redirect().name) { new LinkedHashMap<String, Map<String, Object>>() }
+        Map<String, Object> e = byMember.computeIfAbsent(key) { new LinkedHashMap<String, Object>() }
+        e.put('sig', sig)
+        e
+    }
+
+    /** Phase 364 — a call relied on {@code m}'s body for its frame {@code w} (names: a formal, else a field). */
+    static void recordFrameReliance(MethodNode m, Set<String> w) {
+        Map<String, Object> e = relianceEntry(m?.declaringClass, memberKey(m), skeletonSig(m))
+        if (e == null) return
+        Set<String> formals = new HashSet<String>(m.parameters*.name)
+        Set<String> locs = new TreeSet<String>()
+        for (String n : w) locs.add(formals.contains(n) ? n : 'this.' + n)
+        e.put('frame', locs)
+    }
+
+    /** Phase 364 — a call relied on {@code m}'s body as its value. */
+    static void recordValueReliance(MethodNode m) {
+        Map<String, Object> e = relianceEntry(m?.declaringClass, memberKey(m), skeletonSig(m))
+        if (e == null) return
+        if (!e.containsKey('frame')) e.put('frame', new TreeSet<String>())
+        String v = singleExpressionText(m)
+        if (v != null) e.put('value', v) else e.put('noOverride', Boolean.TRUE)
+    }
+
+    /** Phase 364 — a read (or write) relied on {@code owner.prop} being the field: its accessor's contract. */
+    static void recordFieldReliance(ClassNode owner, String prop, boolean write) {
+        FieldNode f = null
+        for (ClassNode k = owner?.redirect(); k != null && f == null; k = k.superClass) f = k.getDeclaredField(prop)
+        if (f == null || f.declaringClass != owner.redirect()) return   // an inherited field: its declaring class's
+        String cap = prop.substring(0, 1).toUpperCase() + prop.substring(1)
+        String t = typeSource(f.type)
+        if (write) {
+            Map<String, Object> e = relianceEntry(owner, 'set' + cap + '/1', "void set${cap}(${t} v)")
+            if (e == null) return
+            e.put('frame', new TreeSet<String>(['this.' + prop])); e.put('value', null); e.put('ensures', "${prop} == v")
+        } else {
+            Map<String, Object> e = relianceEntry(owner, 'get' + cap + '/0', "${t} get${cap}()")
+            if (e == null) return
+            e.put('frame', new TreeSet<String>()); e.put('value', prop)
+        }
+    }
+
+    private static String memberKey(MethodNode m) { m.name + '/' + m.parameters.length }
+
+    /** A member's declaration in skeleton source: `int get()`, `void fill(int[] a)`. */
+    private static String skeletonSig(MethodNode m) {
+        typeSource(m.returnType) + ' ' + m.name + '(' + m.parameters.collect { Parameter p -> typeSource(p.type) + ' ' + p.name }.join(', ') + ')'
+    }
+
+    private static String typeSource(ClassNode t) {
+        if (t == null) return 'Object'
+        if (t.isArray()) return typeSource(t.componentType) + '[]'
+        if (t.isGenericsPlaceHolder()) return 'Object'
+        t.redirect().name.replace('$', '.')
+    }
+
+    /** The source text of a body that is one expression (`count`, `return count + 1`), or null. */
+    private static String singleExpressionText(MethodNode m) {
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body instanceof BlockStatement && ((BlockStatement) body).statements.size() == 1) body = ((BlockStatement) body).statements[0]
+        Expression e = body instanceof ReturnStatement ? ((ReturnStatement) body).expression :
+                       body instanceof ExpressionStatement ? ((ExpressionStatement) body).expression : null
+        e == null || e instanceof ClosureExpression ? null : e.text
+    }
+
+    /** Phase 364 — the relied skeleton of {@code fqn}: its members' contracts, in the Phase 363 dialect. */
+    static String reliedSkeletonText(String fqn, Map<String, Map<String, Object>> members, boolean values) {
+        int dot = fqn.lastIndexOf('.')
+        StringBuilder sb = new StringBuilder()
+        sb.append('// Generated by groovy-verify (closedWorld: true, Phase 364): the contracts this compilation\'s proofs relied on.\n')
+        sb.append('// A subclass compiled with the checker is held to them (Phase 363). Regenerated on each compile — do not edit.\n')
+        if (dot > 0) sb.append('package ').append(fqn.substring(0, dot)).append('\n\n')
+        sb.append('class ').append(dot > 0 ? fqn.substring(dot + 1) : fqn).append(' {\n')
+        for (Map<String, Object> e : members.values()) {
+            List<String> anns = new ArrayList<String>()
+            if (e.get('ensures') != null) anns.add("@Ensures({ ${e.get('ensures')} })".toString())
+            else if (values && e.get('value') != null) anns.add("@Ensures({ result == (${e.get('value')}) })".toString())
+            else if (e.get('value') != null || e.get('noOverride')) anns.add('@NoOverride')
+            Set<String> fr = (Set<String>) e.get('frame')
+            if (fr != null) anns.add("@Modifies({ [${fr.join(', ')}] })".toString())
+            sb.append('    ').append(anns.join(' ')).append(' ').append(e.get('sig')).append(' {}\n')
+        }
+        sb.append('}\n')
+        sb.toString()
+    }
+
+    /** Phase 364 — write the relied skeletons of the reliances recorded on {@code cn}'s unit, into {@code outDir}
+     *  (null: there is none — an in-memory compile — and each class's reliances are ledgered as unwritten). */
+    private static void writeReliedSkeletons(File outDir) {
+        for (Map.Entry<String, Map<String, Map<String, Object>>> c : RELIANCES.get().entrySet()) {
+            String fqn = c.key
+            if (outDir == null) {
+                if (RELIANCE_WRITTEN.get().add(fqn)) {
+                    trustClosedWorld(fqn, 'relied skeleton not written: the compilation has no output directory, so a subclass ' +
+                        'compiled elsewhere can\'t be checked against these reliances')
+                }
+                continue
+            }
+            String text = reliedSkeletonText(fqn, c.value, true)
+            // a value written as an @Ensures must parse back; one that doesn't (an unusual expression) is @NoOverride
+            if (SpecRegistry.parseForLint(text, fqn) == null) text = reliedSkeletonText(fqn, c.value, false)
+            File f = new File(outDir, 'META-INF/groovy-verify/' + SpecRegistry.RELIED + '/' + fqn + '.groovy')
+            f.parentFile.mkdirs()
+            f.setText(text, 'UTF-8')
+            RELIANCE_WRITTEN.get().add(fqn)
+        }
+    }
+
     static boolean closedClass(ClassNode c) {
         c = c.redirect()
         if (java.lang.reflect.Modifier.isFinal(c.modifiers) || c.isEnum() || c.isRecord()) return true
@@ -2986,8 +3119,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                        "that isn't the field"
             }
         }
-        if (open) trustClosedWorld("${c.name}#${prop}",
-            "${write ? 'written' : 'read'} as the field: a subclass compiled elsewhere must not declare ${names[0]}()")
+        if (open) {
+            trustClosedWorld("${c.name}#${prop}",
+                "${write ? 'written' : 'read'} as the field: a subclass compiled elsewhere must not declare ${names[0]}()")
+            if (closedWorld()) recordFieldReliance(c, prop, write)   // Phase 364
+        }
         null
     }
 
@@ -3073,6 +3209,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (w != null && declaredModifies(node) == null && node.code != null && overridableElsewhere(node)) {
             trustClosedWorld("${node.declaringClass.name}#${node.name}",
                 "frame read off its body ${new TreeSet<String>(w)}: a subclass compiled elsewhere must write no more")
+            recordFrameReliance(node, w)   // Phase 364
         }
         w
     }
@@ -3394,6 +3531,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         addStaticTypeError(Reporter.formatModifiesUnchecked(node.name, calleeWritesReason(node), declared, offenders), node)
     }
 
+    /** Phase 364 — an override of a member a relied skeleton marks {@code @NoOverride} — its body was used as its
+     *  value and no expression could state it — is an error, unless it only delegates ({@code super.m(…)}). */
+    private void noOverrideCheck(MethodNode node) {
+        if (node.isStatic() || node.code == null) return
+        for (MethodNode a : superAndInterfaceDecls(node)) {
+            if (a.getNodeMetaData(SpecRegistry.SPEC_KEY) == null || !a.getAnnotations().any { it.classNode?.nameWithoutPackage == 'NoOverride' }) continue
+            if (delegatesToSuper(node)) return
+            addStaticTypeError("Method '${node.name}' overrides ${a.declaringClass.name}#${a.name}, whose body verified code compiled " +
+                "with closedWorld: true used as its value (its relied skeleton marks it @NoOverride) — only an override that " +
+                "delegates (super.${node.name}(…)) keeps that proof sound", node)
+            return
+        }
+    }
+
+    private static boolean delegatesToSuper(MethodNode m) {
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body instanceof BlockStatement && ((BlockStatement) body).statements.size() == 1) body = ((BlockStatement) body).statements[0]
+        Expression e = body instanceof ReturnStatement ? ((ReturnStatement) body).expression :
+                       body instanceof ExpressionStatement ? ((ExpressionStatement) body).expression : null
+        e instanceof MethodCallExpression && ((MethodCallExpression) e).objectExpression instanceof VariableExpression &&
+            ((VariableExpression) ((MethodCallExpression) e).objectExpression).name == 'super' && ((MethodCallExpression) e).methodAsString == m.name
+    }
+
     /** The caller-visible location written by an assignment LHS, or null (e.g. a local). */
     private static String writtenLocation(Expression lhs) {
         if (lhs instanceof BinaryExpression &&
@@ -3479,6 +3639,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Reporter.READ_NOTES.get().clear()   // Phase 361
         CLOSED_WORLD.set(ContractExpansionTransform.verifyOptionEnabled(node.declaringClass, 'closedWorld'))   // Phase 362
         CLOSED_WORLD_SITE.set(node)
+        // Phase 364 — this compile's identity (its class loader) for the reliances, and the loader relied skeletons of
+        // the libraries on its classpath are found through
+        ClassLoader compileLoader = node.declaringClass?.module?.context?.classLoader
+        startCompile(compileLoader)
+        SpecRegistry.COMPILE_LOADER.set(compileLoader)
         currentFacts = new PathFacts()
         currentMethod = node
         WRITE_OWNER.set(node.declaringClass)
@@ -3541,6 +3706,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     void afterVisitClass(ClassNode classNode) {
         if (classNode == null) return
         verifyTraitDefaultMethods(classNode)
+        // Phase 364 — the reliances recorded so far, as relied skeletons (rewritten as later classes add to them)
+        try {
+            if (!RELIANCES.get().isEmpty()) {
+                String out = System.getProperty('verify.reliedOut')
+                File dir = out ? new File(out) : classNode.module?.context?.configuration?.targetDirectory
+                writeReliedSkeletons(dir)
+            }
+        } catch (Throwable t) {
+            addStaticTypeError("Could not write the relied skeletons (Phase 364): ${t.message}", classNode)
+        }
         // Phase 298 — an actor held in a FIELD: its behaviour-graph findings belong to the class, not to any one
         // method that sends to it, so they are raised here rather than once per method.
         try {
@@ -3809,6 +3984,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 frameCheck(node)
             } catch (Throwable ignored) {
             }
+            noOverrideCheck(node)   // Phase 364
 
             // Phase 120 (behavioral subtyping / Liskov): if this method overrides a contracted parent method
             // and redeclares its own contract, prove the override is substitutable — its @Requires is weaker

@@ -674,6 +674,7 @@ class PureEvaluator {
                 if (!m.isStatic() && VerifyChecker.overridableElsewhere(m)) {
                     VerifyChecker.trustClosedWorld("${m.declaringClass.name}#${m.name}",
                         'body used as its value: a subclass compiled elsewhere must not override it')
+                    VerifyChecker.recordValueReliance(m)   // Phase 364
                 }
                 return m
             }

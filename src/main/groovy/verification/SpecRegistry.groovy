@@ -100,13 +100,19 @@ class SpecRegistry {
         select(fqn, RELIED, name, arity, paramTypeNames) ?: select(fqn, '', name, arity, paramTypeNames)
     }
 
+    /** Phase 364 — the class loader of the compile being checked: a library on its classpath carries its relied
+     *  skeletons as resources there, which the checker's own loader (or the thread's) needn't see. */
+    static final ThreadLocal<ClassLoader> COMPILE_LOADER = new ThreadLocal<ClassLoader>()
+
     /** Test hook: forget the cached skeletons of {@code fqn} (both kinds), so a case's own files are read. */
-    static void evict(String fqn) { CACHE.remove(fqn); CACHE.remove(RELIED + ':' + fqn) }
+    static void evict(String fqn) { CACHE.remove(fqn); CACHE.keySet().removeIf { String k -> k.startsWith(RELIED + ':' + fqn + '@') } }
 
     private static MethodNode select(String fqn, String kind, String name, int arity, List<String> paramTypeNames) {
         if (fqn == null || name == null) return null
         if (!PackRegistry.specAllowed(fqn)) return null   // Phase 227 — a disabled pack's specs are off
-        String key = kind ? kind + ':' + fqn : fqn
+        // Phase 364 — a relied skeleton comes from the compile's classpath, so it is cached per compile loader (a
+        // daemon's next compile, against a rebuilt library, must not reuse the old one)
+        String key = kind ? kind + ':' + fqn + '@' + System.identityHashCode(COMPILE_LOADER.get()) : fqn
         Object entry = CACHE.computeIfAbsent(key, { String k -> (load(fqn, kind) ?: MISS) as Object })
         if (!(entry instanceof ClassNode)) return null
         List<MethodNode> byArity = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
@@ -323,6 +329,9 @@ class SpecRegistry {
             if (f.isFile()) return f.getText('UTF-8')
         }
         String res = 'META-INF/groovy-verify/' + (kind ?: 'specs') + '/' + fqn + '.groovy'
+        ClassLoader compile = COMPILE_LOADER.get()
+        URL viaCompile = kind && compile != null ? compile.getResource(res) : null
+        if (viaCompile != null) return viaCompile.getText('UTF-8')
         ClassLoader tccl = Thread.currentThread().contextClassLoader
         URL u = (tccl != null ? tccl.getResource(res) : null) ?: SpecRegistry.classLoader.getResource(res)
         u != null ? u.getText('UTF-8') : null

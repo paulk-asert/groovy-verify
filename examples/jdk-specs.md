@@ -416,7 +416,10 @@ class LibCounter {
 }
 ```
 
-An override in a checked build that writes more is then a compile error naming the skeleton: "Method 'incr' writes
+A library compiled with `closedWorld: true` writes these files itself, beside its classes (Phase 364) — a value
+its proofs used becomes `@Ensures({ result == … })`, or `@NoOverride` (only a delegating `super.m(…)` override is
+allowed) when no single expression states it. An override in a checked build that writes more is then a compile
+error naming the skeleton: "Method 'incr' writes
 'log', which is not in its @Modifies clause [count]. … The clause is inherited from the skeleton of
 fixture.LibCounter#incr, which this override is held to." The override is proved against the skeleton, not trusted
 with it, so nothing is ledgered. A precompiled method's own skeleton is also its frame where your code calls it:

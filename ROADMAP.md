@@ -16231,7 +16231,47 @@ before; a same-class instance method named like a mutator framed by its body; a 
 precompiled method loud, directly and through `super`; a skeleton framing it, exactly.
 
 **Still out:** inherited fields of a precompiled class are not modelled (`n.count` with `count` declared by the
-library class is outside the fragment — loud); 3b, the writer of relied skeletons; 3c, the annotation carrier.
+library class is outside the fragment — loud); 3b, the writer of relied skeletons (Phase 364); 3c, the annotation
+carrier.
+
+## Phase 364 — a library writes what its proofs relied on  *(shipped — slice 3b)*
+
+Phase 363 holds a later unit's overrides to a relied skeleton; this writes them. Under `closedWorld: true`, each
+reliance on a member of a class compiled in the same unit is now recorded structurally as well as ledgered
+(`recordFrameReliance`, `recordValueReliance`, `recordFieldReliance`, beside the Phase 362 `trustClosedWorld`
+calls), and when a class's checking ends the unit's reliances are written to the output directory — the compile's
+`targetDirectory`, so Gradle's classes dir and the jar — as `META-INF/groovy-verify/relied/<fqn>.groovy`:
+
+- **a frame** as `@Modifies({ [this.count, a] })` (a formal by name, a field as `this.f`);
+- **a value** as `@Ensures({ result == (<body>) }) @Modifies({ [] })` when the body is one expression — the file
+  is parsed back (`SpecRegistry.parseForLint`) and, if it doesn't parse, written again with `@NoOverride` instead —
+  and as `@NoOverride` when it isn't. `@NoOverride` is new to the 3a consumer: an override of a member so marked is an
+  error unless it only delegates (`super.get()`), since "returns what the base body returns" can't be checked for a
+  body no expression states;
+- **a field read** as its getter, `@Ensures({ result == (n) }) @Modifies({ [] }) int getN()`, and a write as its
+  setter, `@Ensures({ n == v }) @Modifies({ [this.n] }) void setN(int v)`.
+
+A reliance on a class compiled ELSEWHERE stays ledger-only (its relied file is its own library's). An in-memory
+compile (no output directory) ledgers each class's reliances as unwritten — "relied skeleton not written: the
+compilation has no output directory, …" — so `deny:world` still fails on them.
+
+- **Finding them in the later unit:** relied skeletons are resources of the library on the COMPILE classpath, which
+  the checker's own loader needn't see; `SpecRegistry` now reads them through the compile's class loader
+  (`COMPILE_LOADER`, set per method from the source unit), and caches them per loader, so a long-lived daemon never
+  reuses a relied skeleton from an older build of the library.
+- **Tests:** `ReliedSkeletonTest` (JUnit, two units): a closed-world library compiled to a classes directory writes
+  the expected files (and none for a class nothing relied on); compiled against it, a checked override writing
+  more, changing a relied value, or shadowing a relied field with a getter fails, one within its frame and a
+  delegating one pass, and an unchecked subclass is not checked — the residual.
+
+**Shipped tests:** group `P364 a library writes what its proofs relied on`, 4 cases: an in-memory compile ledgering
+its reliances as unwritten, and one relying on nothing ledgering nothing; a relied `@NoOverride` holding an override,
+unless it delegates. And `ReliedSkeletonTest`, 7 tests.
+
+**Still out:** a class that loses all its reliances keeps a stale relied file until the classes directory is
+cleaned (over-strict, never unsound — Gradle's full recompile cleans it; incremental Groovy compilation may not);
+a subclass compiled without the checker (the residual, now ledgered, stated in the jar, and checkable by anyone who
+runs the checker); 3c, the class-file annotation carrier, only if shading (which may drop `META-INF`) matters.
 
 ---
 
