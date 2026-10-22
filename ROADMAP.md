@@ -16934,12 +16934,16 @@ which for an empty array is `0..<-1`, i.e. [0]: it reads `a[0]` and throws at ru
 outside the fragment. A slice with a negative bound (Groovy counts it from the end) stays unmodelled, as before; a range
 whose direction depends on a fact outside its own conjunction keeps the `ite`, which can cost the solver time.
 
-**Shipped tests:** group `P381 range forms`, 19 cases. Compiled cleanly before (false claims): a descending quantifier
+**Shipped tests:** group `P381 range forms`, 25 cases. Compiled cleanly before (false claims): a descending quantifier
 as an obligation, a symbolic one, an exclusive start assumed of index 0, slices with an exclusive start and descending,
 a descending range and an exclusive start as lists, and Phase 380's closure over a descending range. Undecided or
 refuted falsely before: the true versions of the descending quantifier, the slices and the list's six elements, and
 closures over descending and exclusive ranges in bounds. Plus the note on a backwards range, and its guarded twin; a
-decimal range outside the fragment, as an obligation and as an assumption; and a long range iterated as its ints.
+decimal range outside the fragment, as an obligation and as an assumption; and a long range iterated as its ints. And
+regression guards (asked: should `4.5..6.5` support `containsWithinBounds`, as `'a'..'d'` supports `contains`? It already
+did): `containsWithinBounds` on a decimal range — a constant, a parameter, an exclusive end — on a reversed one with each
+end excluded, and on a descending int range, constant and symbolic, as the 6.0.0 runtime answers; and a decimal range's
+`contains` (membership among its steps) outside the fragment.
 
 ---
 

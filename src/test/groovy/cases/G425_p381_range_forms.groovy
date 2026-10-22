@@ -183,6 +183,60 @@ class G425_p381_range_forms {
                         static int f(int[] a) { 1 }
                     }''')],
 
+        // Its bounds query is modelled (Phase 74's pure bounds): within the ends, whichever way the range runs, `<..`
+        // excluding `from` and `..<` `to` — as the 6.0.0 runtime answers. A regression guard, as `'a'..'d'` has Phase
+        // 99b's `contains`.
+        [group: "P381 range forms", name: "a decimal range's containsWithinBounds",
+         ok: true,
+         src: tc('''class A {
+                        @Requires({ x >= 5 && x <= 6 })
+                        @Ensures({ result })
+                        static boolean f(BigDecimal x) {
+                            (4.5..6.5).containsWithinBounds(5) && (4.5..6.5).containsWithinBounds(x) &&
+                                !(4.5..<6.5).containsWithinBounds(6.5)
+                        }
+                    }''')],
+
+        [group: "P381 range forms", name: "… reversed, each end excluded where it is",
+         ok: true,
+         src: tc('''class A {
+                        @Ensures({ result })
+                        static boolean f() {
+                            (6.5..4.5).containsWithinBounds(5) && !(6.5<..4.5).containsWithinBounds(6.5) &&
+                                !(6.5..<4.5).containsWithinBounds(4.5)
+                        }
+                    }''')],
+
+        [group: "P381 range forms", name: "… and the excluded start isn't in",
+         expect: "Cannot prove postcondition of f",
+         src: tc('''class A {
+                        @Ensures({ result })
+                        static boolean f() { (6.5<..4.5).containsWithinBounds(6.5) }
+                    }''')],
+
+        [group: "P381 range forms", name: "an int range's containsWithinBounds, descending",
+         ok: true,
+         src: tc('''class A {
+                        @Requires({ n > 3 })
+                        @Ensures({ result })
+                        static boolean f(int n) { (5..0).containsWithinBounds(3) && (n..0).containsWithinBounds(3) }
+                    }''')],
+
+        [group: "P381 range forms", name: "… which is no reason it excludes a value",
+         expect: "Cannot prove postcondition of f",
+         src: tc('''class A {
+                        @Ensures({ !result })
+                        static boolean f() { (5..0).containsWithinBounds(3) }
+                    }''')],
+
+        // A decimal range's contains is membership among its steps (5.5 is in 4.5..6.5, 5 isn't): outside the fragment.
+        [group: "P381 range forms", name: "a decimal range's contains is outside the fragment",
+         expect: "is outside fragment", refute: "Cannot prove",
+         src: tc('''class A {
+                        @Ensures({ result })
+                        static boolean f() { (4.5..6.5).contains(5.5) }
+                    }''')],
+
         // A long range is an int range.
         [group: "P381 range forms", name: "a long range is iterated as its ints",
          expect: "Cannot prove postcondition of f",
