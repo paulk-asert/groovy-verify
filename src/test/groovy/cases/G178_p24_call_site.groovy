@@ -50,7 +50,7 @@ class G178_p24_call_site {
         // A straight-line mutation before a call is threaded: needs(s, k) requires `k in s`, and
         // `s.add(k)` right before the call establishes it — verified only because the add is now replayed.
         [group: 'P24 call-site', name: 'mutation before call establishes precondition', ok: true,
-         src: tc('''class C { Set<Integer> s
+         src: tc('''final class C { Set<Integer> s
                         @Requires({ k in s })
                         void needs(int k) { }
                         @Modifies({ this.s })

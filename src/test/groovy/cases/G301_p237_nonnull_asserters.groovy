@@ -86,14 +86,14 @@ class G301_p237_nonnull_asserters {
         // The AssertJ/Truth chain spelling. The fluent helper class sits after the checked class, so
         // only C runs under the extension; the chain still narrows by shape.
         [group: 'P237 nonnull asserters', name: 'assertThat(x).isNotNull() narrows', ok: true,
-         src: tc('''class C {
+         src: tc('''final class C {
                         static Check assertThat(Object o) { new Check(o) }
                         static int m(String s) {
                             assertThat(s).isNotNull()
                             return s.length()
                         }
                     }
-                    class Check {
+                    final class Check {
                         final Object v
                         Check(Object v) { this.v = v }
                         Check isNotNull() { if (v == null) throw new AssertionError(); return this }

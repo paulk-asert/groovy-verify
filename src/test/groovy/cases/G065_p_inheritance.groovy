@@ -32,13 +32,13 @@ class G065_p_inheritance {
         [group: 'P-inheritance', name: 'super call assumes parent postcondition', ok: true,
          src: HDR + """
 @TypeChecked(extensions = 'verification.VerifyChecker')
-class Base {
+sealed class Base {
     @Requires({ x >= 0 })
     @Ensures({ result == x * 2 })
     int f(int x) { x + x }
 }
 @TypeChecked(extensions = 'verification.VerifyChecker')
-class Derived extends Base {
+final class Derived extends Base {
     @Requires({ x >= 0 })
     @Ensures({ result == x * 2 + 1 })
     int g(int x) { super.f(x) + 1 }

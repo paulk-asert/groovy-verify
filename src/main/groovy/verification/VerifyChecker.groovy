@@ -2911,10 +2911,39 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
+    /** Phase 360 — can a subclass compiled OUTSIDE this unit override {@code m}? Not a static, private or final
+     *  method, a constructor, or a method of a closed class: final, an enum, a record, or sealed with every
+     *  permitted subclass closed in turn (a {@code non-sealed} one reopens it). A body that can be overridden
+     *  unseen is no contract: the verifier reads it neither as the call's frame nor as its value. */
+    static boolean openToOverride(MethodNode m) {
+        ClassNode dc = m?.declaringClass
+        if (dc == null || m.isStatic() || m.isPrivate() || m.isFinal() || m.name == '<init>' || m.name == '<clinit>') return false
+        !closedClass(dc)
+    }
+
+    private static boolean closedClass(ClassNode c) {
+        c = c.redirect()
+        if (java.lang.reflect.Modifier.isFinal(c.modifiers) || c.isEnum() || c.isRecord()) return true
+        if (!c.isSealed()) return false
+        for (ClassNode p : c.permittedSubclasses) if (!closedClass(p)) return false
+        true
+    }
+
+    /** Phase 360 — why an overridable method's body isn't its frame (null when it is closed). */
+    static String openReason(MethodNode m) {
+        openToOverride(m) ?
+            "'${m.declaringClass.nameWithoutPackage}.${m.name}(…)' can be overridden by a subclass compiled elsewhere, so its body " +
+            "isn't its frame — make it or its class final (or sealed), or declare @Modifies on it" : null
+    }
+
+    /** Phase 360 — the reason a callee's frame is unknown: open to override, else the inference's own reason. */
+    static String frameReason(MethodNode m) { openReason(m) ?: calleeWritesReason(m) }
+
     private static Set<String> modifiedNames(MethodNode node) {
         Set<String> declared = declaredModifies(node)
         if (declared != null) return declared
         if (node.getNodeMetaData(SpecRegistry.SPEC_KEY) != null || node.code == null) return Collections.<String> emptySet()
+        if (openToOverride(node)) return null   // Phase 360 — open world: an override's writes are unknown
         calleeWrites(node)
     }
 
@@ -3130,7 +3159,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Set<String> writes = modifiedNames(m)
             if (writes == null) {
                 // Phase 348 — carry the callee's own reason up, so the report names the construct, not just the call
-                String why = calleeWritesReason(m)
+                String why = frameReason(m)
                 return unbounded("call '${name}(…)'" + (why != null ? ": ${why}" : " whose writes can't be bounded"))
             }
             Set<String> sizes = calleeSizeWrites(m)   // Phase 349 — a resized formal resizes its actual
@@ -14984,7 +15013,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (MethodNode om : overriders(callee)) {
                 Set<String> ow = modifiedNames(om)
                 if (ow == null) {
-                    String why = calleeWritesReason(om)
+                    String why = frameReason(om)
                     throw new UnsupportedConstructException(
                         "call '${name}(…)' may dispatch to ${om.declaringClass.nameWithoutPackage}.${om.name}(…), whose writes " +
                         "can't be bounded from its body" + (why != null ? ": ${why}" : '') + " — declare @Modifies on it")
@@ -15061,7 +15090,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         // Phase 347 — no @Modifies and a body whose writes can't be bounded: the state after the call is unknown
         if (modSet == null) {
-            String why = calleeWritesReason(callee)   // Phase 348 — name the construct
+            String why = frameReason(callee)   // Phase 348 — name the construct (Phase 360 — or the open override)
             throw new UnsupportedConstructException(
                 "call '${name}(…)' whose writes can't be bounded from its body" + (why != null ? ": ${why}" : '') +
                 " — declare @Modifies on ${callee.name}")

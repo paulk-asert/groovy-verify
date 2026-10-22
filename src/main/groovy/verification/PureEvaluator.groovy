@@ -666,6 +666,8 @@ class PureEvaluator {
                 // Phase 359 — an instance method a subclass of the unit overrides is a virtual call: its body is the
                 // value only for an exact-class receiver, so it is no function to inline or evaluate
                 if (!m.isStatic() && !VerifyChecker.overriders(m).isEmpty()) return null
+                // Phase 360 — nor one a subclass compiled elsewhere could override (open world)
+                if (VerifyChecker.openToOverride(m)) return null
                 Set<String> writes = VerifyChecker.calleeWrites(m)
                 return (writes != null && writes.isEmpty()) ? m : null
             }

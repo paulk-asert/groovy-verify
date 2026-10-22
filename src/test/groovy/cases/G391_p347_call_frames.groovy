@@ -45,7 +45,7 @@ class G391_p347_call_frames {
                     }''')],
         // bump() writes `other`; its inferred frame is {other}, so count == 0 survives the call.
         [group: 'P347 a call is framed by its writes', name: 'a contract-free writer leaves the fields it does not write alone', ok: true,
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         int other = 0
                         int bump() { other = 99; return 1 }
@@ -56,7 +56,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         [group: 'P347 a call is framed by its writes', name: 'the same in a loop body', ok: true,
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         int other = 0
                         int bump() { other = other + 1; return 1 }
@@ -98,7 +98,7 @@ class G391_p347_call_frames {
                     }''')],
         // Unsound before: a callee with no @Modifies was read as writing nothing, so `int s = bump()` kept count == 0 past `count = 99`.
         [group: 'P347 a call is framed by its writes', name: 'a contracted writer with no @Modifies is framed by its body', expect: ['Cannot prove postcondition', 'count (after a call)', 'fails on: f()'],
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         @Ensures({ result == 1 })
                         int bump() { count = 99; return 1 }
@@ -109,7 +109,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove postcondition', 'fails on: f()'],
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         @Ensures({ result == 1 })
                         int bump() { count = 99; return 1 }
@@ -121,7 +121,7 @@ class G391_p347_call_frames {
                     }''')],
         // `int s = 2 + bump()`: the call is hoisted to a framed local, as a return expression's calls are.
         [group: 'P347 a call is framed by its writes', name: 'the same inside an expression', expect: ['Cannot prove postcondition', 'fails on: f()'],
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         @Ensures({ result == 1 })
                         int bump() { count = 99; return 1 }
@@ -132,7 +132,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         [group: 'P347 a call is framed by its writes', name: 'a reassignment whose right-hand side calls the writer', expect: ['Cannot prove postcondition', 'fails on: f()'],
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         int bump() { count = 99; return 1 }
                         @Requires({ count == 0 })
@@ -144,7 +144,7 @@ class G391_p347_call_frames {
                     }''')],
         // The frame is transitive: bump() calls reset(), which writes count.
         [group: 'P347 a call is framed by its writes', name: 'a write reached through a helper the callee calls', expect: ['Cannot prove postcondition', 'fails on: f()'],
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         private void reset() { count = 99 }
                         @Ensures({ result == 1 })
@@ -197,7 +197,7 @@ class G391_p347_call_frames {
                     }''')],
         // Unsound before: `s = s + bump()` havocked s and nothing else, so count == 0 was preserved.
         [group: 'P347 a call is framed by its writes', name: 'a writer called as a value in a loop body', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1)'],
-         src: tc('''class C {
+         src: tc('''final class C {
                         int count = 0
                         int bump() { count = 99; return 1 }
                         @Requires({ n >= 0 && count == 0 })

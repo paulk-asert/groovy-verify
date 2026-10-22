@@ -34,7 +34,7 @@ class G179_p25_recursive_defs {
         // visited — the inductive `propagate` over the chain `chain(u,d)` (d-step successor) that previously
         // failed. This completes the (b) half flagged in Phase 23.
         [group: 'P25 recursive-defs', name: 'closure ⇒ d-step reachable covered (induction)', ok: true,
-         src: tc('''class C {
+         src: tc('''final class C {
                         Map<Integer,Integer> next
                         Set<Integer> visited
                         int n
@@ -52,7 +52,7 @@ class G179_p25_recursive_defs {
         // `0 <= bcount <= k` is proved by induction USING the defining equation (the cross-lemma use the
         // statement-form Phase-20 bcount couldn't support).
         [group: 'P25 recursive-defs', name: 'bcount bound via defining equation', ok: true,
-         src: tc('''class C {
+         src: tc('''final class C {
                         int bcount(Set<Integer> s, int k) { k <= 0 ? 0 : bcount(s, k - 1) + ((k - 1) in s ? 1 : 0) }
                         @Requires({ k >= 0 })
                         @Ensures({ 0 <= bcount(s, k) && bcount(s, k) <= k })
@@ -63,7 +63,7 @@ class G179_p25_recursive_defs {
                     }''')],
         // Soundness: the definition is faithful, not vacuous — a too-tight bound (<= k-1) refutes.
         [group: 'P25 recursive-defs', name: 'wrong bcount bound refuted', expect: 'Cannot prove postcondition',
-         src: tc('''class C {
+         src: tc('''final class C {
                         int bcount(Set<Integer> s, int k) { k <= 0 ? 0 : bcount(s, k - 1) + ((k - 1) in s ? 1 : 0) }
                         @Requires({ k >= 0 })
                         @Ensures({ bcount(s, k) <= k - 1 })

@@ -73,13 +73,13 @@ class G168_p45_cross_class {
         // so c.count >= 0 still holds afterwards.
         [group: 'P45 cross-class', name: 'after cross-class call: invariant still holds', ok: true,
          src: tc('''@Invariant({ count >= 0 && count <= max })
-                    class Counter {
+                    final class Counter {
                         int count, max
                         @Requires({ count < max })
                         void incr() { count = count + 1 }
                     }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
+                    final class Client {
                         @Requires({ c != null && c.count < c.max })
                         @Ensures({ result >= 0 })
                         static int useCounter(Counter c) {

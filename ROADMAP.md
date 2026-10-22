@@ -16069,9 +16069,51 @@ writing its differently-named parameter; an unbounded override loud; a reading o
 keeping the frame; an overridden helper's body not its value (compiled cleanly before), and one never overridden
 still inlined.
 
-**Still out:** a subclass compiled in another unit (the closed world); a collection subclass with fields (`class Bag
+**Still out:** a subclass compiled in another unit (the closed world — Phase 360); a collection subclass with fields (`class Bag
 extends ArrayList`) is outside the fragment, so loud. A subclass in another unit may override a helper the closed
 evaluator inlines, by the same closed-world boundary.
+
+## Phase 360 — an overridable body is no contract  *(shipped — soundness: the open world, slice 1 of 3)*
+
+Phase 359's follow-up. Its overrides are those of the compilation unit; a subclass compiled elsewhere — an app
+extending a verified library class, months later — can override a method unseen, and Groovy classes and methods
+are open by default. Every contract-free instance method's body was therefore an unwritten contract: read as the
+call's frame (Phase 347) and, when frame-empty, as its value (Phase 8a). An app's `class Offset extends Counter {
+int get() { count + 100 } }` broke a library's proved bounds check `a[c.get()]`, with nothing at runtime to catch
+it, since `get()` has no contract for groovy-contracts to check.
+
+Three designs were weighed: (A) record each relied-on body in the class file and check a later checked unit's
+overrides against it; (B) the open world — trust a body only where it can't be overridden; (D) B by default, with an
+opt-in closed-world option whose every reliance is a ledgered trusted fact (Phase 216), plus A's check where the
+later unit is checked. D was chosen, in three slices; this is the first, B.
+
+- **`openToOverride(m)`:** a body is trusted only for a static, private or final method, a constructor, or a
+  method of a closed class — final, an enum, a record, or sealed with every permitted subclass closed in turn (a
+  `non-sealed` one reopens the hierarchy). Otherwise `modifiedNames` is unknown — the call is loud, naming the
+  method: "'Counter.incr(…)' can be overridden by a subclass compiled elsewhere, so its body isn't its frame — make
+  it or its class final (or sealed), or declare @Modifies on it" — and `PureEvaluator.resolve` refuses it as a
+  function, so its value is opaque.
+- **A declared contract is what an override is held to** (Phase 120's behavioural subtyping when the subclass is
+  checked; groovy-contracts at runtime), so `@Modifies` restores the frame, and `@Ensures` with `@Modifies({ [] })`
+  the value.
+- **The corpus:** 55 cases relied on an open body — the Phase 347–359 framing groups, and a few older ones (P14
+  sort, P24, P25, P45, P237, the inheritance group). Each had its example classes closed — `final`, or `sealed` over
+  `final` subclasses where the case is about a hierarchy — so it says what it said before, with the exact solver
+  check count (9,756) of the closed-world run.
+
+**Shipped tests:** group `P360 an overridable body is no contract`, 9 cases: an open class's writer loud (verified
+before); a final class, a final method and a declared `@Modifies` trusted; an open helper's body neither frame nor
+value (verified before), a private one inlined, and an open one's `@Ensures` with `@Modifies({ [] })` restoring the
+call; a sealed hierarchy of final classes closed, and a `non-sealed` subclass reopening it (compiled cleanly before).
+
+**Next (slices 2, 3):** a `closedWorld: true` checker option that trusts open bodies again, each reliance a
+TrustLedger entry (`report` lists the obligations a subclass author takes on, `deny` fails the build); then stamping
+the reliances into the class file, checked against a later checked unit's overrides.
+
+**Still out — found by this phase's probe, and the next soundness item: a property read through a user getter.**
+`b.n` from another class is modelled as the field `b$n`, but Groovy reads it through `getN()`. A class that declares
+its own getter — even a final one, `int getN() { n = n + 1; return n }` — makes `int x = b.n; int y = b.n` differ,
+and the verifier proves `x - y == 0`; under the open world a subclass's `getN()` override is the same hole.
 
 ---
 

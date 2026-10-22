@@ -37,55 +37,55 @@ class G395_p351_any_receiver {
         // An object FIELD of another class is a receiver like an object parameter (`c$count`). Before, `c.count` in a
         // contract was outside the fragment.
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a call on an object field havocs the field object\'s state', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         int f() { c.incr(); return c.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: '… and the callee\'s @Ensures reaches the caller', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 4 })
                         int f() { c.incr(); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         @Ensures({ count == old.count + 1 })
                         void incr() { count = count + 1 }
                     }''')],
         // Fixed (unsound before): the callee's `hits == old.hits + 1` was asserted about A's own `hits`, so f verified.
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a field call\'s @Ensures no longer lands on the caller\'s same-named field', expect: "Cannot prove postcondition of f",
-         src: tc('''class A {
+         src: tc('''final class A {
                         int hits = 0
                         Counter c = new Counter()
                         @Requires({ c != null })
                         @Ensures({ hits == old.hits + 1 })
                         void f() { c.incr() }
                     }
-                    class Counter {
+                    final class Counter {
                         int hits = 0
                         @Ensures({ hits == old.hits + 1 })
                         void incr() { hits = hits + 1 }
                     }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: '`this.c.incr()` is the same receiver', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         int f() { this.c.incr(); return c.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a field the method reassigns is not modelled, and the call through it is loud', expect: "call 'c.incr(…)' writes its receiver's field 'count', but 'c' isn't a receiver the verifier models",
-         src: tc('''class A {
+         src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && o != null })
                         @Ensures({ result == 0 })
                         int f(Counter o) { c = o; c.incr(); return 0 }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a field and a parameter of the same class may alias: the Phase 194 boundary', expect: "call through 'c' — parameter 'o' of the same class may alias the receiver",
          src: tc('''class A {
                         Counter c = new Counter()
@@ -97,27 +97,27 @@ class G395_p351_any_receiver {
         // Fixed (unsound before): `d` is `c`, but the call through it havoced the caller's `count` (none here) and left
         // `c$count` at 3, so f verified. A local declared from a modelled receiver and never reassigned IS that receiver.
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a local alias of a parameter: a value call', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"], refute: 'c = 0',
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { Counter d = c; int x = d.bump(); return c.count }
                     }
-                    class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
+                    final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: '… a statement call', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { Counter d = c; d.incr(); return c.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: '… with the callee\'s @Ensures off the caller\'s same-named field', expect: "Cannot prove postcondition of f",
-         src: tc('''class A {
+         src: tc('''final class A {
                         int hits = 0
                         @Requires({ c != null })
                         @Ensures({ hits == old.hits + 1 })
                         void f(Counter c) { Counter d = c; d.incr() }
                     }
-                    class Counter {
+                    final class Counter {
                         int hits = 0
                         @Ensures({ hits == old.hits + 1 })
                         void incr() { hits = hits + 1 }
@@ -133,7 +133,7 @@ class G395_p351_any_receiver {
         // Fixed (unsound before): `o.incr()` framed and assumed `count == old.count + 1` about `this.count`, so f verified
         // (false for any `o` that isn't `this`).
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a parameter of the caller\'s own class may be `this`: loud', expect: "call 'o.incr(…)' writes its receiver's field 'count', but 'o' isn't a receiver the verifier models",
-         src: tc('''class A {
+         src: tc('''final class A {
                         int count = 0
                         @Ensures({ count == old.count + 1 })
                         void incr() { count = count + 1 }
@@ -142,23 +142,23 @@ class G395_p351_any_receiver {
                         void f(A o) { o.incr() }
                     }''')],
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a fresh object as the receiver of a writer: loud', expect: "call 'new Counter().incr(…)' writes its receiver's field 'count'",
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ n >= 0 })
                         @Ensures({ result == n })
                         static int f(int n) { new Counter().incr(); return n }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
-        // Before: `c.incr()` resolved to A's own `incr` (the caller's class was searched first): A's `count` was havoced
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+        // Before: `c.incr()` resolved to A's own `incr` (the caller's final class was searched first): A's `count` was havoced
         // and Counter's @Ensures never assumed.
         [group: 'P351 a call through any receiver lands on that receiver', name: 'a receiver of another class resolves on that class, not on the caller\'s same-named method', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         int count = 0
                         void incr() { count = count + 2 }
                         @Requires({ c != null && c.count == 3 && count == 0 })
                         @Ensures({ result == 4 && count == 0 })
                         int f(Counter c) { c.incr(); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         @Ensures({ count == old.count + 1 })
                         void incr() { count = count + 1 }

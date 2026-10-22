@@ -34,7 +34,7 @@ class G039_p14_sort {
         // by induction) supplies it: called before the swap, its @Ensures threads through the swap (Phase 24)
         // to the recursive call — and the sort is fully verified again.
         [group: 'P14 sort', name: 'insertion sort: sorted AND permutation', ok: true,
-         src: tc('''class C {
+         src: tc('''final class C {
                        int[] a
                        // lemma: every element of an adjacent-sorted prefix [0,k] is <= a[k], by induction on k.
                        @Requires({ 0 <= k && k < a.length && (0..<k).every { a[it] <= a[it + 1] } })

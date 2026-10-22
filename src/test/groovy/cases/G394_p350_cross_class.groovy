@@ -40,124 +40,124 @@ class G394_p350_cross_class {
         // Fixed (unsound before): `int x = c.bump()` routed through the generic call framing, which havoced the CALLER's
         // `count` (there is none here) and left `c.count` at its entry value, so `result == 3` verified.
         [group: 'P350 a cross-class call is framed by its writes', name: 'a value call on an object parameter havocs the fields its callee writes', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { int x = c.bump(); return c.count }
                     }
-                    class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
+                    final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
         // Phase 45 havoced every field of the receiver; the callee's inferred frame says which (here the only one).
         [group: 'P350 a cross-class call is framed by its writes', name: 'a statement call does the same, by the callee\'s frame now', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { c.incr(); return c.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         // Phase 45's recorded limit ("the callee's @Ensures is currently not assumed cross-class"): its bare `count` is
         // `c$count` and its `old.count` the snapshot at the call.
         [group: 'P350 a cross-class call is framed by its writes', name: 'the callee\'s @Ensures reaches the caller under the receiver', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 4 })
                         static int f(Counter c) { c.incr(); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         @Ensures({ count == old.count + 1 })
                         void incr() { count = count + 1 }
                     }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: '… and a wrong claim against it refutes', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 5 })
                         static int f(Counter c) { c.incr(); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         @Ensures({ count == old.count + 1 })
                         void incr() { count = count + 1 }
                     }''')],
         // Before: the callee's `count` was framed as the caller's `count` (havoced, `count == 0` refuted).
         [group: 'P350 a cross-class call is framed by its writes', name: 'a same-named field of the caller is not the callee\'s', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         int count = 0
                         @Requires({ c != null && count == 0 })
                         @Ensures({ count == 0 })
                         int f(Counter c) { int x = c.bump(); return x }
                     }
-                    class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
+                    final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
         // Before: `count == old.count + 1` was asserted about the CALLER's `count` — a fact about the wrong variable.
         [group: 'P350 a cross-class call is framed by its writes', name: '… and the callee\'s @Ensures binds to the receiver, not to it', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         int count = 0
                         @Requires({ c != null && count == 0 && c.count == 0 })
                         @Ensures({ result == 1 && count == 0 })
                         int f(Counter c) { int x = c.bump(); return x }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         @Ensures({ result == old.count + 1 && count == old.count + 1 })
                         int bump() { count = count + 1; return count }
                     }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: 'a getter\'s @Ensures reads the receiver\'s field', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { int x = c.get(); return x }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         @Ensures({ result == count })
                         int get() { count }
                     }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: 'a callee without @Ensures gives an opaque result', expect: "Cannot prove postcondition of f",
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 4 })
                         static int f(Counter c) { int x = c.bump(); return x }
                     }
-                    class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
-        // The callee preserved its class invariant on exit (Phase 15); the caller may assume it over the havoced field.
+                    final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
+        // The callee preserved its final class invariant on exit (Phase 15); the caller may assume it over the havoced field.
         [group: 'P350 a cross-class call is framed by its writes', name: 'the receiver\'s class invariant is re-assumed after a contract-free writer', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null })
                         @Ensures({ result >= 0 })
                         static int f(Counter c) { c.reset(); return c.count }
                     }
                     @Invariant({ count >= 0 })
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         void reset() { count = 0 }
                     }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: '… without the invariant the claim refutes', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = -1"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null })
                         @Ensures({ result >= 0 })
                         static int f(Counter c) { c.reset(); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         void reset() { count = 0 }
                     }''')],
         // Phase 45 would have havoced `c.count` too (every field, whatever the callee did).
         [group: 'P350 a cross-class call is framed by its writes', name: 'a callee writing only its formal leaves the receiver alone', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 && a.length > 0 })
                         @Ensures({ result == 3 })
                         static int f(Counter c, int[] a) { c.fill(a); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         void fill(int[] a) { if (a.length > 0) a[0] = count }
                     }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: 'a callee whose writes can\'t be bounded is loud', expect: ["call 'weird(…)' whose writes can't be bounded from its body: multiple assignment", "declare @Modifies on weird"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { c.weird(); return c.count }
                     }
-                    class Counter {
+                    final class Counter {
                         int count = 0
                         void weird() { def (a, b) = [count, count]; count = a + b }
                     }''')],
@@ -171,23 +171,23 @@ class G394_p350_cross_class {
         // The collector reads `c.incr()` by incr's frame: a written field is the receiver, so twice's frame is {c}, and a
         // written OBJECT parameter at the call site means its fields.
         [group: 'P350 a cross-class call is framed by its writes', name: 'a same-class helper writing through an object parameter havocs its fields', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null })
                         static void twice(Counter c) { c.incr(); c.incr() }
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { twice(c); return c.count }
                     }
-                    class Counter { int count = 0; void incr() { count = count + 1 } }''')],
+                    final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         [group: 'P350 a cross-class call is framed by its writes', name: '… and one only reading it leaves them alone', ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ c != null })
                         static int peek(Counter c) { c.get() }
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { int x = peek(c); return c.count }
                     }
-                    class Counter { int count = 0; int get() { count } }''')],
+                    final class Counter { int count = 0; int get() { count } }''')],
         // Its body is in the compilation unit and its frame is empty, like a same-class helper (symbol `Util$tweak`).
         [group: 'P350 a cross-class call is framed by its writes', name: 'a contract-free static on a sibling class unfolds as a function', ok: true,
          src: tc('''class A {

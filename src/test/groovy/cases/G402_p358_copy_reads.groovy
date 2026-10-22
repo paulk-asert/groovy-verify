@@ -73,13 +73,13 @@ class G402_p358_copy_reads {
                     }''')],
         // Before: compiled cleanly — `size` is on the read list, so Box's own size() was taken as List.size().
         [group: "P358 a copy is a read, a user method is not", name: "a sibling's own size() that writes, in a helper", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static int peek(Box h) { h == null ? 0 : h.size() }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { peek(h) }
                     }
-                    class Box { int n; int size() { n = n + 1; return n } }''')],
+                    final class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly.
         [group: "P358 a copy is a read, a user method is not", name: "… through a local", expect: "Cannot prove postcondition of g",
          src: tc('''class A {
@@ -91,7 +91,7 @@ class G402_p358_copy_reads {
                     class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly — the loop's write set read `h.size()` as pure, so `h.n == 0` stayed loop-stable.
         [group: "P358 a copy is a read, a user method is not", name: "… in a method body loop", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         @Requires({ h != null && h.n == 0 && k >= 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h, int k) {
@@ -101,7 +101,7 @@ class G402_p358_copy_reads {
                             while (i < k) { h.size(); i = i + 1 }
                         }
                     }
-                    class Box { int n; int size() { n = n + 1; return n } }''')],
+                    final class Box { int n; int size() { n = n + 1; return n } }''')],
         // Before: compiled cleanly.
         [group: "P358 a copy is a read, a user method is not", name: "… through a def local", expect: "Cannot prove postcondition of g",
          src: tc('''class A {
@@ -123,20 +123,20 @@ class G402_p358_copy_reads {
                     }
                     class Box { int n; int size() { n = n + 1; return n } }''')],
         [group: "P358 a copy is a read, a user method is not", name: "a sibling's own clone() that writes", expect: "Cannot prove postcondition of g",
-         src: tc('''class A {
+         src: tc('''final class A {
                         static void dup(Box h) { if (h != null) h.clone() }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { dup(h) }
                     }
-                    class Box { int n; Box clone() { n = 1; return new Box() } }''')],
+                    final class Box { int n; Box clone() { n = 1; return new Box() } }''')],
         [group: "P358 a copy is a read, a user method is not", name: "a sibling's own size() that only reads is framed by its body", ok: true,
-         src: tc('''class A {
+         src: tc('''final class A {
                         static int peek(Box h) { h == null ? 0 : h.size() }
                         @Requires({ h != null && h.n == 0 })
                         @Ensures({ h.n == 0 })
                         static void g(Box h) { peek(h) }
                     }
-                    class Box { int n; int size() { n } }''')],
+                    final class Box { int n; int size() { n } }''')],
     ]
 }
