@@ -179,7 +179,7 @@ written in the native `.every`-over-a-range idiom. The ghost `v`/`c` carry the p
 ```groovy
 @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } && a.count(v) == c })
 @Modifies({ this.a })
-@Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+@Ensures({ (a.length == 0 || (0..<a.length - 1).every { a[it] <= a[it + 1] }) && a.count(v) == c })
 int[] flag(int v, int c) {
     int lo = 0
     int mid = 0
@@ -291,7 +291,7 @@ placed element is ≤ everything after it* — which yields global sortedness at
 ```groovy
 @Requires({ a.count(v) == c })
 @Modifies({ this.a })
-@Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+@Ensures({ (a.length == 0 || (0..<a.length - 1).every { a[it] <= a[it + 1] }) && a.count(v) == c })
 int[] sort(int v, int c) {
     int i = 0
     @Invariant({ 0 <= i && i <= a.length &&

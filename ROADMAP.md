@@ -16883,6 +16883,56 @@ and a list's `indices`, `times`, a nested closure over the outer index, `upto` a
 `collect` over a range. Plus guards that still warn: an inclusive range one past the end, `times` reading `k + 1`, an
 inner `it` shadowing the outer, an `upto` from -1, and a closure that shrinks the list it iterates over.
 
+## Phase 381 — a range is the ints Groovy iterates  *(shipped — soundness: every range form, either direction)*
+
+Asked after Phase 380 whether all the inclusive/exclusive variants were covered: they weren't, and checking turned up
+older holes. Groovy has four range forms (`a..b`, `a..<b`, `a<..b`, `a<..<b`) and iterates a range whose end is below
+its start downwards, `<..` / `..<` dropping `from` / `to` whichever way it runs (checked on the 6.0.0 runtime: `5..<0`
+is 5..1, `1<..0` is [0], `2<..<0` is [1], `0..<-1` is [0]). The encoder read every range as ascending from `from`:
+
+- a **contract quantifier** read `(2..0).every { … }` and `(n..0).every { … }` as the empty `[2, 1)` / `[n, 1)`, so a
+  false postcondition over them proved unchecked; and `(0<..<3).every { a[it] > 0 }` as covering `a[0]`, so a
+  precondition gave a fact it doesn't state;
+- a **slice sum** `a[0<..2].sum(0)` counted `a[0]`, and `a[2..0].sum(0)` (Groovy's reversed sublist) was 0 — both
+  false postconditions proved; a constant `a[3..1]` was taken as statically empty;
+- a **constant range as a list** `List<Integer> r = 5..0` had size 0, and `(0<..3).toList()` began at 0;
+- **Phase 380's closure range** built `5 <= it && it <= 0` for `(5..0).every { j[it] }`, a contradiction, so its sites
+  proved vacuously (committed as 582dd3a: `(5..0).every { j[it] >= 0 }` on a 3-element array compiled cleanly);
+- Phase 379's sum-bound lemma took `0<..<n` as covering index 0, and the channel desugar's literal for-loop range
+  mis-iterated `0<..3` and `5..0`.
+
+- **`Encoder.rangeHalfOpen`** gives the ints a range iterates as `[lo, hi)`: ascending `[from + exL, to + 1 - exR)`,
+  descending `[to + exR, from + 1 - exL)` — constant ends folded, symbolic ones as an `ite` on `from <= to`. The
+  quantifiers, slice sums and the empty-slice check use it; a constant range as a list is built in iteration order; the
+  closure fact (`rangeFact`) is its ternary; the sum-bound lemma declines `<..`; the channel desugar declines `<..` and a
+  descending literal range (it falls back as before). Already right, and unchanged: for-in loops (exclusive start
+  refused, direction checked at establishment), string ranges, and `containsWithinBounds` (Phase 74's documented
+  pure-bounds contract).
+- **The direction test is folded where it can't fail**: a constant start at or below 0 up to a size (`0..<xs.size()`);
+  a start at or below an enclosing quantifier's constant lower bound, up to its variable (`(0..n).any { ops[0..<it] }`);
+  and, inside `A && B`, what `A` states — a constant lower bound (`0 <= i`, propagated through `m <= k`) or the order of
+  the range's own ends (`n <= u && (n..<u).every { … }`); and `x..<x + d` with `d` a non-negative constant, a size, or a
+  name bounded below by 0 (`flat[off[it]..<off[it] + members]`). `B` matters only where `A` holds, so the fold keeps
+  `A && B`; separate `@Requires` / `@Invariant` annotations are conjoined in order, so an earlier one guards a later one.
+- **A refutation that runs a range backwards says so**: each range whose direction stays open (outside any quantifier)
+  gets a hidden indicator, and a model that sets it adds "note: the range (0..<(a.length - 1)) runs backwards here —
+  Groovy iterates a range whose end is below its start downwards (`0..<-1` is [0])". Paul's call: faithful to the
+  runtime, with the note (2026-10-23).
+
+**Changed cases:** four sortedness postconditions over a possibly-empty array — G039's insertion sort, G040's three-way
+partition, G041's in-loop swap helper, G043's selection sort — read `(0..<a.length - 1).every { a[it] <= a[it + 1] }`,
+which for an empty array is `0..<-1`, i.e. [0]: it reads `a[0]` and throws at run time. Each is now guarded
+`a.length == 0 || …` (`n == 0 ||` for the insertion sort); their teeth cases are unchanged.
+
+**Boundary:** a slice with a negative bound (Groovy counts it from the end) stays unmodelled, as before; a range whose
+direction depends on a fact outside its own conjunction keeps the `ite`, which can cost the solver time.
+
+**Shipped tests:** group `P381 range forms`, 16 cases. Compiled cleanly before (false claims): a descending quantifier
+as an obligation, a symbolic one, an exclusive start assumed of index 0, slices with an exclusive start and descending,
+a descending range and an exclusive start as lists, and Phase 380's closure over a descending range. Undecided or
+refuted falsely before: the true versions of the descending quantifier, the slices and the list's six elements, and
+closures over descending and exclusive ranges in bounds. Plus the note on a backwards range, and its guarded twin.
+
 ---
 
 ## Definition of done, per increment

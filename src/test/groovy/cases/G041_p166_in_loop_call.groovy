@@ -43,7 +43,7 @@ class G041_p166_in_loop_call {
 
                        @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } })
                        @Modifies({ this.a })
-                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } })
+                       @Ensures({ (a.length == 0 || (0..<a.length - 1).every { a[it] <= a[it + 1] }) })
                        int[] flag() {
                            int lo = 0
                            int mid = 0

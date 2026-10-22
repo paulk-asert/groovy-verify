@@ -37,7 +37,7 @@ class G040_p164_dutch_flag {
                        int[] a
                        @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } && a.count(v) == c })
                        @Modifies({ this.a })
-                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+                       @Ensures({ (a.length == 0 || (0..<a.length - 1).every { a[it] <= a[it + 1] }) && a.count(v) == c })
                        int[] flag(int v, int c) {
                            int lo = 0
                            int mid = 0

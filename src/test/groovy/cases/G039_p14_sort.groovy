@@ -61,7 +61,7 @@ class G039_p14_sort {
                        }
                        @Requires({ 0 <= n && n <= a.length && (0..<n).every { a[it] <= hi } })
                        @Modifies({ this.a })
-                       @Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } &&
+                       @Ensures({ (n == 0 || (0..<n - 1).every { a[it] <= a[it + 1] }) &&
                                   (0..<n).every { a[it] <= hi } &&
                                   (n..<a.length).every { a[it] == old.a[it] } &&
                                   a.count(v) == old.a.count(v) })

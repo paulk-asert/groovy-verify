@@ -45,7 +45,7 @@ class G043_p168_selection_sort {
 
                        @Requires({ a.count(v) == c })
                        @Modifies({ this.a })
-                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+                       @Ensures({ (a.length == 0 || (0..<a.length - 1).every { a[it] <= a[it + 1] }) && a.count(v) == c })
                        int[] sort(int v, int c) {
                            int i = 0
                            @Invariant({ 0 <= i && i <= a.length &&
