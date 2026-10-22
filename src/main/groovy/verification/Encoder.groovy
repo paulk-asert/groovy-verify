@@ -3851,6 +3851,14 @@ class Encoder implements TheoryApi {
      * it e-matches to {@code sum(arr,0,i+1) == sum(arr,0,i) + arr[i]}, exactly the body's update.
      */
     Object sumOf(Object arr, Object loH, Object hiH) {
+        Object term = sumOfRaw(arr, loH, hiH)
+        Object[] st = [arr, loH, hiH, term] as Object[]   // Phase 379 — bounded by any element-bounding quantifier
+        sumTerms.add(st)
+        for (Object[] b : new ArrayList<Object[]>(elementBounds)) sumBoundLemma(b, st)
+        term
+    }
+
+    private Object sumOfRaw(Object arr, Object loH, Object hiH) {
         // Phase 378 — a constant array's sum is ground: c * (hi - lo) over a non-empty range, else 0. From the axioms
         // it takes induction over the length, which the solver can't do: `int[] bal = new int[m]` never established
         // `bal.sum() == 0` (it timed out). The term is kept, so the store law still links it to the next array's sum.
@@ -6752,9 +6760,157 @@ class Encoder implements TheoryApi {
             Object streamQ = translateStreamEvery(mce, recv, (ClosureExpression) args.get(0), m == 'any')
             if (streamQ != null) return streamQ
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
+            if (q != null && m == 'every') registerElementBounds(recv, (ClosureExpression) args.get(0), q)   // Phase 379
             if (q != null) return q
         }
         return NO_MATCH
+    }
+
+    /** Phase 379 — an {@code every} that bounds an array's elements: [the quantifier term, the array, its size, lb, ub]. */
+    private final List<Object[]> elementBounds = new ArrayList<Object[]>()
+    /** Phase 379 — each sum term made: [array, lo, hi, the term]. */
+    private final List<Object[]> sumTerms = new ArrayList<Object[]>()
+
+    /**
+     * Phase 379 — {@code (0..<a.length).every { lb <= a[it] && a[it] <= ub }} (or {@code a.indices.every}, or
+     * {@code a.every { v -> … }}) bounds every element by constants, so every sum over a range of it is bounded too:
+     * {@code lb * (hi - lo) <= a[lo..<hi].sum() <= ub * (hi - lo)}. From the recursive sum axioms that takes induction,
+     * which the solver can't do: `(0..<j.length).every { j[it] == 0 || j[it] == 1 }` never gave `0 <= j.sum()`, so a
+     * callee needing `left <= joined.sum()` with `left = 0` timed out. The lemma is an implication from the quantifier's
+     * own term (it holds whatever that term's polarity), guarded by the two arrays being equal (a callee's formal is
+     * tied to its actual by an equation) and the range lying in the quantified one.
+     */
+    private void registerElementBounds(Expression recv, ClosureExpression body, Object q) {
+        String arr = null
+        String param = body.parameters != null && body.parameters.length == 1 ? body.parameters[0].name : 'it'
+        boolean elementForm = false
+        if (recv instanceof RangeExpression) {
+            RangeExpression re = (RangeExpression) recv
+            Integer from = constIntOrNull(re.from)
+            if (from == null || from != 0) return
+            Expression to = re.to
+            if (re.inclusive) return
+            arr = lengthOf(to)
+        } else if (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'indices' &&
+                   ((PropertyExpression) recv).objectExpression instanceof VariableExpression) {
+            arr = ((VariableExpression) ((PropertyExpression) recv).objectExpression).name
+        } else if (recv instanceof VariableExpression) {
+            arr = ((VariableExpression) recv).name
+            elementForm = true
+        }
+        if (arr == null || body.code == null) return
+        Expression cond = bodyCondition(body.code)
+        if (cond == null) return
+        final String a = arr, p = param
+        final boolean ef = elementForm
+        Long[] b = elementBound(cond) { Expression x ->
+            ef ? (x instanceof VariableExpression && ((VariableExpression) x).name == p) :
+                (x instanceof BinaryExpression && ((BinaryExpression) x).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                 ((BinaryExpression) x).leftExpression instanceof VariableExpression &&
+                 ((VariableExpression) ((BinaryExpression) x).leftExpression).name == a &&
+                 ((BinaryExpression) x).rightExpression instanceof VariableExpression &&
+                 ((VariableExpression) ((BinaryExpression) x).rightExpression).name == p)
+        }
+        if (b == null || (b[0] == null && b[1] == null)) return
+        Object arrT, sizeT
+        try { arrT = arrayFor(a); sizeT = sizeOf(a) } catch (Throwable ignored) { return }
+        Object[] bound = [q, arrT, sizeT, b[0], b[1]] as Object[]
+        elementBounds.add(bound)
+        for (Object[] st : new ArrayList<Object[]>(sumTerms)) sumBoundLemma(bound, st)
+    }
+
+    /** `a.length` / `a.size()` / `a.size`: the name {@code a}; null otherwise. */
+    private static String lengthOf(Expression e) {
+        if (e instanceof PropertyExpression && ((PropertyExpression) e).propertyAsString in ['length', 'size'] &&
+            ((PropertyExpression) e).objectExpression instanceof VariableExpression) {
+            return ((VariableExpression) ((PropertyExpression) e).objectExpression).name
+        }
+        if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'size' &&
+            ((MethodCallExpression) e).objectExpression instanceof VariableExpression) {
+            return ((VariableExpression) ((MethodCallExpression) e).objectExpression).name
+        }
+        null
+    }
+
+    private static Expression bodyCondition(Statement code) {
+        Statement s = code
+        if (s instanceof BlockStatement && ((BlockStatement) s).statements.size() == 1) s = ((BlockStatement) s).statements.get(0)
+        if (s instanceof ExpressionStatement) return ((ExpressionStatement) s).expression
+        if (s instanceof ReturnStatement) return ((ReturnStatement) s).expression
+        null
+    }
+
+    /** Constant [lb, ub] (either null) the condition puts on the element {@code isElem} recognises; null if none. */
+    private static Long[] elementBound(Expression e, Closure<Boolean> isElem) {
+        if (e instanceof BooleanExpression) return elementBound(((BooleanExpression) e).expression, isElem)
+        if (!(e instanceof BinaryExpression)) return null
+        BinaryExpression be = (BinaryExpression) e
+        int op = be.operation.type
+        if (op == Types.LOGICAL_AND) {
+            Long[] l = elementBound(be.leftExpression, isElem), r = elementBound(be.rightExpression, isElem)
+            if (l == null) return r
+            if (r == null) return l
+            return [l[0] == null ? r[0] : (r[0] == null ? l[0] : Math.max(l[0], r[0])),
+                    l[1] == null ? r[1] : (r[1] == null ? l[1] : Math.min(l[1], r[1]))] as Long[]
+        }
+        if (op == Types.LOGICAL_OR) {
+            Long[] l = elementBound(be.leftExpression, isElem), r = elementBound(be.rightExpression, isElem)
+            if (l == null || r == null) return null
+            return [l[0] == null || r[0] == null ? null : Math.min(l[0], r[0]),
+                    l[1] == null || r[1] == null ? null : Math.max(l[1], r[1])] as Long[]
+        }
+        Long c
+        boolean elemLeft
+        if (isElem(be.leftExpression) && (c = constLong(be.rightExpression)) != null) elemLeft = true
+        else if (isElem(be.rightExpression) && (c = constLong(be.leftExpression)) != null) elemLeft = false
+        else return null
+        // normalise to `elem OP c`
+        if (!elemLeft) {
+            op = op == Types.COMPARE_GREATER_THAN ? Types.COMPARE_LESS_THAN : op == Types.COMPARE_LESS_THAN ? Types.COMPARE_GREATER_THAN :
+                op == Types.COMPARE_GREATER_THAN_EQUAL ? Types.COMPARE_LESS_THAN_EQUAL :
+                op == Types.COMPARE_LESS_THAN_EQUAL ? Types.COMPARE_GREATER_THAN_EQUAL : op
+        }
+        switch (op) {
+            case Types.COMPARE_EQUAL: return [c, c] as Long[]
+            case Types.COMPARE_GREATER_THAN_EQUAL: return [c, null] as Long[]
+            case Types.COMPARE_GREATER_THAN: return [c + 1, null] as Long[]
+            case Types.COMPARE_LESS_THAN_EQUAL: return [null, c] as Long[]
+            case Types.COMPARE_LESS_THAN: return [null, c - 1] as Long[]
+        }
+        null
+    }
+
+    private static Long constLong(Expression e) {
+        if (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number &&
+            !(((ConstantExpression) e).value instanceof Double) && !(((ConstantExpression) e).value instanceof Float) &&
+            !(((ConstantExpression) e).value instanceof BigDecimal)) {
+            return ((Number) ((ConstantExpression) e).value).longValue()
+        }
+        if (e instanceof UnaryMinusExpression) {
+            Long v = constLong(((UnaryMinusExpression) e).expression)
+            return v == null ? null : -v
+        }
+        null
+    }
+
+    /** {@code bound}'s quantifier, the arrays equal and the range in it, implies the sum's bounds. */
+    private void sumBoundLemma(Object[] bound, Object[] sum) {
+        try {
+            Object lo = sum[1], hi = sum[2], t = sum[3]
+            List<Object> pre = new ArrayList<Object>()
+            pre.add(bound[0])
+            if (!bound[1].equals(sum[0])) pre.add(session.eq(bound[1], sum[0]))
+            pre.add(session.le(session.intLit(0L), lo))
+            pre.add(session.le(lo, hi))
+            pre.add(session.le(hi, bound[2]))
+            Object len = session.minus(hi, lo)
+            List<Object> post = new ArrayList<Object>()
+            if (bound[3] != null) post.add(session.le(session.times(session.intLit((Long) bound[3]), len), t))
+            if (bound[4] != null) post.add(session.le(t, session.times(session.intLit((Long) bound[4]), len)))
+            session.assertExpr(session.implies(session.and(pre), session.and(post)))
+        } catch (Throwable ignored) {
+            // arrays of different sorts: never equal, nothing to say
+        }
     }
 
     /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */

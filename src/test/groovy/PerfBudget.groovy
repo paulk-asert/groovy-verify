@@ -47,8 +47,10 @@ class PerfBudget {
 
     /** UNKNOWN results (solver gave up / timed out). The corpus carries a handful of hard VCs plus the
      *  Phase 203/204 inconsistency canaries (recurrence-axiom refutes that intentionally time MBQI out —
-     *  measured 24 after those landed); re-based with headroom. */
-    static final long MAX_UNKNOWN = 40
+     *  measured 24 after those landed); re-based with headroom. Re-based 2026-10-23: Phases 375–379 add cases that are
+     *  undecided by design (a sum claim whose refutation needs a model of the sum's quantified axioms: the ClearSplit
+     *  fold without its hypothesis, Phase 379's four bounds the elements don't give); `test` measured 43. */
+    static final long MAX_UNKNOWN = 55
 
     /** Pathological single-check backstop — machine-dependent, hence deliberately enormous. */
     static final long MAX_SINGLE_CHECK_MS = 30_000

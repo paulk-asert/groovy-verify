@@ -16830,6 +16830,31 @@ shares the caller's name, the conservation fold. A vacuous proof before: a growi
 (array), a list parameter re-assigned so, and a list local named as the formal. Plus the growing call's true
 postcondition, and the fold without its hypothesis (still reported).
 
+## Phase 379 — an element bound bounds the sum  *(shipped — completeness: the ClearSplit port's third finding)*
+
+A callee requiring `(0..<joined.length).every { joined[it] == 0 || joined[it] == 1 } && 0 <= left && left <= joined.sum()`
+(the original `Split.handOut`) timed out at `handOut(shares, joined, 0)`, though the caller assumed the same quantifier;
+each half alone discharged. The mix wasn't the cause: no element bound ever reached a sum. `(0..<j.length).every { j[it]
+>= 0 }` never gave `j.sum() >= 0` — from the recursive base/step sum axioms that takes induction over the array — so the
+call's `0 <= joined.sum()` was out of reach. ClearSplit wrote `Split.equally` as two loops in one method because of it.
+
+- **The sum-bound lemma** (`Encoder.registerElementBounds`, `sumBoundLemma`): an `every` that bounds each element by
+  constants — over `(0..<a.length)` or `a.indices`, or `a.every { v -> … }`; `<`, `<=`, `>`, `>=`, `==` against a
+  constant, under `&&` and `||` — bounds every sum over a range `[lo, hi)` of that array, `0 <= lo <= hi <= a.length`:
+  `lb * (hi - lo) <= sum <= ub * (hi - lo)`. Stated as an implication from the quantifier's own term, so it holds
+  whatever that term's polarity, and guarded by the two arrays being equal, so it reaches a callee's formal (tied to its
+  actual by an equation) and never an array a store has changed since. Sums and quantifiers meet in either order.
+
+**Boundary:** only constant bounds over the whole array; a bound over part of it (`(1..<a.length)`), or a bound that
+depends on the index, gives nothing. A claim the bounds don't give (`1 <= j.sum()` of a 0/1 array) is reported but
+undecided, not refuted: a counterexample needs a model of the sum's axioms. An `every` closure assigned to a boolean
+local draws a false index warning (`it = -1`; Phase 372's free closure parameters), as before.
+
+**Shipped tests:** group `P379 sum bounds`, 9 cases. Undecided before: the report's call (with the original `handOut`
+whole), a sum bounded below and above by its elements', the element form, and a callee's sum bound from the caller's
+element bound. Plus guards, not proved: a sum bound the elements don't give, a strict upper bound, a quantifier over
+part of the array, and an array written after the quantifier.
+
 ---
 
 ## Definition of done, per increment
