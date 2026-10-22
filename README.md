@@ -472,7 +472,9 @@ honest asterisks: the timeout knob moves the prove/refute-vs-undecided boundary 
 sets 8000) without changing what an answer means; `VERIFY_SPECS` selects which *trusted* external
 specifications are consulted — trusted facts can change what proves, which is why every consumed spec is
 recorded; and `VERIFY_TRUST=report|deny` surfaces that ledger in a consumer's own build, `deny` turning an
-assumed-without-proof fact into a failed compile (narrowable per kind, `deny:carrier;report`). Each is documented with worked examples in
+assumed-without-proof fact into a failed compile (narrowable per kind, `deny:carrier;report`). One checker option,
+`VerifyChecker(closedWorld: true)`, trusts overridable bodies and open classes' fields as written — each reliance a
+ledgered fact — where the default open world does not. Each is documented with worked examples in
 **[TOOLING.md](TOOLING.md)**.
 
 ## Encoding packs

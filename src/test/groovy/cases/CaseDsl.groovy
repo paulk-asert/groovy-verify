@@ -169,6 +169,12 @@ class CaseDsl {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')\n" + classText.stripIndent()
     }
 
+    /** Like {@link #tc} but opts into the closed world ({@code VerifyChecker(closedWorld: true)}, Phase 362): an
+     *  overridable body or property is relied on as written, each reliance ledgered. */
+    static String tcw(String classText) {
+        HDR + "@TypeChecked(extensions = 'verification.VerifyChecker(closedWorld: true)')\n" + classText.stripIndent()
+    }
+
     /** Like {@link #tc} but also imports {@code java.util.stream.Stream} (Phase 75 infinite-stream cases). */
     static String tcs(String classText) {
         HDR + 'import java.util.stream.Stream\n' +

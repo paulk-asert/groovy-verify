@@ -669,7 +669,13 @@ class PureEvaluator {
                 // Phase 360 — nor one a subclass compiled elsewhere could override (open world)
                 if (VerifyChecker.openToOverride(m)) return null
                 Set<String> writes = VerifyChecker.calleeWrites(m)
-                return (writes != null && writes.isEmpty()) ? m : null
+                if (writes == null || !writes.isEmpty()) return null
+                // Phase 362 — closed world: trusted as the call's value, and ledgered
+                if (!m.isStatic() && VerifyChecker.overridableElsewhere(m)) {
+                    VerifyChecker.trustClosedWorld("${m.declaringClass.name}#${m.name}",
+                        'body used as its value: a subclass compiled elsewhere must not override it')
+                }
+                return m
             }
         }
         null

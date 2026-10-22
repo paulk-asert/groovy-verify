@@ -16106,7 +16106,7 @@ before); a final class, a final method and a declared `@Modifies` trusted; an op
 value (verified before), a private one inlined, and an open one's `@Ensures` with `@Modifies({ [] })` restoring the
 call; a sealed hierarchy of final classes closed, and a `non-sealed` subclass reopening it (compiled cleanly before).
 
-**Next (slices 2, 3):** a `closedWorld: true` checker option that trusts open bodies again, each reliance a
+**Next (slices 2, 3):** a `closedWorld: true` checker option (Phase 362) that trusts open bodies again, each reliance a
 TrustLedger entry (`report` lists the obligations a subclass author takes on, `deny` fails the build); then stamping
 the reliances into the class file, checked against a later checked unit's overrides.
 
@@ -16154,7 +16154,38 @@ writes only its receiver); a trivial getter, a generated one on a final class, a
 
 **Still out:** a user setter is not read for its own frame (one writing only its receiver is loud though sound);
 a user getter is not read as a value (a `@Ensures` on it is not used for `b.n`); `closedWorld: true` (Phase 360's
-slice 2) will relax the open-class rule for code that opts in.
+slice 2) will relax the open-class rule for code that opts in (Phase 362).
+
+## Phase 362 — the closed world, opted into and ledgered  *(shipped — slice 2 of 3)*
+
+Phases 360/361 made the open world the default. The cost is real — reasoning about another object's state needs
+its class closed — and some code knows better: its subclasses are its own, or framework proxies (Spring, Micronaut,
+Hibernate, Mockito) that subclass and delegate, where `final` would break the framework. Such a class opts back in:
+`@TypeChecked(extensions = 'verification.VerifyChecker(closedWorld: true)')`, read per class (an enclosing class's
+annotation covering a nested one) by the `inferLoops` option's parser, now `verifyOptionEnabled`.
+
+- **What it relaxes:** `openToOverride` is Phase 360's test (now `overridableElsewhere`) and not the closed world,
+  so an overridable body is again the call's frame (Phase 347) and, frame-empty, its value (Phase 8a); and an open
+  class's field is read as the field (Phase 361), its unit subclasses' accessors scanned instead of permitted ones.
+- **What it keeps:** the unit is still seen — an override a unit class declares (Phase 359) and a user accessor
+  anywhere in the unit's hierarchy (Phase 361) count as before.
+- **The ledger (Phase 216):** a new kind, `closed world`, recorded where a proof relies, anchored at the relying
+  method — a call's frame (`reliedFrame`, at the collector's candidates and the call site, not wherever a frame is
+  merely computed, so the method under check is never its own reliance), an inlined value (`PureEvaluator.resolve`),
+  an equational combiner's inlining (its `MethodNode` now kept with the equation), and a field read. Each names the
+  subclass author's obligation: "a subclass compiled elsewhere must write no more", "… must not override it", "…
+  must not declare getN()". `VERIFY_TRUST=report` lists them, `deny:world` fails on them; the harness `trusted:`
+  summary counts them.
+- **Docs:** TOOLING.md's ledger section gains the option, with the kind token `world`; the README's knobs note it.
+- **Harness:** `tcw(…)`, the `tc` header with the option.
+
+**Shipped tests:** group `P362 the closed world, opted into and ledgered`, 8 cases: an open class's writer framed and
+ledgered; its fields read as fields, ledgered; an open helper's body as its value, ledgered; the method under check
+not ledgered as its own reliance; `deny` failing at the relying method; an override in the unit and a getter a unit
+subclass declares still caught; the option per class.
+
+**Next (slice 3):** stamp the reliances into the class file, so a later unit compiled with the checker has its
+overrides checked against them — the unchecked subclass remains the residual, now a ledgered one.
 
 ---
 

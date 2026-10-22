@@ -31,7 +31,7 @@ default path byte-identical.
 | `VERIFY_PACKS` | select which [encoding packs](PACKS.md) run: `none` disables all, a comma-separated name list keeps only those — a bisection tool when triaging a suspect domain encoding (a deselected pack's vocabulary degrades to loud skips)  Since Phase 227 a deselected pack's DECLARED spec skeletons (`EncodingPack.specFqns()`) are deselected with it — lifecycle coherence for pack-shipped contracts |
 | `VERIFY_Z3_TIMEOUT_MS` | the per-check solver budget in milliseconds (default `2000`; also `-Dverify.z3.timeoutMs`). Refute-direction VCs are model searches and therefore hardware-speed sensitive: a refutation that is crisp on a dev laptop can come back `solver: timeout` on a slower CI runner. Raising the budget moves the decided-vs-undecided boundary only — it never changes what a returned verdict means. CI sets `8000` |
 | `VERIFY_SPECS` | a directory of external-spec skeletons overriding the classpath lookup (also `-Dverify.specs`) — JML's specspath analogue, for iterating on a spec before jarring it. Specs are TRUSTED axioms: the knob changes which trusted facts are consulted, so unlike the other knobs it can change what proves — every consumed spec is recorded (`SpecRegistry.consumed()`) for exactly that reason |
-| `VERIFY_TRUST=report\|deny` | surface the trusted-spec ledger (below) in your own build (also `-Dverify.trust`): `report` prints each fact a class relied on without proof as `trusted: […] owner#method — …` when the checker finishes that class; `deny` makes each one a compile error (`Trusted without proof (VERIFY_TRUST=deny): …`), anchored where the fact arises — the combiner handed to a parallel reduction, the trusted `@ThrowsIf` condition — or, for an external spec (consumed inside the registry lookup), on the class — a strict mode for a build that wants every assumption acknowledged. Narrow either to kinds and combine clauses, the first match deciding: `deny:carrier` fails only opaque carriers, `deny:carrier;report` fails those and prints the rest (kinds: `throwsif`, `spec`, `carrier`). A malformed value — an unknown action, a kind token naming no kind — is a compile error, never a silent off |
+| `VERIFY_TRUST=report\|deny` | surface the trusted-spec ledger (below) in your own build (also `-Dverify.trust`): `report` prints each fact a class relied on without proof as `trusted: […] owner#method — …` when the checker finishes that class; `deny` makes each one a compile error (`Trusted without proof (VERIFY_TRUST=deny): …`), anchored where the fact arises — the combiner handed to a parallel reduction, the trusted `@ThrowsIf` condition — or, for an external spec (consumed inside the registry lookup), on the class — a strict mode for a build that wants every assumption acknowledged. Narrow either to kinds and combine clauses, the first match deciding: `deny:carrier` fails only opaque carriers, `deny:carrier;report` fails those and prints the rest (kinds: `throwsif`, `spec`, `carrier`, `world`). A malformed value — an unknown action, a kind token naming no kind — is a compile error, never a silent off |
 
 **Trusted heritage in the explain read-out** (Phase 231). Every registry fact a proof leans on is
 labelled with its provenance and surfaced by the same load-bearing ablation as authored clauses:
@@ -64,8 +64,8 @@ programmatically, and DocLint's `[5] trusted inventory` section lints every ship
 the contract — so it is a drift finding, asserted in `check`). Trust that is visible is trust that
 gets reviewed.
 
-The ledger has three kinds: in-place `@ThrowsIf`, external spec, and opaque `Monoid`/`Semigroup` carrier (Phase
-291). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
+The ledger has four kinds: in-place `@ThrowsIf`, external spec, opaque `Monoid`/`Semigroup` carrier (Phase
+291), and closed world (Phase 362, below). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
 Gradle daemon captures environment variables when it starts, so pass the knob as a system property of the
 compiler JVM:
 
@@ -83,6 +83,24 @@ log level, and `deny` fails `compileGroovy` with the fact as the error.
 External specs such as `Math.abs` are everywhere by design, so a blanket `deny` means proving or avoiding every
 one. The per-kind form is usually what a build wants: `-Dverify.trust=deny:carrier;report` fails on a
 `Monoid`/`Semigroup` whose laws nobody checked, and lists every other assumption without failing.
+
+**The closed world (`closedWorld: true`).** Groovy classes and methods are open, so by default the checker trusts
+a method's body — as the call's frame, or as its value — only where no subclass compiled elsewhere can override it
+(a static, private or final method; a final class, enum, record or closed sealed hierarchy), and reads `b.n` as the
+field only on such a class, since Groovy reads it through `getN()` (Phases 360, 361). A class whose subclasses are
+known, or are framework proxies that delegate, can opt back into that precision:
+
+<!-- doclint:ignore option syntax: the closedWorld checker option, shown on a class header -->
+```groovy
+@TypeChecked(extensions = 'verification.VerifyChecker(closedWorld: true)')
+class Billing { … }
+```
+
+Each body or field its proofs then rely on is a ledger fact of kind `closed world`, at the method relying on it —
+`[closed world] Counter#incr — frame read off its body [count]: a subclass compiled elsewhere must write no more`,
+`[closed world] Box#n — read as the field: a subclass compiled elsewhere must not declare getN()` — so
+`-Dverify.trust=report` lists exactly the obligations a subclass's author takes on, and `deny:world` fails on
+them. Overrides and accessors the compilation unit can see are still checked, and the option is per class.
 
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 

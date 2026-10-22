@@ -5877,6 +5877,12 @@ class Encoder implements TheoryApi {
     private Object inlineCombiner(String name, List<Expression> args) {
         Object[] c = combiners.get(name + '/' + args.size())
         if (c == null) return null
+        // Phase 362 — inlining relies on the combiner's body writing nothing: under the closed world, ledgered
+        if (c.length > 2 && c[2] instanceof MethodNode && VerifyChecker.overridableElsewhere((MethodNode) c[2])) {
+            MethodNode cm = (MethodNode) c[2]
+            VerifyChecker.trustClosedWorld("${cm.declaringClass.name}#${cm.name}",
+                'frame read off its body []: a subclass compiled elsewhere must write no more')
+        }
         List<String> formals = (List<String>) c[0]
         Expression ensuresExpr = (Expression) c[1]
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()

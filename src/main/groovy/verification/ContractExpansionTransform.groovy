@@ -1082,14 +1082,20 @@ class ContractExpansionTransform implements ASTTransformation {
      *  {@code @TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')} (the same parameterised
      *  extension syntax NullChecker uses for {@code strict}). Read here, at CONVERSION, so an inferred loop spec
      *  is attached ONLY when opted in — default behaviour (and the single-loop check) is otherwise untouched. */
-    private static boolean verifyInferLoopsEnabled(ClassNode cn) {
-        if (cn == null) return false
-        for (AnnotationNode an : cn.getAnnotations()) {
-            if (simpleName(an.classNode?.name) != 'TypeChecked') continue
-            Expression ext = an.getMember('extensions')
-            if (ext == null) continue
-            for (String s : extensionStrings(ext)) {
-                if (s =~ /VerifyChecker\s*\([^)]*\binferLoops\s*:\s*true\b/) return true
+    private static boolean verifyInferLoopsEnabled(ClassNode cn) { verifyOptionEnabled(cn, 'inferLoops') }
+
+    /** Is the boolean checker option {@code opt} on for {@code cn} — {@code VerifyChecker(opt: true)} in its
+     *  {@code @TypeChecked(extensions = …)}? Phase 362 — shared by {@code closedWorld}; an enclosing class's annotation
+     *  covers a nested one. */
+    static boolean verifyOptionEnabled(ClassNode cn, String opt) {
+        for (ClassNode c = cn; c != null; c = c.outerClass) {
+            for (AnnotationNode an : c.getAnnotations()) {
+                if (simpleName(an.classNode?.name) != 'TypeChecked') continue
+                Expression ext = an.getMember('extensions')
+                if (ext == null) continue
+                for (String s : extensionStrings(ext)) {
+                    if (s =~ ('VerifyChecker\\s*\\([^)]*\\b' + opt + '\\s*:\\s*true\\b')) return true
+                }
             }
         }
         false

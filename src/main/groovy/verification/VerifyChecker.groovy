@@ -411,7 +411,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // (its declared frame, else the inferred one); a writer is framed at its call site instead
             Set<String> writes = modifiedNames(mn)
             if (writes == null || !writes.isEmpty()) continue
-            out.put(mn.name + '/' + mn.parameters.length, [formals, e] as Object[])
+            out.put(mn.name + '/' + mn.parameters.length, [formals, e, mn] as Object[])   // Phase 362 — mn, for the ledger
         }
         out
     }
@@ -2915,10 +2915,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  method, a constructor, or a method of a closed class: final, an enum, a record, or sealed with every
      *  permitted subclass closed in turn (a {@code non-sealed} one reopens it). A body that can be overridden
      *  unseen is no contract: the verifier reads it neither as the call's frame nor as its value. */
-    static boolean openToOverride(MethodNode m) {
+    static boolean openToOverride(MethodNode m) { overridableElsewhere(m) && !closedWorld() }
+
+    /** Phase 360's test itself, whatever {@link #closedWorld} says. */
+    static boolean overridableElsewhere(MethodNode m) {
         ClassNode dc = m?.declaringClass
         if (dc == null || m.isStatic() || m.isPrivate() || m.isFinal() || m.name == '<init>' || m.name == '<clinit>') return false
         !closedClass(dc)
+    }
+
+    /** Phase 362 — {@code VerifyChecker(closedWorld: true)} on the class being checked: its proofs may rely on an
+     *  overridable body or property as written — no subclass compiled elsewhere overrides it — and each such
+     *  reliance is a {@link TrustLedger} fact ({@code [closed world]}), anchored at the method relying on it, so
+     *  {@code VERIFY_TRUST=report} lists the obligations a subclass's author takes on and {@code deny} fails on
+     *  them. Set per method from the class's annotation. */
+    private static final ThreadLocal<Boolean> CLOSED_WORLD = new ThreadLocal<Boolean>()
+    private static final ThreadLocal<MethodNode> CLOSED_WORLD_SITE = new ThreadLocal<MethodNode>()
+    static boolean closedWorld() { CLOSED_WORLD.get() == Boolean.TRUE }
+
+    /** Phase 362 — ledger one closed-world reliance on {@code where} (Class#member). */
+    static void trustClosedWorld(String where, String what) {
+        if (closedWorld()) TrustLedger.record(TrustLedger.CLOSED_WORLD, where, what, CLOSED_WORLD_SITE.get())
     }
 
     static boolean closedClass(ClassNode c) {
@@ -2943,7 +2960,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String cap = prop.substring(0, 1).toUpperCase() + prop.substring(1)
         List<String> names = write ? ['set' + cap, 'set' + prop] : ['get' + cap, 'is' + cap, 'get' + prop, 'is' + prop]
         String kind = write ? 'setter' : 'getter'
-        if (!closedClass(c)) {
+        boolean open = !closedClass(c)
+        if (open && !closedWorld()) {
             return "'${c.nameWithoutPackage}' can be subclassed elsewhere, and Groovy ${write ? 'writes' : 'reads'} '${prop}' " +
                    "through the ${kind} '${names[0]}', which a subclass may override — make the class final (or sealed)"
         }
@@ -2951,6 +2969,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (ClassNode k = c; k != null; k = k.superClass) hierarchy.add(k)
         Deque<ClassNode> todo = new ArrayDeque<ClassNode>(c.permittedSubclasses ?: [])
         while (!todo.isEmpty()) { ClassNode k = todo.pop().redirect(); hierarchy.add(k); todo.addAll(k.permittedSubclasses ?: []) }
+        // Phase 362 — closed world: an open class's subclasses in this unit are seen, so their accessors count too
+        ModuleNode mod = WRITE_OWNER.get()?.module
+        if (open && mod != null) for (ClassNode k : mod.classes) if (k.name != c.name && k.isDerivedFrom(c)) hierarchy.add(k)
         for (ClassNode h : hierarchy) {
             for (String n : names.unique(false)) for (MethodNode m : h.getDeclaredMethods(n)) {
                 if (m.isStatic() || m.parameters.length != (write ? 1 : 0)) continue
@@ -2960,6 +2981,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                        "that isn't the field"
             }
         }
+        if (open) trustClosedWorld("${c.name}#${prop}",
+            "${write ? 'written' : 'read'} as the field: a subclass compiled elsewhere must not declare ${names[0]}()")
         null
     }
 
@@ -3006,6 +3029,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (node.getNodeMetaData(SpecRegistry.SPEC_KEY) != null || node.code == null) return Collections.<String> emptySet()
         if (openToOverride(node)) return null   // Phase 360 — open world: an override's writes are unknown
         calleeWrites(node)
+    }
+
+    /** Phase 362 — {@link #modifiedNames} where a CALL relies on it: a frame read off an overridable body under the
+     *  closed world is ledgered here, at the use, not wherever the frame is merely computed. */
+    private static Set<String> reliedFrame(MethodNode node) {
+        Set<String> w = modifiedNames(node)
+        if (w != null && declaredModifies(node) == null && node.code != null && overridableElsewhere(node)) {
+            trustClosedWorld("${node.declaringClass.name}#${node.name}",
+                "frame read off its body ${new TreeSet<String>(w)}: a subclass compiled elsewhere must write no more")
+        }
+        w
     }
 
     /** Phase 347 — memoised on the node: the inferred caller-visible write set, or {@link #UNBOUNDED_WRITES}. */
@@ -3217,7 +3251,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (MethodNode m : candidates) {
             if (m.parameters.length != actuals.size()) continue
             any = true
-            Set<String> writes = modifiedNames(m)
+            Set<String> writes = reliedFrame(m)
             if (writes == null) {
                 // Phase 348 — carry the callee's own reason up, so the report names the construct, not just the call
                 String why = frameReason(m)
@@ -3405,6 +3439,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     @Override
     boolean beforeVisitMethod(MethodNode node) {
         Reporter.READ_NOTES.get().clear()   // Phase 361
+        CLOSED_WORLD.set(ContractExpansionTransform.verifyOptionEnabled(node.declaringClass, 'closedWorld'))   // Phase 362
+        CLOSED_WORLD_SITE.set(node)
         currentFacts = new PathFacts()
         currentMethod = node
         WRITE_OWNER.set(node.declaringClass)
@@ -15077,12 +15113,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
-        Set<String> modSet = modifiedNames(callee)
+        Set<String> modSet = reliedFrame(callee)
         // Phase 359 — the call may dispatch to an override in a subclass of the unit: its writes count too, its
         // formals renamed to the callee's by position; one that can't be bounded leaves the call unmodelled, loudly
         if (modSet != null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null) {
             for (MethodNode om : overriders(callee)) {
-                Set<String> ow = modifiedNames(om)
+                Set<String> ow = reliedFrame(om)
                 if (ow == null) {
                     String why = frameReason(om)
                     throw new UnsupportedConstructException(
