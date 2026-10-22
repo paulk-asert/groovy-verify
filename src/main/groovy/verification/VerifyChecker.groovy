@@ -15838,6 +15838,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         found[0]
     }
 
+    /** Phase 376 — the location an actual argument names: a variable, or {@code this.f} (the field {@code f}). */
+    private static String namedLocation(Expression e) {
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name
+        if (e instanceof PropertyExpression && ((PropertyExpression) e).objectExpression instanceof VariableExpression &&
+            ((VariableExpression) ((PropertyExpression) e).objectExpression).name == 'this') {
+            return ((PropertyExpression) e).propertyAsString
+        }
+        null
+    }
+
     private void verifyCallSite(MethodNode target,
                                 Parameter[] formals,
                                 List<Expression> argExprs,
@@ -15851,6 +15861,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // values outside the JVM int range (a = MIN_VALUE - 1) that the runtime cannot exhibit —
             // surfaced by the external-spec registry's `a > Integer.MIN_VALUE` obligation (Phase 215).
             assumeIntJvmBounds(session, enc)
+            // Phase 376 — and the class invariants, entry facts like the @Requires below (every other pass assumes
+            // them): under `@Invariant({ data.length == n })`, `bump(data, i)` needing `i < a.length` was refuted
+            // with `data.size() = 0, n = 1`, a state the invariant rules out. The prefix replay then moves the fields.
+            assumeClassInvariants(session, enc)
 
             Map<String, Object> formalBindings = [:]
             // Reference-typed formals bound to a named actual: candidates for
@@ -15993,9 +16007,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     session.varOfSort(formalName, formalSort)
                 session.assertExpr(session.eq(formalVar, argHandle))
                 formalBindings[formals[i].name] = formalVar
-                if (argExprs[i] instanceof VariableExpression &&
+                if (namedLocation(argExprs[i]) != null &&   // Phase 376 — a `this.f` actual is the field's oracles too
                     !ClassHelper.isPrimitiveType(formals[i].type)) {
-                    oracleActuals[formals[i].name] = ((VariableExpression) argExprs[i]).name
+                    oracleActuals[formals[i].name] = namedLocation(argExprs[i])
                 } else if (!ClassHelper.isPrimitiveType(formals[i].type)) {
                     Object kn = enc.nullityOfExpr(argExprs[i])      // e.g. `new X(…)` → known non-null
                     if (kn != null) formalKnownNullity[formals[i].name] = kn
@@ -16545,11 +16559,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             call instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) call).arguments : null
         if (!(args instanceof TupleExpression)) return call
         List<Expression> as = ((TupleExpression) args).expressions
-        if (!as.any { it instanceof VariableExpression && ((VariableExpression) it).name == name }) return call
+        if (!as.any { namedLocation(it) == name }) return call   // Phase 376 — `this.data` too
         if (!enc.isArrayTyped(name) && !enc.isListTyped(name)) return call
         String tmp = enc.snapshotArray(name)
         ArgumentListExpression nargs = new ArgumentListExpression(as.collect { Expression a ->
-            a instanceof VariableExpression && ((VariableExpression) a).name == name ? (Expression) new VariableExpression(tmp, a.type) : a
+            namedLocation(a) == name ? (Expression) new VariableExpression(tmp, a.type) : a
         })
         Expression out
         if (call instanceof MethodCallExpression) {
@@ -17453,12 +17467,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // pin the spec's post-state ensures to the stale array.
             // Phase 375 — and an array formal bound to a named array: `a.length`, `a[i]`, `a.sum()` in the contract are
             // the actual's (they read the formal's own oracles, which nothing tied to the caller's array)
-            boolean arrayFormal = ft?.isArray() && actuals.get(i) instanceof VariableExpression &&
-                enc.isArrayTyped(((VariableExpression) actuals.get(i)).name)
+            String located = namedLocation(actuals.get(i))   // Phase 376 — `this.data` names the field too
+            boolean arrayFormal = ft?.isArray() && located != null && enc.isArrayTyped(located)
             if ((specSimple(ft.name) in ['Collection', 'List'] || arrayFormal) &&
                     !(modSet != null && formals[i].name in modSet) &&
-                    actuals.get(i) instanceof VariableExpression) {
-                String an = ((VariableExpression) actuals.get(i)).name
+                    located != null) {
+                String an = located
                 if (an != formals[i].name && !savedListOracles.containsKey(formals[i].name)) {
                     savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
                 }

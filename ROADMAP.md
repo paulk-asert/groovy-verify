@@ -16756,6 +16756,27 @@ list invariants, the true straight-line postcondition, a callee precondition ove
 size after `v = grow(v)`. Plus guards: an alias whose source is written (skipped loudly), an allocation sized by the
 array it replaces, a list literal re-assigned from a call on itself.
 
+## Phase 376 — a call site sees the class invariant  *(shipped — completeness: the ClearSplit port's second finding)*
+
+A callee's `@Requires` was checked at a call site (`verifyCallSite`) from the caller's own `@Requires` alone: unlike
+every other check, it never assumed the class invariants at entry. Under `@Invariant({ n >= 0 && data != null &&
+data.length == n })`, `void direct(int i) { data = bump(data, i) }` with `@Requires({ 0 <= i && i < n })` was refuted
+for `bump`'s `i < a.length` with `data.size() = 0, n = 1`, a state the invariant rules out; so was `g(cap)` under
+`@Invariant({ cap > 0 })`. ClearSplit's mutable `Ledger` couldn't call its pure step functions because of it.
+
+- **The invariants are assumed at a call site** (`assumeClassInvariants`, as every other pass does): entry facts, before
+  the prefix replay moves the fields. Not in a constructor, which hasn't established them.
+- **A `this.f` argument is the field** (`namedLocation`): its length, contents and nullity are tied to the formal's,
+  as a bare `f`'s are, and `data = bump(this.data, i)` reads it through Phase 375's pre-call snapshot.
+
+**Boundary:** only the caller's own class's invariants; an argument's class invariant is still Phase 45's, for a
+class-typed parameter. Under Phase 375, a re-assigned field's non-nullity comes from the callee's contract, so `bump`
+needs `result != null` for the invariant's `data != null` to hold at exit.
+
+**Shipped tests:** group `P376 call-site invariant`, 7 cases. A false refutation before: an array field's length under
+the invariant, passed bare, as `this.data` and through a local alias, and a scalar field's bound. Plus guards: an index
+the invariant doesn't cover, a field written before the call, and a constructor, which assumes nothing.
+
 ---
 
 ## Definition of done, per increment
