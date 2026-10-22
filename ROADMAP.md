@@ -16924,14 +16924,22 @@ partition, G041's in-loop swap helper, G043's selection sort — read `(0..<a.le
 which for an empty array is `0..<-1`, i.e. [0]: it reads `a[0]` and throws at run time. Each is now guarded
 `a.length == 0 || …` (`n == 0 ||` for the insertion sort); their teeth cases are unchanged.
 
-**Boundary:** a slice with a negative bound (Groovy counts it from the end) stays unmodelled, as before; a range whose
-direction depends on a fact outside its own conjunction keeps the `ite`, which can cost the solver time.
+- **Integral ranges only** (asked next: does `4.5..6.5` work?). It is Groovy's `NumberRange` [4.5, 5.5, 6.5], stepping by
+  one from 4.5 (`4.5..6.0` is [4.5, 5.5]). `constIntOrNull` truncated any number (`intValue()`), so a constant range as a
+  list read `4.5..6.0` as 4..6 (size 3, not 2) — and this phase's first cut built the quantifier `(4.5..6.5).every { it
+  > 4 }` over the ints 4..6, which assumed was a contradiction (a false postcondition after it proved). It now takes
+  an integral constant within int range only; a non-integral range stays outside the fragment, loudly, as it was.
 
-**Shipped tests:** group `P381 range forms`, 16 cases. Compiled cleanly before (false claims): a descending quantifier
+**Boundary:** a non-integral range (`4.5..6.5`) and a character range (`'a'..'d'`, except Phase 99b's single-character `contains`) are
+outside the fragment. A slice with a negative bound (Groovy counts it from the end) stays unmodelled, as before; a range
+whose direction depends on a fact outside its own conjunction keeps the `ite`, which can cost the solver time.
+
+**Shipped tests:** group `P381 range forms`, 19 cases. Compiled cleanly before (false claims): a descending quantifier
 as an obligation, a symbolic one, an exclusive start assumed of index 0, slices with an exclusive start and descending,
 a descending range and an exclusive start as lists, and Phase 380's closure over a descending range. Undecided or
 refuted falsely before: the true versions of the descending quantifier, the slices and the list's six elements, and
-closures over descending and exclusive ranges in bounds. Plus the note on a backwards range, and its guarded twin.
+closures over descending and exclusive ranges in bounds. Plus the note on a backwards range, and its guarded twin; a
+decimal range outside the fragment, as an obligation and as an assumption; and a long range iterated as its ints.
 
 ---
 

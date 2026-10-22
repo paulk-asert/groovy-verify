@@ -388,6 +388,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // memoised) before their bodies' later rewriting, and came out unbounded
         MethodNode forWrites = currentMethod
         if (forWrites != null) made.inPlaceWritesSupplier = { -> inPlaceWritesOf(forWrites) }
+        made.reversedRanges = currentReversedRanges   // Phase 380
         made
     }
 
@@ -2628,6 +2629,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         reproBreaksRequires = false
         r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
         if (reproBreaksRequires && !r.notes.contains(REPRO_BREAKS_REQUIRES)) r.notes.add(REPRO_BREAKS_REQUIRES)
+        // Phase 380 — a range this model runs backwards: Groovy iterates `lo..<hi` with hi < lo downwards (`0..<-1` is
+        // [0]), which a contract written for an ascending range rarely means
+        r.counterexample.each { String k, Long v ->
+            String text = v == 1L ? currentReversedRanges.get(k) : null
+            if (text == null) return
+            String note = "note: the range ${text} runs backwards here — Groovy iterates a range whose end is below its start downwards (`0..<-1` is [0])".toString()
+            if (!r.notes.contains(note)) r.notes.add(note)
+        }
         // Phase 346 — a model that gives an unmodelled value (`s = s + g(i)` with g's result untranslatable) picked
         // it freely: no run is known to produce it, so the call it suggests may not fail. Withheld, with a note.
         List<String> unmodelled = r.counterexample == null ? Collections.<String> emptyList() :
@@ -2936,6 +2945,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Set by {@link #buildFailingCall} when it withheld the call because its arguments break {@code @Requires}. */
     private boolean reproBreaksRequires = false
+    /** Phase 380 — this method's possibly-reversed ranges' hidden indicators → their text ({@link Encoder#reversedRanges}). */
+    private Map<String, String> currentReversedRanges = new HashMap<String, String>()
+
     static final String REPRO_BREAKS_REQUIRES =
         'no failing call: these arguments break the @Requires, which this check assumed only in part (it may not be reachable)'
 
@@ -5539,6 +5551,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /** Phase 380 — {@code p} among the ints {@code re} iterates, either direction, either end excluded (as
+     *  {@link Encoder#rangeHalfOpen}): `from <= to ? from + exL <= p <= to - exR : to + exR <= p <= from - exL`. */
+    private static Expression rangeFact(RangeExpression re, VariableExpression p) {
+        Token le = Token.newSymbol(Types.COMPARE_LESS_THAN_EQUAL, -1, -1)
+        Token and = Token.newSymbol(Types.LOGICAL_AND, -1, -1)
+        Closure<Expression> off = { Expression e, boolean ex, int sign ->
+            ex ? (Expression) new BinaryExpression(e, Token.newSymbol(sign > 0 ? Types.PLUS : Types.MINUS, -1, -1), new ConstantExpression(1, true)) : e
+        }
+        Expression up = new BinaryExpression(re.from, le, re.to)
+        Expression ascending = new BinaryExpression(new BinaryExpression(off(re.from, re.exclusiveLeft, 1), le, p), and,
+            new BinaryExpression(p, le, off(re.to, re.exclusiveRight, -1)))
+        Expression descending = new BinaryExpression(new BinaryExpression(off(re.to, re.exclusiveRight, 1), le, p), and,
+            new BinaryExpression(p, le, off(re.from, re.exclusiveLeft, -1)))
+        new TernaryExpression(new BooleanExpression(up), ascending, descending)
+    }
+
     /** Phase 380 — the range fact for {@code ce}'s parameter as {@code mce} runs it, or null. */
     private static Expression iterationFact(MethodCallExpression mce, ClosureExpression ce) {
         String m = mce.methodAsString
@@ -5551,9 +5579,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean hiInclusive = false
         if (m in RANGE_ITERATORS && m != 'eachWithIndex') {
             Expression r = recv
-            if (r instanceof RangeExpression) {
-                lo = ((RangeExpression) r).from; hi = ((RangeExpression) r).to; hiInclusive = ((RangeExpression) r).inclusive
-            } else if (r instanceof PropertyExpression && ((PropertyExpression) r).propertyAsString == 'indices') {
+            if (r instanceof RangeExpression) return rangeFact((RangeExpression) r, pv)
+            else if (r instanceof PropertyExpression && ((PropertyExpression) r).propertyAsString == 'indices') {
                 Expression of = ((PropertyExpression) r).objectExpression
                 lo = new ConstantExpression(0, true)
                 if (Encoder.staticTypeOf(of)?.isArray()) {

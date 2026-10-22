@@ -3381,11 +3381,14 @@ class Encoder implements TheoryApi {
         }
         Integer lo = constIntOrNull(re.from), hi = constIntOrNull(re.to)
         if (lo == null || hi == null) return false                                       // symbolic bounds → fall through
-        int size = re.inclusive ? (hi - lo + 1) : (hi - lo)
-        if (size < 0) size = 0
+        // Phase 380 — in iteration order, either direction, either end excluded: `5..0` was the empty list, `0<..3`
+        // [0, 1, 2, 3]
+        int size = rangeCount(lo, hi, re.exclusiveLeft, re.exclusiveRight)
+        boolean down = lo > hi
+        int first = down ? lo - (re.exclusiveLeft ? 1 : 0) : lo + (re.exclusiveLeft ? 1 : 0)
         Object arr = zeroArray()
         for (int i = 0; i < size; i++) {
-            arr = session.store(arr, session.intLit((long) i), session.intLit((long) (lo + i)))
+            arr = session.store(arr, session.intLit((long) i), session.intLit((long) (down ? first - i : first + i)))
         }
         localFactories.remove(name)
         bindArray(name, arr)
@@ -3395,8 +3398,13 @@ class Encoder implements TheoryApi {
         true
     }
     private Integer constIntOrNull(Expression e) {
-        if (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number) {
-            return ((Number) ((ConstantExpression) e).value).intValue()
+        // Phase 381 — an integral constant within int range only: `4.5` was truncated to 4, so `4.5..6.5` (Groovy's
+        // NumberRange [4.5, 5.5, 6.5]) became the ints 4..6 — an `every { it > 4 }` over it, assumed, was a contradiction
+        Object cv = e instanceof ConstantExpression ? ((ConstantExpression) e).value : null
+        if (cv instanceof Integer || cv instanceof Short || cv instanceof Byte) return ((Number) cv).intValue()
+        if (cv instanceof Long || cv instanceof BigInteger) {
+            BigInteger b = cv instanceof Long ? BigInteger.valueOf((Long) cv) : (BigInteger) cv
+            return b.bitLength() < 32 ? b.intValue() : null
         }
         if (e instanceof UnaryMinusExpression) {
             Integer v = constIntOrNull(((UnaryMinusExpression) e).expression)
@@ -4050,12 +4058,11 @@ class Encoder implements TheoryApi {
             ((BinaryExpression) recv).rightExpression instanceof RangeExpression) {
             BinaryExpression sub = (BinaryExpression) recv
             String xs = ((VariableExpression) sub.leftExpression).name
-            RangeExpression re = (RangeExpression) sub.rightExpression
-            Object lo = translate(re.from)
-            Object hi = translate(re.to)
-            if (lo == null || hi == null) return null
-            if (re.inclusive) hi = session.plus(hi, session.intLit(1L))
-            return [xs, arrayFor(xs), lo, hi] as Object[]
+            // Phase 380 — the indices it takes, either direction (`xs[3..1]` is xs[1..3] reversed: the same sum), either
+            // end excluded (`xs[0<..2]` is xs[1], xs[2])
+            Object[] lh = rangeHalfOpen((RangeExpression) sub.rightExpression)
+            if (lh == null) return null
+            return [xs, arrayFor(xs), lh[0], lh[1]] as Object[]
         }
         if (recv instanceof VariableExpression) {
             String xs = ((VariableExpression) recv).name
@@ -4108,7 +4115,7 @@ class Encoder implements TheoryApi {
         RangeExpression re = (RangeExpression) be.rightExpression
         Integer from = constNonNegInt(re.from), to = constNonNegInt(re.to)
         if (from == null || to == null) return false        // a negative bound wraps in Groovy — not statically empty
-        re.inclusive ? from > to : from >= to
+        rangeCount(from, to, re.exclusiveLeft, re.exclusiveRight) == 0   // Phase 380 — `xs[3..1]` is not empty
     }
     private Integer constNonNegInt(Expression e) {
         if (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number) {
@@ -5868,7 +5875,33 @@ class Encoder implements TheoryApi {
                 (isNamedListOperand(be.leftExpression) || isNamedListOperand(be.rightExpression))) return null
 
         Object L = translate(be.leftExpression)
-        Object R = translate(be.rightExpression)
+        Object R
+        if (op == Types.LOGICAL_AND) {
+            // Phase 380 — `A && B` means B only where A holds: A's simple lower bounds (`0 <= i`) fold B's ranges
+            // (`(0..i).every { … }` ascends there), sparing the solver their direction test
+            Map<String, Long> prevGuards = new HashMap<String, Long>(guardLowerBounds)
+            Set<String> prevOrdered = new HashSet<String>(guardOrdered)
+            collectLowerBounds(be.leftExpression, guardLowerBounds, guardOrdered)
+            // and through an order between names: `0 <= m && m <= k` bounds k below by 0 too
+            boolean grew = true
+            for (int round = 0; grew && round < 8; round++) {
+                grew = false
+                for (String pair : guardOrdered) {
+                    String[] xy = pair.split(' <= ')
+                    if (xy.length != 2) continue
+                    Long lx = guardLowerBounds.get(xy[0])
+                    if (lx != null && xy[1] ==~ /[A-Za-z_][A-Za-z_0-9]*/ && (guardLowerBounds.get(xy[1]) == null || guardLowerBounds.get(xy[1]) < lx)) {
+                        guardLowerBounds.put(xy[1], lx); grew = true
+                    }
+                }
+            }
+            try { R = translate(be.rightExpression) } finally {
+                guardLowerBounds.clear(); guardLowerBounds.putAll(prevGuards)
+                guardOrdered.clear(); guardOrdered.addAll(prevOrdered)
+            }
+        } else {
+            R = translate(be.rightExpression)
+        }
         if (L == null || R == null) return null
         // Phase 129 — a String/sequence operand reached the arithmetic/comparison dispatch, which is typed for
         // the Int sort and would throw (an {@code ArithExpr} cast in {@code plus}, or a sort-mismatch in
@@ -6766,6 +6799,117 @@ class Encoder implements TheoryApi {
         return NO_MATCH
     }
 
+    /**
+     * Phase 380 — the ints {@code re} iterates as a half-open [lo, hi), or null when an end doesn't translate. Groovy
+     * iterates a range whose `from` exceeds its `to` downwards, and `<..` / `..<` drop `from` / `to`, whichever way it
+     * runs: ascending [from + exL, to + 1 - exR), descending [to + exR, from + 1 - exL) (`5..<0` is 5..1, `2<..<0` is 1).
+     */
+    Object[] rangeHalfOpen(RangeExpression re) {
+        Integer fc = constIntOrNull(re.from), tc = constIntOrNull(re.to)
+        long exL = re.exclusiveLeft ? 1L : 0L, exR = re.exclusiveRight ? 1L : 0L
+        if (fc != null && tc != null) {
+            long f = fc, t = tc
+            return f <= t ? [session.intLit(f + exL), session.intLit(t + 1 - exR)] as Object[] :
+                [session.intLit(t + exR), session.intLit(f + 1 - exL)] as Object[]
+        }
+        Object a = translate(re.from), b = translate(re.to)
+        if (a == null || b == null || !session.isInt(a) || !session.isInt(b)) return null
+        // a start at or below 0 and an end that is a size can't run backwards: `0..<xs.size()`, `0..a.length`; nor one at
+        // or below an enclosing quantifier's constant start, up to its variable (`(0..n).any { ops[0..<it].sum(0) }`)
+        String toName = re.to instanceof VariableExpression ? ((VariableExpression) re.to).name : null
+        Long varLo = toName == null ? null : (quantLowerBounds.get(toName) != null ? quantLowerBounds.get(toName) : guardLowerBounds.get(toName))
+        if (guardOrdered.contains(re.from.text + ' <= ' + re.to.text) ||   // an enclosing `&&` orders its ends
+            (fc != null && ((fc <= 0 && isSizeExpr(re.to)) || (varLo != null && fc <= varLo))) ||
+            startPlusNonNegative(re)) {
+            // a constant start as a literal, so an enclosing quantifier reads it as its variable's lower bound
+            Object lo = fc != null ? session.intLit((long) fc + exL) : session.plus(a, session.intLit(exL))
+            return [lo, session.plus(b, session.intLit(1L - exR))] as Object[]
+        }
+        Object up = session.le(a, b)
+        if (reversedRanges != null && quantLowerBounds.isEmpty() && quantDepth == 0) {   // a hidden indicator, so a refutation
+            // that runs it backwards can say so (not under a quantifier, whose bound variable it would capture)
+            String n = '$rev$' + REVERSED.incrementAndGet()
+            session.assertExpr(session.eq(session.intVar(n), session.ite(up, session.intLit(0L), session.intLit(1L))))
+            reversedRanges.put(n, re.text)
+        }
+        Object lo = session.ite(up, session.plus(a, session.intLit(exL)), session.plus(b, session.intLit(exR)))
+        Object hi = session.ite(up, session.plus(b, session.intLit(1L - exR)), session.plus(a, session.intLit(1L - exL)))
+        [lo, hi] as Object[]
+    }
+
+    /** Phase 380 — set by the checker: each possibly-reversed range's hidden indicator ({@code $rev$N}, 1 when it runs
+     *  backwards) → the range's text, for the note on a refutation that depends on it. */
+    Map<String, String> reversedRanges
+    private static final java.util.concurrent.atomic.AtomicInteger REVERSED = new java.util.concurrent.atomic.AtomicInteger()
+
+    /** Phase 381 — `x..<x + d` (or `x..x + d`) with `d` evidently non-negative — a constant, a size, or a name an
+     *  enclosing quantifier or `&&` bounds below by 0 — ascends: `flat[off[it]..<off[it] + members]`. */
+    private boolean startPlusNonNegative(RangeExpression re) {
+        if (!(re.to instanceof BinaryExpression) || ((BinaryExpression) re.to).operation.type != Types.PLUS) return false
+        BinaryExpression sum = (BinaryExpression) re.to
+        Expression d = sum.leftExpression.text == re.from.text ? sum.rightExpression :
+            sum.rightExpression.text == re.from.text ? sum.leftExpression : null
+        if (d == null) return false
+        Long c = constLong(d)
+        if (c != null) return c >= 0
+        if (isSizeExpr(d)) return true
+        if (d instanceof VariableExpression) {
+            String n = ((VariableExpression) d).name
+            Long lo = quantLowerBounds.get(n) != null ? quantLowerBounds.get(n) : guardLowerBounds.get(n)
+            return lo != null && lo >= 0
+        }
+        false
+    }
+
+    /** `xs.size()`, `xs.size`, `a.length`: never negative. */
+    private static boolean isSizeExpr(Expression e) {
+        (e instanceof PropertyExpression && ((PropertyExpression) e).propertyAsString in ['length', 'size']) ||
+            (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'size' &&
+             ((MethodCallExpression) e).arguments instanceof TupleExpression &&
+             ((TupleExpression) ((MethodCallExpression) e).arguments).expressions.isEmpty())
+    }
+
+    /** Phase 380 — the lower bounds an enclosing `&&`'s left operand states (`c <= x`, `x >= c`, `c < x`, `x > c`). */
+    private final Map<String, Long> guardLowerBounds = new HashMap<String, Long>()
+
+    /** Phase 380 — `X <= Y` / `X < Y` an enclosing `&&` states, as `X.text <= Y.text`: the range `X..Y` ascends. */
+    private final Set<String> guardOrdered = new HashSet<String>()
+
+    private static void collectLowerBounds(Expression e, Map<String, Long> out, Set<String> ordered) {
+        if (e instanceof BooleanExpression) { collectLowerBounds(((BooleanExpression) e).expression, out, ordered); return }
+        if (!(e instanceof BinaryExpression)) return
+        BinaryExpression be = (BinaryExpression) e
+        int op = be.operation.type
+        if (op == Types.LOGICAL_AND) {
+            collectLowerBounds(be.leftExpression, out, ordered); collectLowerBounds(be.rightExpression, out, ordered); return
+        }
+        if (op == Types.COMPARE_LESS_THAN_EQUAL || op == Types.COMPARE_LESS_THAN) ordered.add(be.leftExpression.text + ' <= ' + be.rightExpression.text)
+        if (op == Types.COMPARE_GREATER_THAN_EQUAL || op == Types.COMPARE_GREATER_THAN) ordered.add(be.rightExpression.text + ' <= ' + be.leftExpression.text)
+        String v = null
+        Long c = null
+        if (be.rightExpression instanceof VariableExpression && (c = constLong(be.leftExpression)) != null) {
+            v = ((VariableExpression) be.rightExpression).name
+            if (op == Types.COMPARE_LESS_THAN) c = c + 1
+            else if (op != Types.COMPARE_LESS_THAN_EQUAL) return
+        } else if (be.leftExpression instanceof VariableExpression && (c = constLong(be.rightExpression)) != null) {
+            v = ((VariableExpression) be.leftExpression).name
+            if (op == Types.COMPARE_GREATER_THAN) c = c + 1
+            else if (op != Types.COMPARE_GREATER_THAN_EQUAL) return
+        }
+        if (v != null && (out.get(v) == null || c > out.get(v))) out.put(v, c)
+    }
+
+    /** Phase 380 — the enclosing quantifiers' variables with a constant lower bound, and how deep in quantifiers. */
+    private final Map<String, Long> quantLowerBounds = new HashMap<String, Long>()
+    private int quantDepth = 0
+
+    /** Phase 380 — how many ints a constant range iterates. */
+    static int rangeCount(int from, int to, boolean exL, boolean exR) {
+        int n = Math.abs(to - from) + 1 - (exL ? 1 : 0) - (exR ? 1 : 0)
+        if (from == to) n = (exL || exR) ? 0 : 1
+        Math.max(n, 0)
+    }
+
     /** Phase 379 — an {@code every} that bounds an array's elements: [the quantifier term, the array, its size, lb, ub]. */
     private final List<Object[]> elementBounds = new ArrayList<Object[]>()
     /** Phase 379 — each sum term made: [array, lo, hi, the term]. */
@@ -6787,7 +6931,7 @@ class Encoder implements TheoryApi {
         if (recv instanceof RangeExpression) {
             RangeExpression re = (RangeExpression) recv
             Integer from = constIntOrNull(re.from)
-            if (from == null || from != 0) return
+            if (from == null || from != 0 || re.exclusiveLeft) return   // Phase 380 — `0<..<n` skips index 0
             Expression to = re.to
             if (re.inclusive) return
             arr = lengthOf(to)
@@ -8554,13 +8698,11 @@ class Encoder implements TheoryApi {
 
         // (lo..<hi).every|any / (lo..hi).every|any  -> index over the range
         if (recv instanceof RangeExpression) {
-            RangeExpression re = (RangeExpression) recv
-            Object loH = translate(re.from)
-            Object hiH = translate(re.to)
-            if (loH == null || hiH == null) return null
-            // A `..` range is inclusive; normalise to the half-open [lo, hi) the encoder uses.
-            if (re.inclusive) hiH = session.plus(hiH, session.intLit(1L))
-            return emitQuantifier(pname, loH, hiH, bodyExpr, null, existential)
+            // Phase 380 — the ints it iterates, as [lo, hi): either direction, either end excluded (`n..0` was read as
+            // the empty [n, 1), so `(n..0).every { … }` proved unchecked; `0<..<n` included 0)
+            Object[] lh = rangeHalfOpen((RangeExpression) recv)
+            if (lh == null) return null
+            return emitQuantifier(pname, lh[0], lh[1], bodyExpr, null, existential)
         }
 
         // xs.indices.every|any  -> index over [0, xs.size)
@@ -8609,6 +8751,11 @@ class Encoder implements TheoryApi {
         List<Object> prevSink = triggerSink
         env.put(pname, binding)
         triggerSink = triggers
+        // Phase 380 — an index quantifier's variable is at least its range's constant start (so `0..<it` inside ascends)
+        Long prevLo = quantLowerBounds.get(pname)
+        Long loConst = elementArr == null ? constLongOf(loH) : null
+        if (loConst != null) quantLowerBounds.put(pname, loConst) else quantLowerBounds.remove(pname)
+        quantDepth++
         try {
             Object bodyH = translate(bodyExpr)
             if (bodyH == null) return null
@@ -8620,7 +8767,14 @@ class Encoder implements TheoryApi {
         } finally {
             triggerSink = prevSink
             if (prevBinding == null) env.remove(pname) else env.put(pname, prevBinding)
+            quantDepth--
+            if (prevLo == null) quantLowerBounds.remove(pname) else quantLowerBounds.put(pname, prevLo)
         }
+    }
+
+    /** Phase 380 — an integer literal term's value (as the solver prints it), else null. */
+    private static Long constLongOf(Object term) {
+        try { return Long.parseLong(String.valueOf(term)) } catch (NumberFormatException ignored) { return null }
     }
 
     /** True if {@code e} is the {@code this} receiver of an instance-field access. */

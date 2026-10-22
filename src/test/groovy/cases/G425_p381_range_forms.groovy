@@ -22,7 +22,8 @@ import static cases.CaseDsl.*
  * below its start downwards (`5..0` is 5..0, `0..<-1` is [0], `2<..<0` is [1]). Quantifiers, slices, constant ranges
  * as lists and Phase 380's closure ranges read every range as ascending from `from`: a descending one was empty (or, as
  * Phase 380's closure fact, a contradiction, so its sites proved vacuously) and `<..` kept its start. They now read
- * the ints the range iterates, and a refutation whose model runs a range backwards says so.
+ * the ints the range iterates, and a refutation whose model runs a range backwards says so. A non-integral range
+ * (`4.5..6.5`, a NumberRange stepping by one from 4.5) is outside the fragment.
  */
 class G425_p381_range_forms {
 
@@ -162,6 +163,33 @@ class G425_p381_range_forms {
                             ((j.length - 1)..0).every { j[it] >= 0 } && (-1<..<j.length).every { j[it] >= 0 } &&
                                 (j.length<..<0).every { j[it] >= 0 }
                         }
+                    }''')],
+
+        // `4.5..6.5` is Groovy's NumberRange [4.5, 5.5, 6.5], not ints: outside the fragment, said so. Before (the
+        // working tree's first cut of this phase): its 4.5 truncated to 4, so `every { it > 4 }` over it was refuted.
+        [group: "P381 range forms", name: "a decimal range is outside the fragment",
+         expect: "is outside fragment", refute: ["Cannot prove", "Could not decide"],
+         src: tc('''class A {
+                        @Ensures({ (4.5..6.5).every { it > 4 } })
+                        static void f() { }
+                    }''')],
+
+        // … and is never assumed as ints: assumed so, `4 > 4` was a contradiction and anything after it proved.
+        [group: "P381 range forms", name: "… nor assumed as ints",
+         expect: "is outside fragment", refute: "Cannot prove",
+         src: tc('''class A {
+                        @Requires({ a != null && a.length == 10 && (4.5..6.5).every { it > 4 } })
+                        @Ensures({ result == 0 })
+                        static int f(int[] a) { 1 }
+                    }''')],
+
+        // A long range is an int range.
+        [group: "P381 range forms", name: "a long range is iterated as its ints",
+         expect: "Cannot prove postcondition of f",
+         src: tc('''class A {
+                        @Requires({ a != null && a.length == 4 })
+                        @Ensures({ (1L..3L).every { a[(int) it] == 0 } })
+                        static void f(int[] a) { a[1] = 0; a[2] = 0 }
                     }''')],
 
         // A sortedness spec over a possibly-empty array: `0..<-1` is [0], so it reads a[0] — the refutation says why.

@@ -3957,6 +3957,8 @@ class ChannelDesugar {
             RangeExpression r = (RangeExpression) coll
             Integer a = intLiteral(r.from), b = intLiteral(r.to)
             if (a == null || b == null || f.variable == null) return null
+            // Phase 380 — an ascending range with its `from` iterated: `0<..3` skips 0, and `5..0` runs downwards
+            if (r.exclusiveLeft || a > b) return null
             return [f.variable.name, a, r.inclusive ? b : b - 1] as Object[]
         }
         if (coll instanceof ClosureListExpression) {
