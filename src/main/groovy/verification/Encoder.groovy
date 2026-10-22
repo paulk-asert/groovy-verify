@@ -1082,6 +1082,8 @@ class Encoder implements TheoryApi {
     /** Phase 375 — may the method write into {@code name}'s array: a store {@code name[i] = …}, a call on it, or a
      *  call handed it (which may fill it)? */
     boolean mayWriteArray(String name) {
+        if (inPlaceWrites == null && inPlaceWritesSupplier != null) inPlaceWrites = inPlaceWritesSupplier.call()
+        if (inPlaceWrites != null) return inPlaceWrites.contains(name)   // Phase 377 — the checker's, by callee frames
         if (writtenArrays == null) {
             writtenArrays = new HashSet<String>()
             Statement body = vcMethod == null ? null :
@@ -1114,6 +1116,10 @@ class Encoder implements TheoryApi {
         writtenArrays.contains(name)
     }
     private Set<String> writtenArrays
+    /** Phase 377 — from the checker, on first use: the names the method writes into, calls' arguments by their
+     *  callees' frames. */
+    Closure<Set<String>> inPlaceWritesSupplier
+    private Set<String> inPlaceWrites
 
     /** Phase 375 — a name standing for {@code name}'s array as it is now (a call's actual, read before its result is
      *  assigned to {@code name}): its contents, length, nullity and element type. */
@@ -3127,6 +3133,7 @@ class Encoder implements TheoryApi {
         if (tryRecordRangeAssign(name, rhs)) return true
         if (tryRecordFindAllAssign(name, rhs)) return true                // Phase 320
         if (tryRecordListDerivedAssign(name, rhs)) return true            // Phase 323
+        if (tryRecordListConstruction(name, rhs)) return true             // Phase 377
         FactoryContainer f = factoryContainerFor(rhs)
         if (f == null) return tryRecordSizedArrayAssign(name, rhs)
         localFactories.put(name, f)
@@ -3376,6 +3383,48 @@ class Encoder implements TheoryApi {
             return v == null ? null : -v
         }
         null
+    }
+
+    /** Phase 377 — the list classes whose constructors {@link #tryRecordListConstruction} models. */
+    private static final Set<String> LIST_CLASSES = ['java.util.ArrayList', 'java.util.LinkedList'] as Set
+
+    /**
+     * Phase 377 — {@code new ArrayList()} (or with an int capacity) is a new empty list; {@code new ArrayList(xs)} of a
+     * list is a copy of it: its size and elements, a separate object (value semantics: a later write to either is
+     * that one's). Both are non-null. They were unmodelled, so `List<Integer> v = new ArrayList<Integer>()` before a
+     * loop left `v.size() == 0` unprovable at its entry.
+     */
+    boolean tryRecordListConstruction(String name, Expression rhs) {
+        Expression r = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (!(r instanceof ConstructorCallExpression)) return false
+        ConstructorCallExpression cce = (ConstructorCallExpression) r
+        if (!(cce.type?.name in LIST_CLASSES)) return false
+        List<Expression> args = cce.arguments instanceof TupleExpression ? ((TupleExpression) cce.arguments).expressions :
+            Collections.<Expression> emptyList()
+        Object size, arr
+        if (args.isEmpty() || (args.size() == 1 && isIntLikeType(args.get(0).getType()))) {
+            size = session.intLit(0L)
+            arr = null
+        } else if (args.size() == 1 && args.get(0) instanceof VariableExpression &&
+                   isListTyped(((VariableExpression) args.get(0)).name)) {
+            String src = ((VariableExpression) args.get(0)).name
+            size = sizeOf(src)
+            arr = arrayFor(src)
+            FactoryContainer f = localFactories.get(src)
+            if (f != null) localFactories.put(name, f) else localFactories.remove(name)
+        } else {
+            return false
+        }
+        if (arr == null) {
+            localFactories.remove(name)
+            havocArray(name)
+        } else {
+            arrEnv.put(name, arr)
+        }
+        bindSize(name, size)
+        bindNullity(name, session.boolLit(false))
+        registerListName(name)
+        true
     }
 
     /**

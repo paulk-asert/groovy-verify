@@ -16777,6 +16777,31 @@ needs `result != null` for the invariant's `data != null` to hold at exit.
 the invariant, passed bare, as `this.data` and through a local alias, and a scalar field's bound. Plus guards: an index
 the invariant doesn't cover, a field written before the call, and a constructor, which assumes nothing.
 
+## Phase 377 — a list alias keeps its size  *(shipped — completeness: a gap Phase 375 left)*
+
+Phase 375 made a re-assigned name share an alias's contents (and, for a list, its size) only while neither is written
+into — and counted every call argument as a write. So `List<Integer> v = xs` before a loop calling `v = grow(v)` gave
+`v` a fresh size at the alias, and the loop invariant `v.size() == xs.size() + i` failed on entry; a false invariant was
+refuted there too, not where it is false. `new ArrayList<Integer>()` before such a loop failed the same way: the list
+constructors weren't modelled at all (a straight-line `v = new ArrayList<Integer>(xs)` was skipped as outside the fragment).
+
+- **In-place writes by the callees' frames** (`inPlaceWritesOf`, handed to the encoder as `inPlaceWritesSupplier`): a
+  store `x[i] = …`, a call on `x` other than a pure read, and an argument a same-class callee's frame writes (its formal
+  in the frame, or a frame it can't bound, or an override elsewhere); any other call's argument still counts, unless
+  the call is a pure read. Read lazily, at an alias: read when the encoder is made, the callees' frames were inferred
+  before their bodies' later rewriting and memoised unbounded (seven trace-loop cases, P197–P201, caught it).
+- **List constructors** (`tryRecordListConstruction`): `new ArrayList()`, `new LinkedList()` and an int capacity are a
+  new empty, non-null list; `new ArrayList(xs)` of a list is a copy — its size and elements, a separate object, so a
+  later `xs.add(1)` leaves it as it was.
+
+**Boundary:** a copy of a set or another collection kind (`new ArrayList(set)`), and other constructors, stay unmodelled.
+An alias whose source is written into keeps Phase 366's loud skip.
+
+**Shipped tests:** group `P377 list alias`, 7 cases. A false refutation before: a local alias and a `new ArrayList`
+before a loop (on entry). A false invariant refuted in the wrong place before: the alias's (on entry, now in the body).
+Skipped before: a capacity, a copy that keeps its size, and its false twin. Plus a guard: an alias whose source is added
+to (still skipped loudly).
+
 ---
 
 ## Definition of done, per increment

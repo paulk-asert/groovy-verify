@@ -363,7 +363,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // preceding `r = callee(...)` assignment is replayed (it asserts the callee's @Ensures).
         Map<String, ClassNode> tuples = new LinkedHashMap<String, ClassNode>(currentTupleParams)
         tuples.putAll(currentTupleTypes)
-        new Encoder(session, currentEvaluator, new TypeEnvironment(
+        Encoder made = new Encoder(session, currentEvaluator, new TypeEnvironment(
             setElementTypes    : currentSetElementTypes,
             mapTypes           : currentMapTypes,
             listElementTypes   : currentListElementTypes,
@@ -384,6 +384,79 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             atomicNames        : currentAtomicNames,
             integralNames      : currentIntegralNames,
             method             : currentMethod))
+        // Phase 377 — asked for only when an alias needs it: read eagerly, the callees' frames were inferred (and
+        // memoised) before their bodies' later rewriting, and came out unbounded
+        MethodNode forWrites = currentMethod
+        if (forWrites != null) made.inPlaceWritesSupplier = { -> inPlaceWritesOf(forWrites) }
+        made
+    }
+
+    /** Phase 377 — memoised {@link #inPlaceWritesOf}. */
+    private static final String IN_PLACE_WRITES_KEY = 'verification.inPlaceWrites'
+
+    /**
+     * Phase 377 — the names {@code m}'s body may write INTO (not rebind): a store {@code x[i] = …}, a call on {@code x}
+     * other than a pure read, and an argument a call may write — by the callee's frame for a same-class method (its
+     * formal written, or a frame it can't bound), always for any other call that isn't a pure read. Closures' bodies
+     * count. Phase 375's aliasing shares an array's contents, and a list's size, only for names not in it: before, any
+     * call argument counted, so `List<Integer> v = xs` before a loop calling `grow(v)` lost v's size at the alias.
+     */
+    static Set<String> inPlaceWritesOf(MethodNode m) {
+        Set<String> cached = (Set<String>) m.getNodeMetaData(IN_PLACE_WRITES_KEY)
+        if (cached != null) return cached
+        Set<String> out = new HashSet<String>()
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        ClassNode owner = m.declaringClass
+        body?.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof BinaryExpression &&
+                    ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                    String n = namedLocation(((BinaryExpression) be.leftExpression).leftExpression)
+                    if (n != null) out.add(n)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                boolean pure = pureRead(mce, LOOP_PURE_READS)
+                String recv = namedLocation(mce.objectExpression)
+                if (recv != null && recv != 'this' && !pure) out.add(recv)
+                boolean own = mce.implicitThis || recv == 'this' ||
+                    (mce.objectExpression instanceof ClassExpression && ((ClassExpression) mce.objectExpression).type?.name == owner?.name)
+                if (!pure) arguments(own ? mce.methodAsString : null, mce.arguments)
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                arguments(sce.ownerType?.name == owner?.name ? sce.method : null, sce.arguments)
+                super.visitStaticMethodCallExpression(sce)
+            }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {
+                arguments(null, cce.arguments)
+                super.visitConstructorCallExpression(cce)
+            }
+            /** {@code ownName}: a same-class method's name, read by its frame; null for any other call. */
+            void arguments(String ownName, Expression args) {
+                if (!(args instanceof TupleExpression)) return
+                List<Expression> as = ((TupleExpression) args).expressions
+                List<MethodNode> cands = new ArrayList<MethodNode>()
+                if (ownName != null && owner != null) {
+                    for (ClassNode c = owner; c != null; c = c.superClass) {
+                        for (MethodNode cm : c.getMethods(ownName)) if (cm.parameters.length == as.size()) cands.add(cm)
+                    }
+                }
+                for (int i = 0; i < as.size(); i++) {
+                    String n = namedLocation(as.get(i))
+                    if (n == null) continue
+                    boolean written = cands.isEmpty()
+                    for (MethodNode cm : cands) {
+                        Set<String> frame = overridableElsewhere(cm) ? null : modifiedNames(cm)
+                        if (frame == null || frame.contains(cm.parameters[i].name)) written = true
+                    }
+                    if (written) out.add(n)
+                }
+            }
+        })
+        m.putNodeMetaData(IN_PLACE_WRITES_KEY, out)
+        out
     }
 
     /**
