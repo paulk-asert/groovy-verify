@@ -17100,6 +17100,40 @@ no call).
 user's `toList()` returning null, a `?.` call. A withheld call over an unmodelled local. The merge: a branch's
 re-assignment to a nullable parameter (then, else), and two non-null branches still proved.
 
+## Phase 387 — a catch's failure has a call that throws into it  *(shipped — repro quality)*
+
+A catch is entered in any state the try block may leave when it throws, which the checks havoc: the obligation
+region (Phase 373's `in the catch` marker) and the postcondition path walk (Phase 192's catch-entry `Havoc`s). So an
+obligation inside a catch never showed a call, and a postcondition on a path through one showed the model's, often a
+call that never enters the catch: `f(-2147483648)` for `try { return 10.intdiv(d) } catch (ArithmeticException e)
+{ return -1 }` under `result >= 0`, which returns 0; `f(0, 0)` where the try's `k = n` ran first.
+
+- **The exact ways into a catch** (`catchWays`): for each throw in the try block that this catch takes and no catch
+  before it does (`catchTakes`, by the resolved exception type, so a user subclass counts), the statements before it,
+  each with its own throws assumed not to happen, then the throw's condition. A throw is a top-level statement's one
+  division by an integral (or `BigDecimal`) zero — `intdiv`, `remainder`, `/`, `%` (`throwsOf`; a floating operand
+  never throws) — or an `if (c) throw new X(…)` / `throw new X(…)` (`explicitThrow`). The state is the one before the
+  throwing statement, so `k = 10 % d` leaves k as it was. The walk stops at a statement whose throws aren't known
+  exactly: a call, an index, a cast, a read through a reference, a nested write, a division a short-circuit or a
+  ternary arm may skip, a statement that leaves.
+- **Obligations:** the catch's havoc marker carries the ways (as Phase 374's finally does), so the witness search
+  follows them (`f(0, 0)`, also from inside a loop, through Phase 371's iterations).
+- **Postconditions:** BodyEncoder marks a catch's entry on the path (`CatchEntry`). A refuted path through one catch is
+  re-checked, in an auxiliary session, with the entry replaced by each way (`catchWitnessPaths`, `BodyEncoder.stepsOf`);
+  the first that refutes gives the diagnostic. None does: the call is withheld (`CATCH_CALL_NOTE`). An entry that is
+  already exact — nothing havocked, Phase 223's spec fact assumed — keeps its call (`f("")` for `parseInt`).
+
+**Boundary:** a throw from a call (other than Phase 223's characterised specs), an index, a null receiver, or a nested
+try gives no way in; a path through two catches shows no call. The try block's own return path still takes a model
+whose division throws (`return 10.intdiv(d)` refuted at `d = 0`): the call fails, through the catch, but not on the
+line reported — the normal path doesn't assume its statements completed.
+
+**Shipped tests:** group `P387 catch witness`, 16 cases. A call that throws into the catch: a division (`f(0, 0)`), a
+write before the throw (`f(0)`), a throwing write that doesn't happen (`f(-1, 0)`), an explicit throw's condition, a
+user exception subclass, a catch of `Exception`, a catch in a loop. Withheld: an earlier catch takes the throw, a throw
+of another type, no throwing run fails, a call before the throw. Postconditions: the catch's return (`f(0)`, not
+`f(-2147483648)`), a write before the throw, a try in a branch, a withheld call, and Phase 223's exact entry kept.
+
 ---
 
 ## Definition of done, per increment

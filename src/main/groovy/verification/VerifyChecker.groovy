@@ -7034,6 +7034,177 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /**
+     * Phase 387 — the exact ways into {@code cs}: for each throw in the try block this catch takes (and no catch before
+     * it), the statements before it run through, each with its own throws assumed not to happen, then the throw's
+     * condition. A throw is a top-level statement's one division by an integral zero ({@code intdiv}, {@code /},
+     * {@code %}, {@code remainder}), or an {@code if (c) throw new X(…)} / {@code throw new X(…)}. The walk stops at a
+     * statement whose throws aren't known exactly (a call, an index, a cast, a nested write) or that leaves.
+     */
+    private List<List<Statement>> catchWays(TryCatchStatement tcs, CatchStatement cs) {
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        int at = tcs.catchStatements.findIndexOf { it.is(cs) }
+        if (at < 0) return out
+        List<CatchStatement> before = tcs.catchStatements.subList(0, at)
+        List<Statement> prefix = new ArrayList<Statement>()
+        for (Statement st : topStatements(tcs.tryStatement)) {
+            if (out.size() >= ENTRY_PATHS) break
+            Object[] ex = explicitThrow(st)
+            if (ex != null) {
+                if (catchTakes(cs, before, (ClassNode) ex[0])) out.add(wayInto(prefix, (Expression) ex[1]))
+                if (ex[1] == null) break                      // a bare throw: nothing after it runs
+                prefix.add(assumeOnly(new NotExpression((Expression) ex[1])))
+                continue
+            }
+            List<Object[]> ts = stmtThrows(st)
+            if (ts == null) break
+            if (ts.size() == 1 && catchTakes(cs, before, (ClassNode) ts.get(0)[0])) {
+                out.add(wayInto(prefix, (Expression) ts.get(0)[1]))
+            }
+            if (LoopEncoder.leaves(st)) break                 // a return: what follows isn't reached through it
+            for (Object[] t : ts) prefix.add(assumeOnly(new NotExpression((Expression) t[1])))
+            prefix.add(st)
+        }
+        out
+    }
+
+    private static List<Statement> wayInto(List<Statement> prefix, Expression cond) {
+        List<Statement> way = new ArrayList<Statement>(prefix)
+        if (cond != null) way.add(assumeOnly(cond))
+        way
+    }
+
+    /** Phase 387 — an assume marker both the exact replay and the path walk (BodyEncoder) take as a fact. */
+    private static Statement assumeOnly(Expression cond) {
+        Statement m = EvalOrder.assume(cond)
+        m.putNodeMetaData(ChannelDesugar.ASSUME_ONLY_KEY, Boolean.TRUE)
+        m
+    }
+
+    /** Phase 387 — does {@code cs} take a thrown {@code ex} that no catch in {@code before} does? */
+    private static boolean catchTakes(CatchStatement cs, List<CatchStatement> before, ClassNode ex) {
+        catchCoversType(cs, ex) && !before.any { catchCoversType(it, ex) }
+    }
+
+    private static boolean catchCoversType(CatchStatement cs, ClassNode ex) {
+        ClassNode c = cs.variable?.type
+        if (c == null || c == ClassHelper.OBJECT_TYPE || c == ClassHelper.DYNAMIC_TYPE) c = ClassHelper.make(Exception)
+        ex == c || ex.isDerivedFrom(c)
+    }
+
+    private static final ClassNode ARITHMETIC_EXCEPTION = ClassHelper.make(ArithmeticException)
+
+    /** Phase 387 — {@code throw new X(…)} [X, null], or {@code if (c) throw new X(…)} [X, c], its condition and
+     *  arguments throwing nothing; else null. */
+    private Object[] explicitThrow(Statement st) {
+        Expression cond = null
+        Statement t = st
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return null
+            List<Statement> body = topStatements(ifs.ifBlock)
+            if (body.size() != 1) return null
+            cond = ifs.booleanExpression.expression
+            if (EvalOrder.writes(cond) || throwsOf(cond) != Collections.emptyList()) return null
+            t = body.get(0)
+        }
+        if (!(t instanceof ThrowStatement) || !(((ThrowStatement) t).expression instanceof ConstructorCallExpression)) return null
+        ConstructorCallExpression cce = (ConstructorCallExpression) ((ThrowStatement) t).expression
+        if (EvalOrder.writes(cce.arguments) || throwsOf(cce.arguments) != Collections.emptyList()) return null
+        [cce.type, cond] as Object[]
+    }
+
+    /** Phase 387 — the throws a top-level statement may raise, each [exception, condition in the state before it];
+     *  null when they aren't known exactly (see {@link #throwsOf}) or it writes inside its expression. */
+    private List<Object[]> stmtThrows(Statement st) {
+        if (!Encoder.nestedTargets(st).isEmpty() || Encoder.containsCallableCall(st) || inexactReplay(st)) return null
+        if (st instanceof ReturnStatement) return throwsOf(((ReturnStatement) st).expression)
+        if (!(st instanceof ExpressionStatement)) return null
+        Expression e = ((ExpressionStatement) st).expression
+        if (Encoder.isIncDec(e)) return Collections.<Object[]> emptyList()
+        if (Encoder.isCompoundAssign(e)) e = Encoder.desugarCompoundAssign((BinaryExpression) e)
+        if (e instanceof DeclarationExpression || (e instanceof BinaryExpression &&
+                ((BinaryExpression) e).operation.type == Types.ASSIGN)) {
+            BinaryExpression be = (BinaryExpression) e
+            if (!(be.leftExpression instanceof VariableExpression)) return null
+            return throwsOf(be.rightExpression)
+        }
+        throwsOf(e)
+    }
+
+    /** Phase 387 — the divisions by an integral zero {@code e} may throw on, each [ArithmeticException, divisor == 0];
+     *  null when some throw isn't known exactly: a call other than {@code intdiv}/{@code remainder}, an index, a cast,
+     *  a read through a reference, or a division a short-circuit or a ternary arm may skip. */
+    private List<Object[]> throwsOf(Expression e) {
+        if (e == null) return Collections.<Object[]> emptyList()
+        List<Object[]> out = new ArrayList<Object[]>()
+        boolean[] bad = [false]
+        int[] conditional = [0]
+        Closure<?> division = { Expression d ->
+            if (conditional[0] > 0) { bad[0] = true; return null }
+            out.add([ARITHMETIC_EXCEPTION, new BinaryExpression(d, Token.newSymbol(Types.COMPARE_EQUAL, -1, -1),
+                new ConstantExpression(0, true))] as Object[])
+            null
+        }
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                List<Expression> args = call.arguments instanceof ArgumentListExpression ?
+                    ((ArgumentListExpression) call.arguments).expressions : null
+                String m = call.methodAsString
+                if ((m == 'intdiv' || m == 'remainder') && args?.size() == 1 && !call.safe && !call.implicitThis &&
+                        integralValue(call.objectExpression) && integralValue(args.get(0))) {
+                    call.objectExpression.visit(this)
+                    args.get(0).visit(this)
+                    division.call(args.get(0))
+                    return
+                }
+                bad[0] = true
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression c) { bad[0] = true }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression c) { bad[0] = true }
+            @Override void visitCastExpression(CastExpression c) { bad[0] = true }
+            @Override void visitClosureExpression(ClosureExpression c) { bad[0] = true }
+            @Override void visitPropertyExpression(PropertyExpression p) {
+                if (!(p.objectExpression instanceof VariableExpression &&
+                      ((VariableExpression) p.objectExpression).isThisExpression())) bad[0] = true
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if (op == Types.LEFT_SQUARE_BRACKET) { bad[0] = true; return }
+                if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+                    be.leftExpression.visit(this)
+                    conditional[0]++
+                    try { be.rightExpression.visit(this) } finally { conditional[0]-- }
+                    return
+                }
+                be.leftExpression.visit(this)
+                be.rightExpression.visit(this)
+                if (op == Types.DIVIDE || op == Types.MOD || op == Types.REMAINDER) {
+                    // a floating operand divides to Infinity/NaN, never throws; an unknown one isn't known
+                    if (floatingValue(be.leftExpression) || floatingValue(be.rightExpression)) return
+                    if (!integralOrDecimal(be.leftExpression) || !integralOrDecimal(be.rightExpression)) { bad[0] = true; return }
+                    division.call(be.rightExpression)
+                }
+            }
+            @Override void visitTernaryExpression(TernaryExpression t) {
+                t.booleanExpression.visit(this)
+                conditional[0]++
+                try { t.trueExpression.visit(this); t.falseExpression.visit(this) } finally { conditional[0]-- }
+            }
+        })
+        bad[0] ? null : out
+    }
+
+    private static final Set<String> INTEGRAL_NAMES = ['int', 'long', 'short', 'byte', 'java.lang.Integer',
+        'java.lang.Long', 'java.lang.Short', 'java.lang.Byte', 'java.math.BigInteger'] as Set<String>
+    private static final Set<String> FLOATING_NAMES = ['double', 'float', 'java.lang.Double', 'java.lang.Float'] as Set<String>
+
+    private boolean integralValue(Expression e) { INTEGRAL_NAMES.contains(inferredTypeOf(e)?.redirect()?.name) }
+    private boolean floatingValue(Expression e) { FLOATING_NAMES.contains(inferredTypeOf(e)?.redirect()?.name) }
+    private boolean integralOrDecimal(Expression e) {
+        integralValue(e) || inferredTypeOf(e)?.redirect()?.name == 'java.math.BigDecimal'
+    }
+
     /** Phase 374 — each arm's own entry condition, aligned with the arms (the cases, then the default): its case
      *  matches and no case before it does; the default's, that none does. Null unless every case is a constant. */
     private static List<Expression> switchGuards(SwitchStatement sw) {
@@ -7164,7 +7335,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> tryWritten = new LinkedHashSet<String>(written)
         for (CatchStatement cs : tcs.catchStatements) {
             List<Statement> cstmts = topStatements(cs.code)
-            dischargeRegion(cstmts, reqAst, assumePos, assumeNeg, withHavoc(preceding, tryWritten, 'in the catch'), handleAsserts)
+            // Phase 387 — its exact ways in: the try block up to a throw this catch takes
+            dischargeRegion(cstmts, reqAst, assumePos, assumeNeg,
+                withHavoc(preceding, tryWritten, 'in the catch', null, catchWays(tcs, cs)), handleAsserts)
             written.addAll(writesOf(cstmts, currentMethod?.declaringClass))
         }
         Statement fin = tcs.finallyStatement
@@ -11642,6 +11815,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst,
                            List<Expression> classInvs) {
         SmtSession session = backend.session()
+        // Phase 387 — a catch witness's re-check decides nothing, only which call is shown
+        if (auxPathCheck && session instanceof Z3Session) ((Z3Session) session).auxiliary(AUX_TIMEOUT_MS)
         try {
             guardArrayAliasHazard(node, p, postAst)
             guardContainerAlias(node)   // Phase 366
@@ -12158,8 +12333,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status == CheckResult.Status.REFUTED && postAst != null) {
                 appendOffendingElements(r, enc, session, [postAst])
             }
-            r = shown(r)
+            boolean prevExact = exactWitness
+            exactWitness = auxPathCheck
+            try { r = shown(r) } finally { exactWitness = prevExact }
             if (r.status == CheckResult.Status.VERIFIED) return
+            if (auxPathCheck) auxPathCall = r.failingCall
+            // Phase 387 — a path through a catch enters it in any state the try block may leave, so the model's call
+            // need not throw there at all (`f(-2147483648)` for a catch only `d == 0` reaches): the call is sought
+            // along the exact ways in, and withheld when none fails
+            if (r.status == CheckResult.Status.REFUTED && !auxPathCheck) {
+                List<Path> ways = catchWitnessPaths(p)
+                if (ways != null) {
+                    for (Path w : ways) {
+                        auxPathCall = null
+                        Object[] h = held({ ->
+                            auxPathCheck = true
+                            try { checkPath(node, w, postAst, reqAst, classInvs) } catch (Throwable ignored) { }
+                            finally { auxPathCheck = false }
+                            true
+                        })
+                        if ((boolean) h[1] && auxPathCall != null) { emitHeld((List<Object[]>) h[0]); return }
+                    }
+                    if (r.failingCall != null) {
+                        r.failingCall = null
+                        if (!r.notes.contains(CATCH_CALL_NOTE)) r.notes.add(CATCH_CALL_NOTE)
+                    }
+                }
+            }
 
             // Anchor the diagnostic on a positioned *expression* node. A value-returning method uses its
             // return expression. A void method (a lemma — its @Ensures is over parameters/fields) has no
@@ -12231,6 +12431,45 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentBcountKExprs = Collections.<Expression> emptyList()
             try { session.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /** Phase 387 — set while a catch witness's path is re-checked ({@link #catchWitnessPaths}); the call it shows. */
+    private boolean auxPathCheck = false
+    private String auxPathCall = null
+
+    static final String CATCH_CALL_NOTE = 'no failing call: the failure is in a catch, in a state the try block may ' +
+        'leave when it throws, and no run that throws there is known to fail'
+
+    /**
+     * Phase 387 — the witness paths for {@code p} through a catch: its entry block ({@link CatchEntry} and the havocs
+     * after it) replaced by each exact way in ({@link #catchWays}), walked to steps. Null when {@code p} enters no
+     * catch, or its entry is already exact (nothing havocked, the Phase 223 fact assumed); empty (no witness) when it
+     * enters more than one.
+     */
+    private List<Path> catchWitnessPaths(Path p) {
+        List<Integer> at = new ArrayList<Integer>()
+        for (int i = 0; i < p.steps.size(); i++) if (p.steps.get(i) instanceof CatchEntry) at.add(i)
+        if (at.isEmpty()) return null
+        List<Path> out = new ArrayList<Path>()
+        if (at.size() > 1) return out
+        int i = at.get(0)
+        CatchEntry ce = (CatchEntry) p.steps.get(i)
+        if (ce.count == 1 && p.steps.get(i + 1) instanceof SoftAssume) return null
+        List<Object> pre = p.steps.subList(0, i), post = p.steps.subList(i + 1 + ce.count, p.steps.size())
+        for (List<Statement> way : catchWays(ce.tcs, ce.cs)) {
+            List<List<Object>> variants = BodyEncoder.stepsOf(way)
+            if (variants == null) continue
+            for (List<Object> v : variants) {
+                if (out.size() >= ENTRY_PATHS) return out
+                Path w = new Path()
+                w.steps.addAll(pre)
+                w.steps.addAll(v)
+                w.steps.addAll(post)
+                w.result = p.result
+                out.add(w)
+            }
+        }
+        out
     }
 
     /**

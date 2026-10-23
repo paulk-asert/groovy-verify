@@ -122,6 +122,17 @@ class SoftAssume {
     Expression cond
 }
 
+/** Phase 387 — marks a catch's entry on a path: the {@code count} steps after it (its {@link Havoc}s, a
+ *  {@link SoftAssume}) stand for the try block's throw. Replayed as nothing; a refutation's witness replaces the
+ *  block by the exact ways into the catch (VerifyChecker.catchWays). */
+@CompileStatic
+@TupleConstructor
+class CatchEntry {
+    TryCatchStatement tcs
+    CatchStatement cs
+    int count
+}
+
 /**
  * One straight-line execution path through a method body: an ordered
  * list of {@link Guard}/{@link Assign} steps and the expression whose
@@ -192,6 +203,18 @@ class BodyEncoder {
             throw new UnsupportedConstructException("no return path found")
         }
         return r.terminated
+    }
+
+    /** Phase 387 — the step lists of {@code stmts} run from an empty path, one per way through it (its branches);
+     *  null when one leaves (a return, a throw) or the walk can't take it. */
+    static List<List<Object>> stepsOf(List<Statement> stmts) {
+        try {
+            WalkResult r = walkStatements(stmts, [new Path()] as List<Path>, false)
+            if (!r.terminated.isEmpty()) return null
+            r.live.collect { Path p -> new ArrayList<Object>(p.steps) as List<Object> }
+        } catch (UnsupportedConstructException ignored) {
+            null
+        }
     }
 
     private static WalkResult walkStatements(List<Statement> stmts,
@@ -441,12 +464,13 @@ class BodyEncoder {
             List<String> assigned = tryAssignedNames(rTry, prefixLen, tcs)
             for (CatchStatement cs : tcs.catchStatements) {
                 Path pc = copy(prefix)
-                for (String n : assigned) pc.steps.add(new Havoc(n))
                 // Phase 223 — catch-reachability: entering this handler means some try-block source threw
                 // the caught type; when every such source is arm-characterised, the disjunction of the
                 // matching arm conditions is a fact at catch entry (`catch (ArithmeticException e)` after
                 // `Math.floorDiv(a, b)` knows `b == 0`).
                 Expression fact = catchEntryFact(tcs, cs, assigned, prefix)
+                pc.steps.add(new CatchEntry(tcs, cs, assigned.size() + (fact != null ? 1 : 0)))   // Phase 387
+                for (String n : assigned) pc.steps.add(new Havoc(n))
                 if (fact != null) pc.steps.add(new SoftAssume(fact))
                 WalkResult rCatch = walkStatements(asList(cs.code), [pc] as List<Path>, tail)
                 res.terminated.addAll(rCatch.terminated)
