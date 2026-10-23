@@ -17068,6 +17068,38 @@ a real bug's (`f(0)` for the failing `f(3)`), an in-loop exit's from a weak inva
 keep a genuine call: a real bad exit inside the loop, a run through a continue, a return inside a nested loop reached
 through its branch.
 
+## Phase 386 — a fresh collection is never null  *(shipped — false positive, a withheld call, and an unsound merge)*
+
+Found probing Phase 381's decimal ranges: `List r = (4.5..6.5).toList(); r.size()` drew a possible-NPE with `fails on:
+f()`. An int range's `toList()` is modelled (Phase 99), so it never reached the deref check; a decimal or char range's,
+a parameter's `toList()`, `collect`/`findAll`/`groupBy` all did, and the local's nullity was free.
+
+- **A GDK fresh-collection call's local is never null** (`isFreshCollectionCall`, `FRESH_COLLECTION_METHODS`): `toList`,
+  `toSet`, `toSorted`, `toUnique`, `collect`, `collectMany`, `findAll`, `findResults`, `grep`, `collectEntries`,
+  `groupBy`, `countBy`, `withIndex`, `indexed`, `reverse`, `take`, `drop` — each returns a collection or throws, checked
+  on the runtime for a null and an empty receiver (`collect`/`findAll`/`grep` give `[]` on null). STC's resolved target
+  decides, not the name: it must be an `ExtensionMethodNode` from `org.codehaus.groovy.runtime`, so a user's own
+  `toList()` that returns null still refutes; a `?.` call is excluded, and so is a re-assigned local (Phase 277's rule).
+  The set is computed lazily, on the first deref check (`freshCollectionLocalNames`): Phase 277's is built before STC
+  visits the body, when no call has a target yet.
+- **A failure resting on an unmodelled local shows no call:** the obligation replay (`dischargeVfObligation`) leaves a
+  local free when nothing models its assignment — sound, but the model's value for it is no run's, so `assert r.size()
+  == 3` read `fails on: f()`. Those locals (`replayUnmodelled`) now count as unmodelled in `shown()`, which withholds the
+  call with Phase 346's note.
+- **An if's branches merge nullity** (`LoopEncoder.mergeStates`) — **unsound before**: the merge ITE-combined values,
+  arrays, sizes and sets but not `nullEnv`, so after the if the encoder kept the else branch's flag. `List r = [1, 2];
+  if (c) r = xs; return r.size()` compiled cleanly; `f(null, true)` throws. It now refutes with that call.
+
+**Boundary:** the receiver's own obligation stays (`null.toList()` throws). `xs.collect { }` on a nullable `xs` still
+draws a receiver NPE that the runtime doesn't throw (`null.collect {}` is `[]` under `@TypeChecked`'s dynamic dispatch)
+— a false positive left as is, conservative. `(4.5..6.5).toList().size()` isn't modelled (the claim is undecided, with
+no call).
+
+**Shipped tests:** group `P386 fresh collection`, 12 cases. No NPE: a decimal range's `toList()`, a char range's, a
+`collect` over one, a `findAll` over a non-null parameter, a `groupBy`'s map. Kept: the receiver's own obligation, a
+user's `toList()` returning null, a `?.` call. A withheld call over an unmodelled local. The merge: a branch's
+re-assignment to a nullable parameter (then, else), and two non-null branches still proved.
+
 ---
 
 ## Definition of done, per increment

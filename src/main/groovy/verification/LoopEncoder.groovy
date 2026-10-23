@@ -596,6 +596,10 @@ class LoopEncoder {
             { String n, Object h -> enc.bindSizeRaw(n, h) })
         iteCombineMap(afterThen.setEnv, afterElse.setEnv, entry.setEnv, cond, enc, s,
             { String n, Object h -> enc.bindSet(n, h) })
+        // Phase 386 — and nullity: unmerged, the encoder kept the ELSE branch's flag, so `List r = [1, 2]; if (c) r = xs`
+        // read r as the literal's non-null after the if and `r.size()` proved, where f(null, true) throws
+        iteCombineMap(afterThen.nullEnv, afterElse.nullEnv, entry.nullEnv, cond, enc, s,
+            { String n, Object h -> enc.bindNullity(n, h) })
         // Conservative: drop any factory record that wasn't preserved by *both* branches.
         Set<String> factoryNames = new LinkedHashSet<String>()
         factoryNames.addAll(afterThen.localFactories.keySet())

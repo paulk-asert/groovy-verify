@@ -27,6 +27,7 @@ import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.GenericsType
 import org.codehaus.groovy.ast.tools.GenericsUtils
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.transform.stc.ExtensionMethodNode
 import org.codehaus.groovy.transform.stc.StaticTypesMarker
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
@@ -2640,8 +2641,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 346 — a model that gives an unmodelled value (`s = s + g(i)` with g's result untranslatable) picked
         // it freely: no run is known to produce it, so the call it suggests may not fail. Withheld, with a note.
         List<String> unmodelled = r.counterexample == null ? Collections.<String> emptyList() :
-            r.counterexample.keySet().findAll { UNMODELLED_KEY.matcher(it).matches() }
-                .collect { String k -> unmodelledBase(k) }.findAll { !it.contains('#') && !it.startsWith('$') }.unique()
+            (r.counterexample.keySet().findAll { UNMODELLED_KEY.matcher(it).matches() }
+                .collect { String k -> unmodelledBase(k) }.findAll { !it.contains('#') && !it.startsWith('$') } +
+             r.counterexample.keySet().collect { String k -> k.split(/[.\[?#$]/, 2)[0] }.findAll { replayUnmodelled.contains(it) }
+            ).unique()
         if (r.failingCall != null && !unmodelled.isEmpty()) {
             r.failingCall = null
             String note = "no failing call: the failure rests on ${unmodelled.join(', ')}, a value the verifier doesn't model (an unmodelled call or expression), so no run is known to reach it".toString()
@@ -2761,6 +2764,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** A loop summary's havocked scalar: {@code <name>$havoc$<n>}. */
     private static final java.util.regex.Pattern HAVOC_KEY = java.util.regex.Pattern.compile('(.+)\\$havoc\\$(\\d+)')
+    /** Phase 386 — the locals an obligation's value-flow replay left free (an assignment nothing modelled). */
+    private final Set<String> replayUnmodelled = new HashSet<String>()
+
     /** Phase 346 — a value the encoder couldn't translate, havocked: {@code <name>$unmodelled$<n>}. */
     private static final java.util.regex.Pattern UNMODELLED_KEY = java.util.regex.Pattern.compile('(.+)\\$unmodelled\\$(\\d+)')
 
@@ -4950,6 +4956,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Discharge a value-flow obligation: assume @Requires + class invariants, replay the reaching steps in source order, then check. */
     private void dischargeVfObligation(MethodNode node, VfObligation v, Expression reqAst) {
         SmtSession s = backend.session()
+        replayUnmodelled.clear()
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) {
@@ -5003,18 +5010,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
                     // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
                     // replay leaves `i` unconstrained and a downstream `s.charAt(i)` bound can't discharge.
+                    boolean modelled = false
                     if (isCallExpr(a.rhs)) {
                         if (calleeReturnsList(a.rhs, node)) {
                             // Phase 225 — list-returning callee: the rename route (see checkPath), so the
                             // callee's reference-oracle facts land on the local for downstream obligations
-                            listLocalFromCall(s, enc, a.name, a.rhs, node)
+                            modelled = listLocalFromCall(s, enc, a.name, a.rhs, node)
                         } else {
                             Object fresh = s.intVar('specw$' + Integer.toHexString(System.identityHashCode(a.rhs)))
                             if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
                                 s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                                modelled = true
                             }
                         }
                     }
+                    // Phase 386 — nothing modelled the value: the name stays free (sound), but a model's value for it
+                    // is no run's, so shown() withholds the call (`List r = (4.5..6.5).toList()` read `fails on: f()`)
+                    if (!modelled) replayUnmodelled.add(a.name)
                 } else if (step instanceof FieldAssign) {
                     // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
                     // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
@@ -5057,6 +5069,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             dischargeObligationUnder(s, enc, v.site)
         } finally {
+            replayUnmodelled.clear()
             try { s.close() } catch (Throwable ignored) {}
         }
     }
@@ -5878,7 +5891,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // a factory result, never null; `alt.select()` in the loop carries no deref obligation.
             if (currentHeldSelectLocalNames.contains(df.receiver)) return
             // Phase 277 — and a local bound to a `new …`: a constructor yields an object or throws.
-            if (currentNewLocalNames.contains(df.receiver)) return
+            // Phase 386 — or to a GDK fresh-collection call (`List r = xs.toList()`): the lazy superset.
+            if (currentNewLocalNames.contains(df.receiver) || freshCollectionLocalNames().contains(df.receiver)) return
             if (df.indexExpr != null) {
                 // Phase 37 — indexed receiver (xs[i].method() / xs.get(i).method()): consult the
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
@@ -8775,6 +8789,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  Generalises the channel-factory and held-select exemptions above; without it any ordinary
      *  `StringBuilder sb = new StringBuilder(); sb.append(…)` carried an undischargeable deref obligation. */
     private Set<String> currentNewLocalNames = Collections.emptySet()
+    /** Phase 386 — locals bound to a GDK fresh-collection call ({@link #isFreshCollectionCall}). Computed on first
+     *  use, not with the sets above: those are built before STC visits the body, and only STC's resolved target
+     *  tells the GDK's {@code toList()} from a user's. */
+    private Set<String> currentFreshLocalNames = null
+    private Statement currentFreshCode = null
+
+    private Set<String> freshCollectionLocalNames() {
+        if (currentFreshLocalNames == null) currentFreshLocalNames = collectNewLocalNames(currentFreshCode, true)
+        currentFreshLocalNames
+    }
 
     // Bound op codes (shared with Encoder.tryBindChannelReceive by value): ge / gt / le / lt.
     private static final long CB_GE = 0L, CB_GT = 1L, CB_LE = 2L, CB_LT = 3L
@@ -8798,6 +8822,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentChannelLocalNames = localNames
         currentHeldSelectLocalNames = collectSelectVars(node.code).keySet()          // Phase 257
         currentNewLocalNames = collectNewLocalNames(node.code)                       // Phase 277
+        currentFreshLocalNames = null                                                // Phase 386 — lazy
+        currentFreshCode = node.code
         if (node.code != null) {
             node.code.visit(new CodeVisitorSupport() {
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
@@ -9055,8 +9081,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  pass was silent, so the one-sender/one-receiver/one-element discipline holds. */
     /** Phase 277 — locals whose declaration initialiser is a constructor call, anywhere in the body. A
      *  later re-assignment from something nullable would make this unsound, so a name assigned anywhere
-     *  else in the method is excluded. */
-    private static Set<String> collectNewLocalNames(Statement code) {
+     *  else in the method is excluded. Phase 386 — {@code fresh} adds GDK fresh-collection calls, which
+     *  needs STC's resolved targets (so only after STC has visited the body). */
+    private static Set<String> collectNewLocalNames(Statement code, boolean fresh = false) {
         if (code == null) return Collections.emptySet()
         final Set<String> news = new LinkedHashSet<String>(), reassigned = new HashSet<String>()
         code.visit(new CodeVisitorSupport() {
@@ -9065,7 +9092,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     (stripCasts(de.rightExpression) instanceof ConstructorCallExpression ||
                      stripCasts(de.rightExpression) instanceof ClosureExpression ||      // Phase 372 — a literal
                      stripCasts(de.rightExpression) instanceof GStringExpression ||      // Phase 373 — so is a GString
-                     ActorMailbox.isActorFactory(stripCasts(de.rightExpression)))) {   // Phase 289
+                     ActorMailbox.isActorFactory(stripCasts(de.rightExpression)) ||    // Phase 289
+                     (fresh && isFreshCollectionCall(stripCasts(de.rightExpression))))) {   // Phase 386
                     news.add(((VariableExpression) de.leftExpression).name)
                 }
                 super.visitDeclarationExpression(de)
@@ -9083,6 +9111,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         news.addAll(ActorMailbox.contextParamNames(code))
         news.removeAll(reassigned)
         news
+    }
+
+    /** Phase 386 — the GDK methods whose contract is a fresh collection: each returns one or throws, never null
+     *  (checked on the runtime for a null and an empty receiver — collect/findAll/grep give [] on null). */
+    private static final Set<String> FRESH_COLLECTION_METHODS = ['toList', 'toSet', 'toSorted', 'toUnique', 'collect',
+        'collectMany', 'findAll', 'findResults', 'grep', 'collectEntries', 'groupBy', 'countBy', 'withIndex', 'indexed',
+        'reverse', 'take', 'drop'] as Set<String>
+
+    /** Phase 386 — a non-safe call STC resolved to one of the GDK's {@link #FRESH_COLLECTION_METHODS}. The resolved
+     *  target, not the name, decides: a user's own {@code toList()} may return null. */
+    private static boolean isFreshCollectionCall(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.safe || !FRESH_COLLECTION_METHODS.contains(mce.methodAsString)) return false
+        MethodNode t = stcTarget(mce)
+        t instanceof ExtensionMethodNode &&
+            ((ExtensionMethodNode) t).extensionMethodNode.declaringClass.name.startsWith('org.codehaus.groovy.runtime.')
     }
 
     /**
