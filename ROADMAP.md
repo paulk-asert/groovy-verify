@@ -17191,6 +17191,38 @@ in the try, after a catch (`f(-6)`), and two loud skips. A fall-through: proved,
 labels, a case into the default. A write inside an expression: proved, refuted, in a return, in a branch condition, and
 a write a short-circuit may skip (refutes at `f(1)`) or reaches (proved).
 
+## Phase 390 — a helper runs the closure literal it is handed  *(shipped — completeness won back from Phase 373)*
+
+Phase 373 made a method that calls a callable parameter unbounded — its body may write anything it reaches — which was
+sound (Phase 369's argument-only frame missed what the callable captures) but cost every caller its postcondition:
+`h({ int[] x -> x[0] = 1 }, a)` was a loud skip, as was `h({ x -> int y = 0 }, a)`, which writes nothing.
+
+- **A call site's own frame** (`calleeWritesAt`): when the callee's frame is unbounded and the site hands some of its
+  callable parameters a closure literal (a lambda, a coerced closure, or a local bound only to one, `literalOf`), the
+  callee is inferred again for this site, unmemoised (`inferWrites(m, false)`). A call of such a parameter runs its
+  literal (`siteLiteral`, `literalRunWrites`), read in the CALLER's scope — its class, its fields, its same-class calls
+  (the closure's lexical owner). A write through a closure parameter lands on the argument it is handed, in the
+  callee's vocabulary, so it maps onto the caller's actual as any frame does; a name the closure declares is local; any
+  other write is the caller's own — a field, a captured local it rebinds, a captured parameter's contents — and is
+  havocked at the call by the caller's names (`(after a call)`).
+- **Still unbounded:** a callable parameter the site doesn't hand a literal (one passed through), one the callee
+  reassigns or hands on to another method, and a literal that itself calls a callable it captures. The literal's walk
+  keeps every other rule — an overridable same-class method it calls is unbounded unless the class is final.
+- **A closure literal is never null** (`Encoder.nullityOfExpr`): a callee's `@Requires({ c != null })` discharges at
+  the site (it skipped: "actual argument … is outside fragment"), and a `Closure k = { … }` local walks as a non-null
+  name with no value, where the postcondition path skipped the assignment.
+
+**Changed cases:** G413's "a closure literal handed to a helper" now refutes `a[0] == 7` at `g([7] as int[])` — the
+literal writes `x[0] = 1` through the `b` it is handed — where it was the unbounded frame's loud skip.
+
+**Boundary:** the obligation replays (`LoopEncoder`) still refuse a callable's call; a literal's own body obligations
+(its parameter's size) are checked as before, without the site's arguments.
+
+**Shipped tests:** group `P390 callable site frames`, 15 cases. Framed by the literal: one that writes nothing, one
+writing its parameter (refutes), only that argument, the helper's own writes, the caller's field, a captured local, a
+same-class method of the caller's, a literal-bound local, a lambda that reads and one that writes. Still unbounded: a
+callable passed through, reassigned, handed on, or run from inside the literal. And the literal's non-null precondition.
+
 ---
 
 ## Definition of done, per increment

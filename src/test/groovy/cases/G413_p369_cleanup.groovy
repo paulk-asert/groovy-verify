@@ -123,9 +123,10 @@ class G413_p369_cleanup {
                     }''')],
 
         // Before: the reason named the generated closure class's `doCall` (`a call on 'error.getStackTrace()'`).
-        // Phase 373: the reason is h's call of the closure it is handed.
-        [group: "P369 cleanup", name: "a closure literal handed to a helper is skipped for what it is",
-         expect: "a call of the callable 'c', whose body may write anything it reaches", refute: "doCall",
+        // Phase 373: the reason is h's call of the closure it is handed. Phase 390: at this site h runs the literal,
+        // which writes `x[0] = 1` through the `b` it is handed, so the frame is {b} and `a[0] == 7` refutes.
+        [group: "P369 cleanup", name: "a closure literal handed to a helper runs where it is called",
+         expect: ["Cannot prove postcondition of g", "fails on: g([7] as int[])"], refute: "doCall",
          src: tc('''final class A {
                         @Requires({ c != null })
                         static void h(Closure c, int[] b) { c.call(b) }

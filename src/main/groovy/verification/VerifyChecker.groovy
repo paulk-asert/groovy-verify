@@ -3665,6 +3665,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     static Set<String> calleeWrites(MethodNode m) {
         Object memo = m.getNodeMetaData(INFERRED_WRITES_KEY)
         if (memo != null) return memo.is(UNBOUNDED_WRITES) ? null : (Set<String>) memo
+        inferWrites(m, true)
+    }
+
+    /** Phase 347's inference proper; {@code memoise} false for a call site's own frame (Phase 390), which depends on
+     *  what that site hands the method. */
+    private static Set<String> inferWrites(MethodNode m, boolean memoise) {
         Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
         if (body == null) body = m.code
         if (body == null) return null
@@ -3749,6 +3755,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         // memoise only once the whole walk is done (a nested computation during a cycle is partial)
+        if (!memoise) return out
         if (visiting.isEmpty()) {
             m.putNodeMetaData(INFERRED_WRITES_KEY, out != null ? out : UNBOUNDED_WRITES)
             if (outSizes != null) m.putNodeMetaData(INFERRED_SIZE_KEY, outSizes)
@@ -4978,6 +4985,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Object step : v.steps) {
                 if (step instanceof Assign) {
                     Assign a = (Assign) step
+                    if (stripCasts(a.rhs) instanceof ClosureExpression) { enc.bindNullity(a.name, s.boolLit(false)); continue }   // Phase 390
                     if (enc.isArrayTyped(a.name) && arrayReassign(s, enc, a.name, a.rhs, node)) continue   // Phase 375
                     if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
                     if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
@@ -11930,6 +11938,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
+                    // Phase 390 — `Closure k = { … }`: a closure has no value the path models, and it is never null; what
+                    // it writes counts where it is called (a call site handing it on runs it, calleeWritesAt)
+                    if (stripCasts(a.rhs) instanceof ClosureExpression) {
+                        enc.bindNullity(a.name, session.boolLit(false))
+                        continue
+                    }
                     // Phase 366 — `int[] b = a` with neither mutated (guardContainerAlias passed): one object, so `b`
                     // reads `a`'s contents, size and nullity exactly (it had its own, unconstrained, oracles)
                     if (a.rhs instanceof VariableExpression && a.name != ((VariableExpression) a.rhs).name &&
@@ -14868,6 +14882,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 373 — a callable's body may write anything it reaches; Phase 369's argument writes were too few.
             // But a local bound only to a closure literal runs that literal, whose writes its declaration counted.
             if (Encoder.isCallableCall(mce) && !literalCallable(mce.objectExpression)) {
+                // Phase 390 — at a call site that hands this parameter a closure literal, the call runs that literal
+                ClosureExpression lit = siteLiteral(mce.objectExpression)
+                if (lit != null) {
+                    return collectWritesExpr(mce.objectExpression, ws) && collectWritesArgs(mce.arguments, ws) &&
+                        literalRunWrites(lit, mce.arguments, ws)
+                }
                 return unbounded("a call of the callable '${clip(mce.objectExpression.text)}', whose body may write " +
                     "anything it reaches")
             }
@@ -15558,6 +15578,144 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         })
         literal[0] == 1 && other[0] == 0 && !m.parameters.any { it.name == rn }
+    }
+
+    /** Phase 390 — a call site's frame for {@code callee}: the parameters it hands a closure literal (`h({ x -> … }, a)`,
+     *  or a local bound only to one) and the method the site is in. */
+    private static final ThreadLocal<Object[]> SITE_LITERALS = new ThreadLocal<Object[]>()
+
+    /**
+     * Phase 390 — the frame of {@code callee} at a call that hands some of its callable parameters closure literals:
+     * a call of such a parameter runs the literal (its writes through its own parameters land on the call's
+     * arguments, in the callee's vocabulary), where without the site it may write anything it reaches. Returns
+     * [the frame, what the literals write of the CALLER's (captured fields, parameters, locals), the literal
+     * argument positions], or null when no argument is a literal, or the frame still can't be bounded.
+     */
+    private static Object[] calleeWritesAt(MethodNode callee, List<Expression> actuals, MethodNode caller) {
+        if (callee.code == null || actuals == null || actuals.size() != callee.parameters.length) return null
+        Map<String, ClosureExpression> lits = new LinkedHashMap<String, ClosureExpression>()
+        Set<Integer> at = new LinkedHashSet<Integer>()
+        for (int i = 0; i < actuals.size(); i++) {
+            Expression a = stripCasts(actuals.get(i))
+            ClosureExpression ce = a instanceof ClosureExpression ? (ClosureExpression) a :
+                a instanceof VariableExpression ? literalOf(((VariableExpression) a).name, caller) : null
+            if (ce == null) continue
+            lits.put(callee.parameters[i].name, ce)
+            at.add(i)
+        }
+        if (lits.isEmpty()) return null
+        Statement body = (Statement) callee.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: callee.code
+        Set<String> reassigned = new HashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                    reassigned.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        if (lits.keySet().any { reassigned.contains(it) }) return null   // the parameter may hold another callable by then
+        Set<String> captured = new LinkedHashSet<String>()
+        Object[] prev = SITE_LITERALS.get()
+        SITE_LITERALS.set([callee, lits, caller, captured] as Object[])
+        Set<String> frame
+        try { frame = inferWrites(callee, false) } finally { SITE_LITERALS.set(prev) }
+        frame == null ? null : [frame, captured, at] as Object[]
+    }
+
+    /** Phase 390 — the closure literal a call site hands the method being inferred for {@code recv}, a parameter of it. */
+    private static ClosureExpression siteLiteral(Expression recv) {
+        Object[] site = SITE_LITERALS.get()
+        if (site == null || !(recv instanceof VariableExpression) || !WRITE_METHOD.get().is(site[0])) return null
+        ((Map<String, ClosureExpression>) site[1]).get(((VariableExpression) recv).name)
+    }
+
+    /** Phase 390 — the literal {@code name} is bound to in {@code m}: declared once from a closure literal, never
+     *  assigned again, not a parameter (Phase 373's {@link #literalCallable}, for a named method). */
+    private static ClosureExpression literalOf(String name, MethodNode m) {
+        if (m == null || m.parameters.any { it.name == name }) return null
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body == null) return null
+        ClosureExpression[] lit = [null] as ClosureExpression[]
+        int[] literal = [0], other = [0]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression &&
+                    ((VariableExpression) be.leftExpression).name == name) {
+                    if (be instanceof DeclarationExpression && stripCasts(be.rightExpression) instanceof ClosureExpression) {
+                        literal[0]++
+                        lit[0] = (ClosureExpression) stripCasts(be.rightExpression)
+                    } else other[0]++
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                if (ce.parameters?.any { it.name == name }) other[0]++
+                super.visitClosureExpression(ce)
+            }
+        })
+        literal[0] == 1 && other[0] == 0 ? lit[0] : null
+    }
+
+    /**
+     * Phase 390 — what running {@code lit} on {@code args} writes. Its body is read in its own scope, the call
+     * site's method (its fields, its same-class calls). A write through a closure parameter lands on the argument
+     * it is handed (which must name a location, else unbounded); one to a name the closure declares is local; any
+     * other is the caller's — captured — and is collected for the call site to havoc, outside the callee's frame.
+     */
+    private static boolean literalRunWrites(ClosureExpression lit, Expression args, Set<String> ws) {
+        Object[] site = SITE_LITERALS.get()
+        MethodNode caller = (MethodNode) site[2]
+        Set<String> captured = (Set<String>) site[3]
+        List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : null
+        if (as == null) return unbounded("a call of a closure literal with arguments '${clip(args.text)}'")
+        List<String> names = lit.parameters != null && lit.parameters.length > 0 ? lit.parameters*.name : ['it']
+        Set<String> locals = new HashSet<String>()
+        lit.code?.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) locals.add(((VariableExpression) de.leftExpression).name)
+                super.visitDeclarationExpression(de)
+            }
+        })
+        Set<String> tmp = new HashSet<String>()
+        ClassNode prevOwner = WRITE_OWNER.get()
+        MethodNode prevMethod = WRITE_METHOD.get()
+        Set<String> prevImmutable = WRITE_IMMUTABLE.get()
+        Set<String> prevSize = WRITE_SIZE.get()
+        Object[] prevSite = SITE_LITERALS.get()
+        WRITE_OWNER.set(caller?.declaringClass)
+        WRITE_METHOD.set(caller)
+        WRITE_IMMUTABLE.set(caller != null ? immutableNames(caller) : Collections.<String> emptySet())
+        WRITE_SIZE.set(new HashSet<String>())
+        SITE_LITERALS.set(null)   // the literal's own callable calls are the caller's, which no site binds
+        boolean ok
+        try {
+            ok = lit.code == null || collectWritesStmt(lit.code, tmp)
+        } finally {
+            WRITE_OWNER.set(prevOwner)
+            WRITE_METHOD.set(prevMethod)
+            WRITE_IMMUTABLE.set(prevImmutable)
+            WRITE_SIZE.set(prevSize)
+            SITE_LITERALS.set(prevSite)
+        }
+        if (!ok) return false
+        for (String w0 : tmp) {
+            boolean rebound = w0.startsWith(REBIND)
+            String w = rebound ? w0.substring(REBIND.length()) : w0
+            int i = names.indexOf(w)
+            if (i >= 0) {
+                if (rebound || i >= as.size()) continue   // a parameter rebound inside: no write through it
+                if (!recordTarget(as.get(i), ws)) {
+                    return unbounded("a closure literal writing its parameter '${w}', handed '${clip(as.get(i).text)}'")
+                }
+                noteSizeChange(as.get(i))
+                continue
+            }
+            if (locals.contains(w)) continue
+            if (w.startsWith(OPAQUE_ALIAS)) return unbounded("a closure literal writing through an alias it can't name")
+            captured.add(w)   // the caller's own location, rebound or written into
+        }
+        true
     }
 
     /** Phase 350 — the sibling class a receiver names, when it is a parameter of the method being inferred whose
@@ -16747,6 +16905,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (argHandle == null && isCallExpr(argExprs[i])) {
                     String tmp = '$arg' + (havocCounter++) + '#call'
                     if (replayScalarCall(enc, session, tmp, argExprs[i], formals[i].type)) argHandle = enc.translate(new VariableExpression(tmp))
+                }
+                // Phase 390 — a closure literal: an opaque value, never null (a `c != null` precondition discharges)
+                if (argHandle == null && stripCasts(argExprs[i]) instanceof ClosureExpression) {
+                    argHandle = session.varOfSort('$lit' + (havocCounter++) + '#arg', enc.sortForType(formals[i].type))
                 }
                 if (argHandle == null) {
                     addStaticTypeError(
@@ -18121,6 +18283,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
         Set<String> modSet = reliedFrame(callee)
+        // Phase 390 — a body whose frame is unbounded only by calls of a callable parameter that this site hands a
+        // closure literal: the frame at this site, with the literal run where it is called
+        Set<String> siteCaptured = null
+        Set<Integer> literalAt = Collections.<Integer> emptySet()
+        if (modSet == null && declaredModifies(callee) == null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null &&
+                !openToOverride(callee)) {
+            Object[] site = calleeWritesAt(callee, actuals, caller)
+            if (site != null) {
+                modSet = (Set<String>) site[0]
+                siteCaptured = (Set<String>) site[1]
+                literalAt = (Set<Integer>) site[2]
+            }
+        }
         // Phase 359 — the call may dispatch to an override in a subclass of the unit: its writes count too, its
         // formals renamed to the callee's by position; one that can't be bounded leaves the call unmodelled, loudly
         if (modSet != null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null) {
@@ -18229,6 +18404,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object[]> savedListOracles = new LinkedHashMap<String, Object[]>()
         for (int i = 0; i < formals.length; i++) {
             ClassNode ft = formals[i].type
+            // Phase 390 — a closure literal has no value to bind; a contract that reads the formal isn't assumed
+            if (literalAt.contains(i)) {
+                if (mentionedName(ensuresAst, [formals[i].name] as Set<String>) != null) {
+                    savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }
+                    return false
+                }
+                continue
+            }
             // A decimal (BigDecimal) actual needs the Real path — plain translate is Int-oriented and returns null
             // (this blocked a `km(2.0)`-style factory call with a decimal argument).
             Object h
@@ -18430,6 +18613,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object h = enc.translateUnderReceiver(inv, crossRecv, crossFields)
                     if (h != null) s.assertExpr(h)
                 }
+            }
+        }
+        // Phase 390 — what a closure literal handed to the call writes of the caller's own (a field, a parameter's
+        // contents, a local it rebinds): no location of the callee's, so havocked here, by the caller's names
+        if (siteCaptured != null) {
+            for (String loc : siteCaptured) {
+                if (currentSetElementTypes.containsKey(loc) || currentMapTypes.containsKey(loc)) {
+                    havocLocation(enc, loc)
+                } else {
+                    enc.havocByCall(loc); enc.havocArray(loc); enc.havocSize(loc)
+                }
+                enc.bindNullity(loc, s.boolVar(loc + '?null#site' + (havocCounter++)))
             }
         }
 

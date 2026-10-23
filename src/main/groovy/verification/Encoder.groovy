@@ -2115,6 +2115,19 @@ class Encoder implements TheoryApi {
         v
     }
 
+    /** Phase 390 — {@link #havoc} in the name's own sort, named as a call's havoc ({@code havoc$<name>$<n>}), which the
+     *  counterexample shows as "(after a call)". */
+    Object havocByCall(String name) {
+        Object prev = env.get(name)
+        String hn = 'havoc$' + name + '$' + (havocCounter++)
+        Object v
+        if (prev != null && session.isBool(prev)) v = session.boolVar(hn)
+        else if (prev != null && session.isReal(prev)) v = session.realVar(hn)
+        else { v = session.intVar(hn); assumeIntegralRange(name, v) }
+        env.put(name, v)
+        v
+    }
+
     /** Array analogue of {@link #havoc}: re-bind {@code name}'s contents to a fresh, unconstrained array. */
     Object havocArray(String name) {
         String havocName = name + '$havoc$' + (havocCounter++)
@@ -4405,7 +4418,8 @@ class Encoder implements TheoryApi {
             return nullityOf(n)
         }
         if (e instanceof ConstructorCallExpression || e instanceof ListExpression ||
-            e instanceof MapExpression || e instanceof GStringExpression) return session.boolLit(false)
+            e instanceof MapExpression || e instanceof GStringExpression ||
+            e instanceof ClosureExpression) return session.boolLit(false)   // Phase 390 — a closure literal too
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
             isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
         null
