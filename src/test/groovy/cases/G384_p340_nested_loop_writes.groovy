@@ -216,7 +216,8 @@ class G384_p340_nested_loop_writes {
                             }
                         }
                     }''')],
-        [group: 'P340 nested loop writing a field or collection', name: 'a list element the nested loop overwrites refutes the old value', expect: ['Cannot prove postcondition', 'fails on: f([1, 1], 1)'],
+        // Phase 385: the call is now an exact run's (`f([null, null], 1)` fails too: xs[0] is 5 after the loop); any list will do
+        [group: 'P340 nested loop writing a field or collection', name: 'a list element the nested loop overwrites refutes the old value', expect: ['Cannot prove postcondition', 'fails on: f(['],
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() >= 2 && n >= 1 })
                         @Ensures({ xs[0] == 0 })

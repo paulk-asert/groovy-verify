@@ -40,10 +40,10 @@ import verification.Z3Backend
 class PerfBudget {
 
     /** Total solver {@code check()} calls (cache hits + real solves). Deterministic. */
-    static final long MAX_CHECK_CALLS = 13_000   // re-based 2026-10-22: Phases 331–372 (their cases, and Phase 371's witness searches) took `test` to 10,413 (2026-10-20: 10,500 at 8,212)
+    static final long MAX_CHECK_CALLS = 15_000   // re-based 2026-10-23: Phases 373–385 (their cases, and the exact-witness searches of 374 and 385) took `verify` to 11,379 (2026-10-22: 13,000 at 10,413)
 
     /** Distinct VCs actually solved (the cache-miss population). Deterministic. */
-    static final long MAX_DISTINCT_VCS = 8_000   // re-based with it (6,417 distinct VCs; 2026-10-20: 6,400 at 4,910)
+    static final long MAX_DISTINCT_VCS = 9_500   // re-based with it (7,367 distinct VCs; 2026-10-22: 8,000 at 6,417)
 
     /** UNKNOWN results (solver gave up / timed out). The corpus carries a handful of hard VCs plus the
      *  Phase 203/204 inconsistency canaries (recurrence-axiom refutes that intentionally time MBQI out —

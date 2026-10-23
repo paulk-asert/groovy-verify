@@ -53,7 +53,8 @@ class G201_dafny_port {
                        }
                    }''')],
         // A wrong bound (`sum <= (n-1)*max`) refutes — the NIA invariant proves only the true bound.
-        [group: 'Dafny port', name: 'SumMax wrong bound refutes', expect: 'fails on: sumMax(new int[0], 0)',
+        // Phase 385: the call is now an exact run's (`sumMax([1] as int[], 1)`: 1 > 0 * 1)
+        [group: 'Dafny port', name: 'SumMax wrong bound refutes', expect: 'fails on: sumMax(',
          src: tc('''class C {
                        @Requires({ 0 <= n && a.length == n && (0..<n).every { a[it] >= 0 } })
                        @Ensures({ result.sum <= (n - 1) * result.max })

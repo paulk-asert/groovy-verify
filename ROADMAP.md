@@ -17033,6 +17033,41 @@ before this phase, for any such refutation; Phase 371 withholds the call inside 
 elements the precondition doesn't bound, a sum after a store, an unmet callee sum precondition, a sum invariant a call
 breaks, a body whose sum is off. Plus true sum bounds, still proved.
 
+## Phase 385 — a post-loop failure's call is a run  *(shipped — repro quality: calls that passed)*
+
+Found while checking Phase 384's counterexamples: `allocate(0, [1, 1, 1] as int[])`, the failing call shown for a
+postcondition the loop's invariant was too weak to prove, passes. A postcondition after a loop (`checkUse`) is checked
+in a state the invariant and ¬guard allow, and an exit inside the loop on a later iteration (`checkEarlyExitPath`) in
+one the invariant and guard allow: neither need be reached by a run, and the call rendered from such a model was often
+one that doesn't fail — `f(0)` for `@Ensures({ result == n })` under `s <= i`, and `f(0)` even where a real run
+(`f(3)`) fails. Phase 371 had fixed the same for the obligations inside loop regions, not for postconditions.
+
+- **The call comes from an exact run** (`exactExitWitness`, `exactEarlyExitWitness`): on a refutation, each exact path
+  from entry — the prefix, the loop's first iterations, its exit (or the body up to the exit, earlier exits not taken, the
+  exit's guard, a `break`'s lead) — then the code to the return, in an auxiliary session that decides nothing; the first
+  that refutes gives the call. None does: the call is withheld, with a note that the invariant may be too weak
+  (`POST_LOOP_CALL_NOTE`, `IN_LOOP_EXIT_CALL_NOTE`). The prefix region and a do-while's first pass start from entry, and
+  keep their calls.
+- **Exact paths through more loop shapes** (also Phase 371's): an iteration forks on a top-level `if (c) continue`
+  (`bodyVariants`: the continue taken runs only the update), and a branch holding a loop — how Phase 344 lowers a continue
+  before a nested loop, `if (cont) {} else while …` — expands each way (`expansions`); P344's `f(1, 0)` was otherwise
+  lost. A loop nested one level in another's body, directly or in a branch, is reached through the outer loop's
+  iterations and the statements before it (`entryPathsTo`); deeper nesting gets no witness, so its call is withheld.
+
+**Changed cases:** G384's P340 overwrite case and G201's SumMax pinned one failing call each; the call is now an exact
+run's (`f([null, null], 1)`, `sumMax([1] as int[], 1)`, both failing), so they accept any. `PerfBudget` re-based for the
+witness searches (Phases 374, 385): 15,000 checks and 9,500 distinct VCs (measured 11,379 / 7,367).
+
+**Boundary:** a refutation whose only runs need more than eight iterations, a loop nested deeper than one level, or a
+return after a nested loop has its call withheld rather than found. A channel method keeps its call as before (its loop
+is processes and ghost cursors no sequential replay follows — Phase 371's exemption; the Kerridge gallery's
+`merge(1, …)`).
+
+**Shipped tests:** group `P385 post-loop call`, 6 cases. A call that passes before: a weak invariant's refutation (`f(0)`),
+a real bug's (`f(0)` for the failing `f(3)`), an in-loop exit's from a weak invariant (`f(0)`, `f(1)`). Plus guards that
+keep a genuine call: a real bad exit inside the loop, a run through a continue, a return inside a nested loop reached
+through its branch.
+
 ---
 
 ## Definition of done, per increment

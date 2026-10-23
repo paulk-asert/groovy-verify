@@ -6701,18 +6701,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static List<List<Statement>> loopEntryPaths(List<Statement> base, LoopSpec spec, String at) {
         List<List<Statement>> sym = new ArrayList<List<Statement>>()
         if (base == null) return sym
-        List<Statement> head = new ArrayList<Statement>(base)
+        // Phase 385 — an iteration is one of its body's runs: a top-level `if (c) continue` forks it (it was replayed as
+        // never taken, so no witness took the continue — P344's `f(1, 0)`)
+        List<List<Statement>> runs = bodyVariants(spec)
+        List<List<Statement>> heads = [new ArrayList<Statement>(base)] as List<List<Statement>>
         if (spec.isDoWhile) {
             if (at == 'body') sym.add(new ArrayList<Statement>(base))
-            head.addAll(spec.body)
+            heads = extendEach(heads, runs)
         }
-        for (int j = 0; sym.size() < ENTRY_UNROLL; j++) {
-            if (j > 0) {
-                head = withAssume(head, spec.guard)
-                head.addAll(spec.body)
+        for (int j = 0; j < ENTRY_UNROLL && sym.size() < 4 * ENTRY_PATHS; j++) {
+            if (j > 0) heads = extendEach(heads.collect { List<Statement> h -> withAssume(h, spec.guard) }, runs)
+            for (List<Statement> head : heads) {
+                sym.add(at == 'head' ? new ArrayList<Statement>(head) :
+                    withAssume(head, at == 'exit' ? (Expression) new NotExpression(spec.guard) : spec.guard))
             }
-            sym.add(at == 'head' ? new ArrayList<Statement>(head) :
-                withAssume(head, at == 'exit' ? (Expression) new NotExpression(spec.guard) : spec.guard))
         }
         List<List<Statement>> out = new ArrayList<List<Statement>>()
         for (List<Statement> p : sym) out.addAll(expansions(p))
@@ -6730,6 +6732,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<List<Statement>> vs
             if (st instanceof LoopingStatement) {
                 vs = loopVariants((LoopingStatement) st)
+            } else if (st instanceof IfStatement && inexactReplay(st)) {
+                // Phase 385 — a branch holding a loop (`if (cont) {} else while …`, how Phase 344 lowers a continue before
+                // a nested loop): each way, its condition assumed, the branch's statements expanded in turn (an exit in
+                // it the replay can't follow rejects that path there)
+                IfStatement ifs = (IfStatement) st
+                Expression c = ifs.booleanExpression.expression
+                vs = new ArrayList<List<Statement>>()
+                for (List<Statement> v : expansions(topStatements(ifs.ifBlock))) vs.add(withAssume(v.isEmpty() ? new ArrayList<Statement>() : [] as List<Statement>, c) + v)
+                List<Statement> elseStmts = ifs.elseBlock == null || ifs.elseBlock instanceof EmptyStatement ?
+                    new ArrayList<Statement>() : topStatements(ifs.elseBlock)
+                for (List<Statement> v : expansions(elseStmts)) vs.add(withAssume([] as List<Statement>, new NotExpression(c)) + v)
             } else if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null || inexactReplay(st)) {
                 return Collections.<List<Statement>> emptyList()
             } else {
@@ -6746,6 +6759,82 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             acc = next
         }
         acc
+    }
+
+    /** Phase 385 — the runs of one iteration of {@code spec}'s body: a top-level `if (c) continue` either continues
+     *  (assume c, then only the for-loop's update) or doesn't (assume ¬c, then the rest). */
+    private static List<List<Statement>> bodyVariants(LoopSpec spec) {
+        List<List<Statement>> done = new ArrayList<List<Statement>>()
+        List<List<Statement>> acc = [new ArrayList<Statement>()] as List<List<Statement>>
+        for (Statement st : spec.body) {
+            if (isContinueIf(st) && done.size() < ENTRY_PATHS) {
+                Expression c = ((IfStatement) st).booleanExpression.expression
+                List<List<Statement>> next = new ArrayList<List<Statement>>()
+                for (List<Statement> a : acc) {
+                    List<Statement> taken = withAssume(a, c)
+                    if (spec.update != null) taken.add(spec.update)
+                    done.add(taken)
+                    next.add(withAssume(a, new NotExpression(c)))
+                }
+                acc = next
+            } else {
+                for (List<Statement> a : acc) a.add(st)
+            }
+        }
+        done.addAll(acc)
+        done
+    }
+
+    private static boolean isContinueIf(Statement st) {
+        if (!(st instanceof IfStatement)) return false
+        IfStatement ifs = (IfStatement) st
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return false
+        Statement b = ifs.ifBlock
+        if (b instanceof BlockStatement && ((BlockStatement) b).statements.size() == 1) b = ((BlockStatement) b).statements.get(0)
+        b instanceof ContinueStatement && ((ContinueStatement) b).label == null
+    }
+
+    /** Each of {@code heads} followed by each of {@code runs}, within the path cap. */
+    private static List<List<Statement>> extendEach(List<List<Statement>> heads, List<List<Statement>> runs) {
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (List<Statement> h : heads) for (List<Statement> r : runs) {
+            if (out.size() >= 4 * ENTRY_PATHS) return out
+            List<Statement> c = new ArrayList<Statement>(h)
+            c.addAll(r)
+            out.add(c)
+        }
+        out
+    }
+
+    /**
+     * Phase 385 — exact paths from method entry to a point ('head' / 'body' / 'exit') of {@code site}'s loop: for a top
+     * level loop, its prefix and first iterations; for a loop nested one level in another's body (directly or in a
+     * branch), each path to an outer iteration's start, the outer body's statements before it (a branch's conditions as
+     * markers), its init, then its own iterations. Deeper nesting: none (a call is then withheld).
+     */
+    private List<List<Statement>> entryPathsTo(LoopSite site, String at) {
+        if (site.outer == null) return loopEntryPaths(site.originalPrefix, site.spec, at)
+        if (site.outer.outer != null) return Collections.<List<Statement>> emptyList()
+        List<Statement> body = site.outer.spec.body
+        List<Statement> before = null
+        if (body.any { it.is(site.loopStmt) }) {
+            before = stmtsBefore(body, site.loopStmt)
+        } else {
+            for (Object[] bl : branchInnerLoops(body)) {
+                if (((Statement) bl[0]).is(site.loopStmt)) { before = new ArrayList<Statement>((List<Statement>) bl[1]); break }
+            }
+        }
+        if (before == null) return Collections.<List<Statement>> emptyList()
+        if (site.spec.init != null) before.addAll(site.spec.init)
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (List<Statement> p : loopEntryPaths(site.outer.originalPrefix, site.outer.spec, 'body')) {
+            List<Statement> b = new ArrayList<Statement>(p)
+            b.addAll(before)
+            out.addAll(loopEntryPaths(b, site.spec, at))
+            if (out.size() >= ENTRY_PATHS) break
+        }
+        out.sort { List<Statement> p -> p.size() }
+        out.size() > ENTRY_PATHS ? new ArrayList<List<Statement>>(out.subList(0, ENTRY_PATHS)) : out
     }
 
     /** One loop as run 0..{@link #ENTRY_UNROLL}-1 times, then left by its guard: its init, then guard and body. */
@@ -15362,11 +15451,79 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             s.assertExpr(s.not(post))
             CheckResult r = shown(s.check())
+            // Phase 385 — an in-body exit on some iteration starts from a state the invariant allows: its call is
+            // sought along the exact runs from entry, else withheld (as checkUse's)
+            if (r.status == CheckResult.Status.REFUTED && r.failingCall != null && ex.region == 'inBody' && !doWhileFirstIter &&
+                    !currentChannelDesugared && currentChannelNames.isEmpty()) {
+                CheckResult w = exactEarlyExitWitness(node, site, ex, reqAst, postAst)
+                if (w != null) {
+                    r = w
+                } else {
+                    r.failingCall = null
+                    if (!r.notes.contains(IN_LOOP_EXIT_CALL_NOTE)) r.notes.add(IN_LOOP_EXIT_CALL_NOTE)
+                }
+            }
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), ex.node)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Phase 385 — {@link #exactExitWitness} for an in-body exit: each exact path to an iteration's start, the body up
+     *  to the exit (earlier exits not taken), the exit's guard, and, for a `break`, its lead and the suffix. */
+    private CheckResult exactEarlyExitWitness(MethodNode node, LoopSite site, EarlyExit ex, Expression reqAst,
+                                              Expression postAst) {
+        List<Statement> before = new ArrayList<Statement>()
+        for (Statement st : site.spec.body) {
+            if (st.is(ex.node)) break
+            before.add(st)
+        }
+        if (ex.isBreak && site.suffix != null && site.suffix.any { inexactReplay(it) }) return null
+        for (List<Statement> path : entryPathsTo(site, 'body')) {
+            SmtSession s = backend.session()
+            if (s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
+            try {
+                Encoder enc = mkEncoder(s)
+                if (reqAst != null) {
+                    Object pre = enc.translate(reqAst)
+                    if (pre != null) s.assertExpr(pre)
+                }
+                assumeIntJvmBounds(s, enc)
+                assumeClassInvariants(s, enc)
+                List<Statement> run = new ArrayList<Statement>(path)
+                run.addAll(before)
+                if (!replayExact(run, enc, s)) continue
+                Object guardH = enc.translate(ex.guard)
+                if (guardH == null) continue
+                s.assertExpr(guardH)
+                Expression resultExpr = ex.result
+                if (ex.isBreak) {
+                    if (!replayExact(ex.lead, enc, s)) continue
+                    resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s, isVoidMethod(node))
+                }
+                if (resultExpr == null || (!enc.tryRecordFactoryAssign('result', resultExpr) &&
+                                           !enc.tryRecordSetBinopAssign('result', resultExpr))) {
+                    Object resH = enc.translate(resultExpr)
+                    if (resH != null) enc.bind('result', resH)
+                    aliasResultToReturnedListLocal(s, enc, resultExpr)
+                }
+                Object post = enc.translateGoal(postAst)
+                if (post == null) return null
+                s.assertExpr(s.not(post))
+                CheckResult r = s.check()
+                if (r.status != CheckResult.Status.REFUTED) continue
+                boolean prev = exactWitness
+                exactWitness = true
+                try { r = shown(r) } finally { exactWitness = prev }
+                if (r.failingCall != null) return r
+            } catch (Throwable ignored) {
+                // a path the replay can't take exactly gives no witness
+            } finally {
+                try { s.close() } catch (Throwable ignored) {}
+            }
+        }
+        null
     }
 
     /**
@@ -15863,6 +16020,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult r = s.check()
             if (r.status == CheckResult.Status.REFUTED) appendOffendingElements(r, enc, s, [postAst])
             r = shown(r)
+            // Phase 385 — the state is one the invariant allows at the loop's exit, which no run need reach: a weak
+            // invariant's `s = -2` made `fails on: allocate(0, [1, 1, 1] as int[])`, a call that passes. The call is
+            // sought along the exact runs from entry instead (the first iterations), else withheld
+            // (a channel method's loop is processes and ghost cursors no sequential replay follows: its call stands on
+            // those models' own witness, as in Phase 371)
+            if (r.status == CheckResult.Status.REFUTED && r.failingCall != null && !currentChannelDesugared &&
+                    currentChannelNames.isEmpty()) {
+                CheckResult w = exactExitWitness(node, site, reqAst, postAst)
+                if (w != null) {
+                    r = w
+                } else {
+                    r.failingCall = null
+                    if (!r.notes.contains(POST_LOOP_CALL_NOTE)) r.notes.add(POST_LOOP_CALL_NOTE)
+                }
+            }
             if (r.status != CheckResult.Status.VERIFIED) {
                 ASTNode anchor = (resultExpr != null && resultExpr.lineNumber > 0) ?
                     (ASTNode) resultExpr : (ASTNode) site.loopStmt
@@ -15870,6 +16042,58 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    static final String IN_LOOP_EXIT_CALL_NOTE = 'no failing call: the failure is at an exit inside the loop, in a state ' +
+        'its invariant allows on some iteration, not one reached from entry, and no run of its first eight iterations ' +
+        'exits there (the invariant may be too weak for the postcondition)'
+
+    static final String POST_LOOP_CALL_NOTE = 'no failing call: the failure is in a state the loop\'s invariant allows ' +
+        'when it exits, not one reached from entry, and no run of its first eight iterations gets there (the invariant ' +
+        'may be too weak for the postcondition)'
+
+    /**
+     * Phase 385 — a run from entry that leaves the loop after its first iterations and fails the postcondition, for the
+     * call a post-loop refutation shows: each exact path ({@link #loopEntryPaths}, 'exit'), then the suffix to the
+     * return (only when it replays exactly), in an auxiliary session that decides nothing. Null when none refutes.
+     */
+    private CheckResult exactExitWitness(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
+        // a nested loop's exit leads back into the outer body, not to the return: no witness from here
+        if (site.outer != null) return null
+        if (site.suffix != null && site.suffix.any { inexactReplay(it) }) return null
+        for (List<Statement> path : entryPathsTo(site, 'exit')) {
+            SmtSession s = backend.session()
+            if (s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
+            try {
+                Encoder enc = mkEncoder(s)
+                if (reqAst != null) {
+                    Object pre = enc.translate(reqAst)
+                    if (pre != null) s.assertExpr(pre)
+                }
+                assumeIntJvmBounds(s, enc)
+                assumeClassInvariants(s, enc)
+                if (!replayExact(path, enc, s)) continue
+                Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s, isVoidMethod(node))
+                if (resultExpr != null && (!enc.tryRecordFactoryAssign('result', resultExpr) &&
+                                           !enc.tryRecordSetBinopAssign('result', resultExpr))) {
+                    enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
+                    aliasResultToReturnedListLocal(s, enc, resultExpr)
+                }
+                s.assertExpr(s.not(LoopEncoder.tr(enc, postAst, "postcondition")))
+                CheckResult r = s.check()
+                if (r.status != CheckResult.Status.REFUTED) continue
+                appendOffendingElements(r, enc, s, [postAst])
+                boolean prev = exactWitness
+                exactWitness = true
+                try { r = shown(r) } finally { exactWitness = prev }
+                if (r.failingCall != null) return r
+            } catch (Throwable ignored) {
+                // a path the replay can't take exactly gives no witness
+            } finally {
+                try { s.close() } catch (Throwable ignored) {}
+            }
+        }
+        null
     }
 
     /** Phase 310 — the precise fall-through context, used when a prefix exit's guard reads something that changes
