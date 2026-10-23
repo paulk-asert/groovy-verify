@@ -17336,6 +17336,38 @@ prove `k == 7`; its call is withheld).
 **Shipped tests:** group `P394 try-return snapshot`, 5 cases. Kept through the finally: the variable, a claim about
 the finally's write refuted, an expression, a long. A boolean still skips loudly.
 
+## Phase 395 — a catch entered by a known throw sees the state it threw from  *(shipped — completeness)*
+
+Phase 394's boundary: the postcondition walk (`BodyEncoder`, Phase 192) and the obligation region (`dischargeTry`,
+Phase 373) entered a catch with what the try block writes havocked — it may have thrown after any prefix of itself —
+even where Phase 387 knew every way in, which the loop engine has proved with since Phase 391. So `k = 7; try { k =
+10.intdiv(d) * 0 + 7; return k } catch (ArithmeticException e) { return k }` couldn't prove `result == 7`, and a
+catch's obligation over a name the block set to 1 warned.
+
+- **Exact entry for proofs** (`LoopEncoder.exactTry`): when every throw the block can raise is known, each catch is
+  entered once per way (`VerifyChecker.catchWays`) — the block up to a throw it takes, earlier throws not happening —
+  in the postcondition walk (the way's statements walked from the prefix, then the catch; no `CatchEntry`, the paths
+  are runs) and in the obligation region (the catch checked along each way). A catch no throw reaches adds no path and
+  no obligation that can fail.
+- **"Known", now that it decides proofs:** besides a call, cast, index or a division a short-circuit may skip
+  (Phase 387), an array creation (a negative size), a GString (its `toString`) and a boxed read (a null unboxed) make the
+  block inexact (`throwsOf`); so does a catch of an `Error` or `Throwable`, which any statement may raise
+  (`catchesError`) — the loop engine's Phase 391 exact entry tightened with it.
+
+**Changed cases:** G269's two Phase 192 havoc teeth now prove — their blocks can't throw, so no run enters the catch —
+and the teeth move to G438 over a block with a call; three Phase 387 cases (an earlier catch takes the throw, a throw
+of another type, no throwing run fails) are now proofs, where they were warnings with the call withheld. G270's
+handler-body teeth now use a block that can throw (`return n + 1` can't, so its catch's division proved). Unrelated,
+seen in the gates: G366's too-tight flooring slack accepts a refutation as well as UNKNOWN — nonlinear over a sum, a
+loaded machine's scaled budget lets the solver refute it (the case's point, "not proved", holds either way).
+
+**Boundary:** a block with a call, an index or another throw that isn't known keeps the havoc (and Phase 387's witness).
+
+**Shipped tests:** group `P395 exact catch entry`, 11 cases. Proved: the state the throw left, an unreachable catch, an
+obligation along the ways; refuted: a write before the throw (`f(0)`). Havoc kept: a catch of Throwable, of an Error, a
+boxed read, an array creation, a GString, and a block with a call (Phase 192's teeth: a violating catch, a value the
+block assigned).
+
 ---
 
 ## Definition of done, per increment

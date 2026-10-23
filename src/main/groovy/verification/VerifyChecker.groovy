@@ -7337,6 +7337,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override void visitConstructorCallExpression(ConstructorCallExpression c) { bad[0] = true }
             @Override void visitCastExpression(CastExpression c) { bad[0] = true }
             @Override void visitClosureExpression(ClosureExpression c) { bad[0] = true }
+            // Phase 395 — throws no division names (now that the ways are proofs, not only witnesses): an array's negative
+            // size, a GString's toString, a null boxed value unboxed into arithmetic
+            @Override void visitArrayExpression(ArrayExpression a) { bad[0] = true }
+            @Override void visitGStringExpression(GStringExpression g) { bad[0] = true }
+            @Override void visitVariableExpression(VariableExpression v) {
+                ClassNode t = Encoder.staticTypeOf(v)
+                if (t != null && !ClassHelper.isPrimitiveType(t) && (ClassHelper.isNumberType(t) || t.name in
+                        ['java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte', 'java.lang.Character', 'java.lang.Boolean'])) {
+                    bad[0] = true
+                }
+            }
             @Override void visitPropertyExpression(PropertyExpression p) {
                 if (!(p.objectExpression instanceof VariableExpression &&
                       ((VariableExpression) p.objectExpression).isThisExpression())) bad[0] = true
@@ -7538,8 +7549,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> written = new LinkedHashSet<String>(writesOf(tryStmts, currentMethod?.declaringClass))
         if (tryStmts.any { Encoder.containsCallableCall(it) }) written.addAll(callableReach())
         Set<String> tryWritten = new LinkedHashSet<String>(written)
+        boolean exact = LoopEncoder.exactTry(tcs)
         for (CatchStatement cs : tcs.catchStatements) {
             List<Statement> cstmts = topStatements(cs.code)
+            if (exact) {
+                // Phase 395 — every throw of the block known: the catch is checked along each exact way in (a catch none
+                // reaches has no obligation that can fail), as a run, not after a havoc
+                for (List<Statement> way : catchWays(tcs, cs)) {
+                    List<Statement> along = new ArrayList<Statement>(preceding)
+                    along.addAll(way)
+                    dischargeRegion(cstmts, reqAst, assumePos, assumeNeg, along, handleAsserts)
+                }
+                written.addAll(writesOf(cstmts, currentMethod?.declaringClass))
+                continue
+            }
             // Phase 387 — its exact ways in: the try block up to a throw this catch takes
             dischargeRegion(cstmts, reqAst, assumePos, assumeNeg,
                 withHavoc(preceding, tryWritten, 'in the catch', null, catchWays(tcs, cs)), handleAsserts)

@@ -84,12 +84,13 @@ class G270_p193_catch_covered {
                  }
              }
          }''')],
-        // TEETH: an obligation in the HANDLER body is not inside the try — it still refutes.
+        // TEETH: an obligation in the HANDLER body is not inside the try — it still refutes. (Phase 395 — the block must be
+        // able to throw: `return n + 1` can't, so no run entered the catch and its division proved.)
         [group: 'P193 catch-covered obligations', name: 'handler-body obligation still fires', expect: 'Division by zero',
          src: tc('''class C {
              static int d(int n) {
                  try {
-                     return n + 1
+                     return 10.intdiv(n)
                  } catch (ArithmeticException e) {
                      return 100.intdiv(n)
                  }

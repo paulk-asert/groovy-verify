@@ -30,6 +30,7 @@ import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.CastExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
@@ -435,7 +436,7 @@ class LoopEncoder {
             throw new UnsupportedConstructException("a try in a loop region that returns, breaks, continues, or throws from " +
                 "a catch or finally (line ${tcs.lineNumber})")
         }
-        List<Statement> through = throughKnownThrows(tryStmts)
+        List<Statement> through = exactTry(tcs) ? throughKnownThrows(tryStmts) : null
         boolean exact = through != null
         if (!exact && containsThrow(tcs.tryStatement)) {
             throw new UnsupportedConstructException("a try in a loop region whose throws aren't all known (line ${tcs.lineNumber})")
@@ -464,7 +465,17 @@ class LoopEncoder {
     }
 
     /** Phase 391 — are all of {@code tcs}'s block's throws known, so its catches are entered only by their exact ways? */
-    static boolean exactTry(TryCatchStatement tcs) { throughKnownThrows(asList(tcs.tryStatement)) != null }
+    static boolean exactTry(TryCatchStatement tcs) {
+        // Phase 395 — a catch of an Error (or Throwable) takes what any statement may raise (out of memory, stack overflow)
+        if (tcs.catchStatements.any { CatchStatement cs -> catchesError(cs) }) return false
+        throughKnownThrows(asList(tcs.tryStatement)) != null
+    }
+
+    private static boolean catchesError(CatchStatement cs) {
+        ClassNode t = cs.variable?.type
+        if (t == null || t == ClassHelper.OBJECT_TYPE || t == ClassHelper.DYNAMIC_TYPE) return false   // `catch (e)` is Exception
+        t.name == 'java.lang.Throwable' || t.name == 'java.lang.Error' || t.isDerivedFrom(ClassHelper.make(Error))
+    }
 
     /** Phase 391 — the try block run through with each of its known throws not happening (its divisions' divisors
      *  non-zero, an `if (c) throw` with ¬c); null when one of its statements' throws isn't known exactly. */

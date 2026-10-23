@@ -73,8 +73,9 @@ class G366_p321_nonlinear {
                         }
                     }''')],
         // A slack too tight to hold (each share can lose up to W - 1, not W - 2) is never proved: the slices only
-        // ever add VERIFIED for what's true.
-        [group: 'P321 nonlinear', name: 'a too-tight flooring slack is not proved', expect: 'Could not decide loop-invariant preservation',
+        // ever add VERIFIED for what's true. Nonlinear over a sum, the solver answers UNKNOWN or, with more time (a loaded
+        // machine's scaled budget, Phase 383), a refutation — both honest, so either is accepted.
+        [group: 'P321 nonlinear', name: 'a too-tight flooring slack is not proved', expect: 'preserv', refute: 'Skipped',
          src: tc('''class C {
                         @Requires({ ws != null && total >= 0 && ws.every { int w -> w >= 0 } && ws.sum() > 0 })
                         @Ensures({ result <= total })

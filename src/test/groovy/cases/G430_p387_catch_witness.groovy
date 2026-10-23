@@ -138,9 +138,10 @@ class G430_p387_catch_witness {
                         }
                     }''')],
 
-        // Withheld: the earlier catch takes every ArithmeticException, so no run reaches this one by the division
+        // The earlier catch takes every ArithmeticException, so no run reaches this one by the division. Phase 395 — the
+        // block's throws are all known, so that is a proof (it was a warning with the call withheld)
         [group: "P387 catch witness", name: "a throw an earlier catch takes doesn't enter a later one",
-         expect: [DIV, HAVOC], refute: "fails on",
+         ok: true,
          src: tc('''class A {
                         static int f(int n, int d) {
                             try {
@@ -153,8 +154,9 @@ class G430_p387_catch_witness {
                         }
                     }''')],
 
+        // Phase 395 — proved: the IllegalStateException never enters a catch of IllegalArgumentException
         [group: "P387 catch witness", name: "a throw of another type doesn't enter it",
-         expect: [DIV, HAVOC], refute: "fails on",
+         ok: true,
          src: tc('''class A {
                         static int f(int n) {
                             int k = 5
@@ -168,9 +170,9 @@ class G430_p387_catch_witness {
                         }
                     }''')],
 
-        // k is 1 whenever the catch runs, so no run fails; the check still can't prove it (its entry havocs k)
-        [group: "P387 catch witness", name: "no run that throws fails: no call",
-         expect: [DIV, HAVOC], refute: "fails on",
+        // k is 1 whenever the catch runs, so no run fails. Phase 395 — and the check proves it (its entry was the havoc)
+        [group: "P387 catch witness", name: "no run that throws fails: proved",
+         ok: true,
          src: tc('''class A {
                         static int f(int n, int d) {
                             int k = n

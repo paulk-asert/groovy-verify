@@ -782,6 +782,21 @@ class BodyEncoder {
             // effects (array-element / field stores, standalone call statements) can't be framed per-name
             // this way, so they push the whole method out of the fragment, loudly.
             List<String> assigned = tryAssignedNames(rTry, prefixLen, tcs)
+            // Phase 395 — every throw of the block known (LoopEncoder.exactTry): a catch is entered exactly by its ways in
+            // (Phase 387), the block up to a throw it takes run with each earlier throw not happening — no havoc, and a
+            // catch none reaches gives no path. The paths are runs, so they carry no witness marker.
+            if (LoopEncoder.exactTry(tcs)) {
+                for (CatchStatement cs : tcs.catchStatements) {
+                    for (List<Statement> way : VerifyChecker.catchWays(tcs, cs)) {
+                        WalkResult rWay = walkStatements(way, [copy(prefix)] as List<Path>, false)
+                        res.terminated.addAll(rWay.terminated)   // (a way runs through: none terminates)
+                        WalkResult rCatch = walkStatements(asList(cs.code), rWay.live, tail)
+                        res.terminated.addAll(rCatch.terminated)
+                        res.live.addAll(rCatch.live)
+                    }
+                }
+                return res
+            }
             for (CatchStatement cs : tcs.catchStatements) {
                 Path pc = copy(prefix)
                 // Phase 223 — catch-reachability: entering this handler means some try-block source threw

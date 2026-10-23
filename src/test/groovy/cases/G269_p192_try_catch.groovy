@@ -42,7 +42,9 @@ class G269_p192_try_catch {
              }
          }''')],
         // TEETH: the catch path is genuinely checked — a handler that violates the postcondition refutes.
-        [group: 'P192 try-catch', name: 'violating catch path refutes', expect: 'Cannot prove postcondition',
+        // Phase 395 — the block can't throw (no division, no call), so no run enters the catch: it proves. The violating
+        // catch path's teeth are G438's, over a block that can throw.
+        [group: 'P192 try-catch', name: 'a catch no throw of the block reaches adds no path', ok: true,
          src: tc('''class C {
              @Ensures({ result >= 5 })
              static int g(int n) {
@@ -53,10 +55,9 @@ class G269_p192_try_catch {
                  }
              }
          }''')],
-        // TEETH for the havoc: the handler must NOT see a value the try block assigned — the try may
-        // have thrown before (or after) the write, so `x` is unknown at catch entry and `result == 2`
-        // is unprovable there.
-        [group: 'P192 try-catch', name: 'catch entry havocs try-assigned locals', expect: 'Cannot prove postcondition',
+        // Phase 395 — nothing in this block can throw, so the catch is never entered and `result == 2` holds. The havoc's
+        // teeth (a handler must not see what the block assigned) are G438's, over a block with a call.
+        [group: 'P192 try-catch', name: 'a catch no throw reaches sees nothing of the block', ok: true,
          src: tc('''class C {
              @Ensures({ result == 2 })
              static int h() {
