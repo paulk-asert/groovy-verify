@@ -219,8 +219,10 @@ you write:
   throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
   after `Math.floorDiv(a, b)` knows `b == 0`), and a `finally` run after either (one that doesn't itself
   return or throw).
+  An annotated loop's body takes the same `switch` statement (constant labels), `try` / `catch` / `finally`, and
+  closure-literal helper calls.
   *Out:* a labelled `continue`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), a
-  `switch` *statement* or a `try` inside an annotated loop's body, and
+  loop body's `switch` arm or `try` that returns, breaks or continues, and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 

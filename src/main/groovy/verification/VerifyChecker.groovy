@@ -6711,6 +6711,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override void visitWhileLoop(WhileStatement w) { found[0] = true }
             @Override void visitDoWhileLoop(DoWhileStatement d) { found[0] = true }
             @Override void visitClosureExpression(ClosureExpression c) { found[0] = true }
+            // Phase 391 — a try whose catch is entered in a havocked state (its block's throws aren't all known)
+            @Override void visitTryCatchFinally(TryCatchStatement t) {
+                if (!t.catchStatements.isEmpty() && !LoopEncoder.exactTry(t)) found[0] = true
+                super.visitTryCatchFinally(t)
+            }
         })
         found[0]
     }
@@ -7050,7 +7055,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code %}, {@code remainder}), or an {@code if (c) throw new X(…)} / {@code throw new X(…)}. The walk stops at a
      * statement whose throws aren't known exactly (a call, an index, a cast, a nested write) or that leaves.
      */
-    private List<List<Statement>> catchWays(TryCatchStatement tcs, CatchStatement cs) {
+    static List<List<Statement>> catchWays(TryCatchStatement tcs, CatchStatement cs) {
         List<List<Statement>> out = new ArrayList<List<Statement>>()
         int at = tcs.catchStatements.findIndexOf { it.is(cs) }
         if (at < 0) return out
@@ -7105,7 +7110,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 387 — {@code throw new X(…)} [X, null], or {@code if (c) throw new X(…)} [X, c], its condition and
      *  arguments throwing nothing; else null. */
-    private Object[] explicitThrow(Statement st) {
+    static Object[] explicitThrow(Statement st) {
         Expression cond = null
         Statement t = st
         if (st instanceof IfStatement) {
@@ -7125,7 +7130,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 387 — the throws a top-level statement may raise, each [exception, condition in the state before it];
      *  null when they aren't known exactly (see {@link #throwsOf}) or it writes inside its expression. */
-    private List<Object[]> stmtThrows(Statement st) {
+    static List<Object[]> stmtThrows(Statement st) {
         if (!Encoder.nestedTargets(st).isEmpty() || Encoder.containsCallableCall(st) || inexactReplay(st)) return null
         if (st instanceof ReturnStatement) return throwsOf(((ReturnStatement) st).expression)
         if (!(st instanceof ExpressionStatement)) return null
@@ -7144,7 +7149,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 387 — the divisions by an integral zero {@code e} may throw on, each [ArithmeticException, divisor == 0];
      *  null when some throw isn't known exactly: a call other than {@code intdiv}/{@code remainder}, an index, a cast,
      *  a read through a reference, or a division a short-circuit or a ternary arm may skip. */
-    private List<Object[]> throwsOf(Expression e) {
+    private static List<Object[]> throwsOf(Expression e) {
         if (e == null) return Collections.<Object[]> emptyList()
         List<Object[]> out = new ArrayList<Object[]>()
         boolean[] bad = [false]
@@ -7204,14 +7209,46 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         bad[0] ? null : out
     }
 
+    /** Phase 391 — the divisors of the divisions {@code e} evaluates on every run (not under a short-circuit's right
+     *  operand, a ternary's arms, an elvis's fallback, a closure or a safe call), on integral or BigDecimal operands:
+     *  a run that moved past {@code e} divided by none of them being zero (Phase 388's survival, for the loop engine).
+     *  Empty when {@code e} writes inside it. */
+    static List<Expression> unconditionalDivisors(Expression e) {
+        List<Expression> out = new ArrayList<Expression>()
+        if (e == null || EvalOrder.writes(e)) return out
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (call.safe) { call.objectExpression.visit(this); return }
+                List<Expression> args = call.arguments instanceof ArgumentListExpression ?
+                    ((ArgumentListExpression) call.arguments).expressions : null
+                String m = call.methodAsString
+                if ((m == 'intdiv' || m == 'remainder') && args?.size() == 1 && !call.implicitThis &&
+                        integralValue(call.objectExpression) && integralValue(args.get(0))) out.add(args.get(0))
+                super.visitMethodCallExpression(call)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) { be.leftExpression.visit(this); return }
+                if ((op == Types.DIVIDE || op == Types.MOD || op == Types.REMAINDER) &&
+                        integralOrDecimal(be.leftExpression) && integralOrDecimal(be.rightExpression)) out.add(be.rightExpression)
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitTernaryExpression(TernaryExpression t) { t.booleanExpression.visit(this) }
+            @Override void visitShortTernaryExpression(ElvisOperatorExpression t) { t.trueExpression.visit(this) }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+        })
+        out
+    }
+
     private static final Set<String> INTEGRAL_NAMES = ['int', 'long', 'short', 'byte', 'java.lang.Integer',
         'java.lang.Long', 'java.lang.Short', 'java.lang.Byte', 'java.math.BigInteger'] as Set<String>
     private static final Set<String> FLOATING_NAMES = ['double', 'float', 'java.lang.Double', 'java.lang.Float'] as Set<String>
 
-    private boolean integralValue(Expression e) { INTEGRAL_NAMES.contains(inferredTypeOf(e)?.redirect()?.name) }
-    private boolean floatingValue(Expression e) { FLOATING_NAMES.contains(inferredTypeOf(e)?.redirect()?.name) }
-    private boolean integralOrDecimal(Expression e) {
-        integralValue(e) || inferredTypeOf(e)?.redirect()?.name == 'java.math.BigDecimal'
+    // Phase 391 — static, over STC's recorded type (Encoder.staticTypeOf), so the loop engine shares them
+    static boolean integralValue(Expression e) { INTEGRAL_NAMES.contains(Encoder.staticTypeOf(e)?.redirect()?.name) }
+    static boolean floatingValue(Expression e) { FLOATING_NAMES.contains(Encoder.staticTypeOf(e)?.redirect()?.name) }
+    static boolean integralOrDecimal(Expression e) {
+        integralValue(e) || Encoder.staticTypeOf(e)?.redirect()?.name == 'java.math.BigDecimal'
     }
 
     /** Phase 374 — each arm's own entry condition, aligned with the arms (the cases, then the default): its case
@@ -16085,12 +16122,38 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // preserved false invariant could be "established" pre-body, silently proving a wrong spec.
             if (site.spec.isDoWhile) symExecBodyWithExits(site, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
-            CheckResult r = shown(s.check())
+            List<Statement> ran = new ArrayList<Statement>(site.originalPrefix ?: Collections.<Statement> emptyList())
+            if (site.spec.isDoWhile) ran.addAll(site.spec.body)
+            CheckResult r = shownPast(ran, s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopEstablishment(node.name, invText(site), r, site.spec.isDoWhile), site.loopStmt)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Phase 391 — {@link #shown}, with the call withheld when {@code ran} holds a try whose catch the loop engine
+     *  enters in a havocked state (its block's throws aren't all known): that state isn't a run's. A loop on the way
+     *  is summarised, not replayed (and its woven body holds groovy-contracts' own try), so it isn't looked into. */
+    private CheckResult shownPast(List<Statement> ran, CheckResult r) {
+        boolean havocked = ran != null && ran.any { Statement st ->
+            boolean[] f = [false]
+            if (st instanceof LoopingStatement) return false
+            st.visit(new CodeVisitorSupport() {
+                @Override void visitForLoop(ForStatement l) { }
+                @Override void visitWhileLoop(WhileStatement l) { }
+                @Override void visitDoWhileLoop(DoWhileStatement l) { }
+                @Override void visitTryCatchFinally(TryCatchStatement t) {
+                    if (!t.catchStatements.isEmpty() && !LoopEncoder.exactTry(t)) f[0] = true
+                    super.visitTryCatchFinally(t)
+                }
+            })
+            f[0]
+        }
+        if (!havocked) return shown(r)
+        String prev = havocCallNote
+        havocCallNote = HAVOC_CALL_NOTE
+        try { return shown(r) } finally { havocCallNote = prev }
     }
 
     /** Phase 345 — a range for-in's bounds, checked in the establishment's entry state: Groovy iterates
@@ -16139,7 +16202,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 126 — surface the offending array element (post-body value vs the per-element spec) before
             // rendering; `enc` here holds the post-body array bindings.
             if (r.status == CheckResult.Status.REFUTED) appendOffendingElements(r, enc, s, site.spec.invariants)
-            r = shown(r)
+            r = shownPast(site.spec.body, r)
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopPreservation(node.name, invText(site), r), site.loopStmt)

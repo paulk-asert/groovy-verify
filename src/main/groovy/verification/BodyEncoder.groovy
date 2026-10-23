@@ -791,7 +791,7 @@ class BodyEncoder {
     }
 
     /** Phase 389 — does {@code st} hold a return, throw, break or continue (a finally's would replace how the try leaves)? */
-    private static boolean leavesWithin(Statement st) {
+    static boolean leavesWithin(Statement st) {
         boolean[] found = [false] as boolean[]
         st.visit(new CodeVisitorSupport() {
             @Override void visitReturnStatement(ReturnStatement r) { found[0] = true }
@@ -881,7 +881,7 @@ class BodyEncoder {
     }
 
     /** `subject == label`, the guard a case arm runs under. */
-    private static Expression subjectEq(Expression subject, Expression label) {
+    static Expression subjectEq(Expression subject, Expression label) {
         BinaryExpression be = new BinaryExpression(subject,
             Token.newSymbol(Types.COMPARE_EQUAL, subject.lineNumber, subject.columnNumber), label)
         be.setSourcePosition(label)
@@ -889,7 +889,7 @@ class BodyEncoder {
     }
 
     /** Phase 389 — the statements run when the switch enters {@code arms[k]}: each arm in turn, until one leaves. */
-    private static List<Statement> armRun(List<Statement> arms, int k) {
+    static List<Statement> armRun(List<Statement> arms, int k) {
         List<Statement> run = new ArrayList<Statement>()
         for (int j = k; j < arms.size(); j++) {
             if (armLeaves(arms.get(j))) { run.addAll(armBody(arms.get(j))); break }
@@ -907,13 +907,13 @@ class BodyEncoder {
     }
 
     /** An arm's statements with the trailing `break` dropped — it ends the arm, it has no other effect. */
-    private static List<Statement> armBody(Statement code) {
+    static List<Statement> armBody(Statement code) {
         List<Statement> ss = code instanceof BlockStatement ? ((BlockStatement) code).statements : [code]
         (!ss.isEmpty() && ss.get(ss.size() - 1) instanceof BreakStatement) ? ss.subList(0, ss.size() - 1) : ss
     }
 
     /** Does this arm LEAVE, rather than running on into the next one? */
-    private static boolean armLeaves(Statement code) {
+    static boolean armLeaves(Statement code) {
         List<Statement> ss = code instanceof BlockStatement ? ((BlockStatement) code).statements : [code]
         if (ss.isEmpty()) return false
         Statement last = ss.get(ss.size() - 1)

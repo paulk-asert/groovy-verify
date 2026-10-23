@@ -17223,6 +17223,40 @@ writing its parameter (refutes), only that argument, the helper's own writes, th
 same-class method of the caller's, a literal-bound local, a lambda that reads and one that writes. Still unbounded: a
 callable passed through, reassigned, handed on, or run from inside the literal. And the literal's non-null precondition.
 
+## Phase 391 — loop-engine parity: a switch, a try, a literal-helper call, survival  *(shipped — completeness)*
+
+Phases 387–390 taught the straight-line engines a switch fall-through, a finally, a catch's exact entry, division
+survival and a closure literal's site frame; the loop engine (`LoopEncoder.symExec`, an annotated loop's prefix and
+body) still refused a `SwitchStatement` and a `TryCatchStatement`, refused a call whose closure-literal argument writes
+(`a statement that writes inside an expression`), and assumed nothing of a division it moved past.
+
+- **A switch** (`switchAsIf`): the if/else chain it runs — case k entered when no case before matches, running arms
+  k, k+1, … until one leaves (Phase 389's `armRun`). Only when the subject neither calls nor writes (the chain reads it
+  per case), every label is a non-null constant, and no arm leaves but by its trailing break (a break inside an arm is
+  the switch's, a continue or return the loop's or the method's) — else a loud skip.
+- **A try** (`applyTry`): the block running through, or a catch entered, chosen by a fresh selector under its own
+  assert guard and merged as an ite (`chooseAmong`, the Phase 324 break-summary pattern); then the finally. When every
+  throw the block can raise is known (`exactTry`: Phase 387's divisions and explicit throws), a catch is entered only by
+  its exact ways (`VerifyChecker.catchWays`, now static) — one no throw reaches isn't entered at all — and the block runs
+  through with each throw not happening. Otherwise the catch is entered with what the block writes havocked
+  (`havocWrites`), and a refutation past such a try withholds its call (`shownPast`; `inexactReplay` counts the try).
+  Refused: a return, break or continue anywhere in it, a throw from a catch or finally, an unknown throw in the block.
+  `innerFrame` frames both statements, so they may sit in a nested summarised loop too.
+- **A helper call with a closure literal** (`Encoder.nestedTargets(st, true)`): a call statement's literal arguments
+  are no longer the statement's hidden writes — the loop's call handler frames them by Phase 390's site frame.
+- **Division survival** (`surviveDivisions`, `VerifyChecker.unconditionalDivisors`): each statement the loop replay
+  moves past — an assignment's value and an element target's index, a branch condition — had non-zero divisors for the
+  divisions every run evaluates.
+
+**Boundary:** a preservation refutation's call is still the invariant state's model's, found by no witness search
+(Phase 385 did that for postconditions), so it may name a run that passes; past a havocked try it is withheld.
+
+**Shipped tests:** group `P391 loop parity`, 15 cases. A switch: proved, and an arm falling through refutes (`f(2)`). A
+try: a catch entered by a division, one no throw reaches (proved, not entered), one a division reaches (`f(1, 0)`), a
+finally, a catch after a call (havocked: proved, and a refutation with no call). A literal helper: proved, and one
+writing the array (`g([7] as int[], 1)`). Survival: proved, and not under a short-circuit. Loud: a non-constant label,
+an arm that continues, a try that returns.
+
 ---
 
 ## Definition of done, per increment

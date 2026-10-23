@@ -36,6 +36,13 @@ import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.AssertStatement
+import org.codehaus.groovy.ast.stmt.CaseStatement
+import org.codehaus.groovy.ast.stmt.CatchStatement
+import org.codehaus.groovy.ast.stmt.TryCatchStatement
+import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression
+import org.codehaus.groovy.ast.expr.NotExpression
+import org.codehaus.groovy.ast.VariableScope
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
@@ -176,7 +183,8 @@ class LoopEncoder {
      */
     static void refuseHiddenWrites(Statement st) {
         if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return
-        if (!Encoder.nestedTargets(st).isEmpty()) {
+        // Phase 391 — a call statement's closure-literal arguments are the call's to frame (the handler's site frame)
+        if (!Encoder.nestedTargets(st, true).isEmpty()) {
             throw new UnsupportedConstructException("a statement that writes inside an expression (line ${st.lineNumber})")
         }
         if (Encoder.containsCallableCall(st)) {
@@ -189,6 +197,7 @@ class LoopEncoder {
         stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
             refuseHiddenWrites(st)
+            surviveDivisions(st, enc, s)   // Phase 391
             LoopSpec innerSpec = (st instanceof LoopingStatement) ?
                 (LoopSpec) ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) : null
             if (st instanceof BlockStatement) {
@@ -205,6 +214,16 @@ class LoopEncoder {
                 if (c != null) s.assertExpr(c)
             } else if (innerSpec != null) {
                 summarizeInner(innerSpec, enc, s)
+            } else if (st instanceof SwitchStatement) {
+                // Phase 391 — the if/else chain it runs (Phase 389's fall-through)
+                Statement chain = switchAsIf((SwitchStatement) st)
+                if (chain == null) {
+                    throw new UnsupportedConstructException("a switch in a loop region whose subject calls or writes, " +
+                        "whose labels aren't constants, or whose arms leave other than by a trailing break (line ${st.lineNumber})")
+                }
+                symExec([chain], enc, s)
+            } else if (st instanceof TryCatchStatement) {
+                applyTry((TryCatchStatement) st, enc, s)   // Phase 391
             } else {
                 throw new UnsupportedConstructException(
                     "unsupported statement ${st.class.simpleName} in loop region (line ${st.lineNumber})")
@@ -329,6 +348,204 @@ class LoopEncoder {
     }
 
     private static int breakSelCounter = 0
+
+    /** Phase 391 — the replay moves past {@code st}'s own expression (an assignment's, a branch condition), so the
+     *  divisions it evaluates on every run had non-zero divisors (Phase 388's survival, in the loop engine). */
+    private static void surviveDivisions(Statement st, Encoder enc, SmtSession s) {
+        List<Expression> own = new ArrayList<Expression>()
+        if (st instanceof IfStatement) own.add(((IfStatement) st).booleanExpression.expression)
+        else if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof BinaryExpression && Types.ofType(((BinaryExpression) e).operation.type, Types.ASSIGNMENT_OPERATOR)) {
+                // an assignment evaluates its value (and an element target's index), then writes its target
+                BinaryExpression be = (BinaryExpression) e
+                own.add(be.rightExpression)
+                if (be.leftExpression instanceof BinaryExpression) own.add(((BinaryExpression) be.leftExpression).rightExpression)
+            } else if (!Encoder.isIncDec(e)) {
+                own.add(e)
+            }
+        }
+        for (Expression d : own.collectMany { VerifyChecker.unconditionalDivisors(it) }) {
+            Object ne = enc.translate(new BinaryExpression(d, Token.newSymbol(Types.COMPARE_NOT_EQUAL, -1, -1),
+                new ConstantExpression(0, true)))
+            if (ne != null) s.assertExpr(ne)
+        }
+    }
+
+    /**
+     * Phase 391 — a statement switch as the if/else chain it runs: entered by case k when no case before matches,
+     * running arms k, k+1, … until one leaves (BodyEncoder.armRun). Null unless the subject reads without writing or
+     * calling (the chain reads it once per case), every label is a non-null constant (`==` is then the case test), and
+     * no arm leaves other than by its trailing break: a break inside an arm is the switch's, a continue or return the
+     * loop's or the method's, which the chain would misplace.
+     */
+    static Statement switchAsIf(SwitchStatement sw) {
+        Expression subj = sw.expression
+        if (subj == null || EvalOrder.writes(subj) || hasCall(subj)) return null
+        List<CaseStatement> cases = sw.caseStatements
+        if (cases == null || cases.isEmpty()) return null
+        List<Statement> arms = new ArrayList<Statement>()
+        for (CaseStatement c : cases) {
+            if (!(c.expression instanceof ConstantExpression) || ((ConstantExpression) c.expression).value == null) return null
+            arms.add(c.code)
+        }
+        Statement dflt = sw.defaultStatement
+        boolean hasDefault = dflt != null && !(dflt instanceof EmptyStatement)
+        if (hasDefault) arms.add(dflt)
+        for (Statement a : arms) for (Statement b : BodyEncoder.armBody(a)) if (BodyEncoder.leavesWithin(b)) return null
+        Statement chain = hasDefault ? (Statement) block(BodyEncoder.armRun(arms, arms.size() - 1)) : EmptyStatement.INSTANCE
+        for (int k = cases.size() - 1; k >= 0; k--) {
+            IfStatement i = new IfStatement(new BooleanExpression(BodyEncoder.subjectEq(subj, cases.get(k).expression)),
+                block(BodyEncoder.armRun(arms, k)), chain)
+            i.setSourcePosition(cases.get(k))
+            chain = i
+        }
+        chain
+    }
+
+    private static BlockStatement block(List<Statement> ss) { new BlockStatement(new ArrayList<Statement>(ss), new VariableScope()) }
+
+    private static boolean hasCall(Expression e) {
+        boolean[] found = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression c) { found[0] = true }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression c) { found[0] = true }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression c) { found[0] = true }
+        })
+        found[0]
+    }
+
+    private static int trySelCounter = 0
+
+    /**
+     * Phase 391 — a try in a loop region: the block running through, or a catch entered, chosen by a fresh selector
+     * and merged as an ite (as a nested loop's breaks are, Phase 324); then the finally. When every throw the block can
+     * raise is known (Phase 387's divisions and explicit throws, {@code VerifyChecker.catchWays}), a catch is entered
+     * only by its exact ways — one none reaches isn't — and the block runs through with each of its throws not
+     * happening. Otherwise a catch is entered in any state the block may leave: what it writes, havocked. Refused: a
+     * return, break or continue anywhere in it, or a throw in a catch or the finally (the iteration would end elsewhere).
+     */
+    private static void applyTry(TryCatchStatement tcs, Encoder enc, SmtSession s) {
+        Statement fin = tcs.finallyStatement
+        boolean hasFin = fin != null && !(fin instanceof EmptyStatement)
+        List<Statement> tryStmts = asList(tcs.tryStatement)
+        List<Statement> handlers = new ArrayList<Statement>(tcs.catchStatements*.code)
+        if (hasFin) handlers.add(fin)
+        if (handlers.any { BodyEncoder.leavesWithin(it) } || exitsWithin(tcs.tryStatement)) {
+            throw new UnsupportedConstructException("a try in a loop region that returns, breaks, continues, or throws from " +
+                "a catch or finally (line ${tcs.lineNumber})")
+        }
+        List<Statement> through = throughKnownThrows(tryStmts)
+        boolean exact = through != null
+        if (!exact && containsThrow(tcs.tryStatement)) {
+            throw new UnsupportedConstructException("a try in a loop region whose throws aren't all known (line ${tcs.lineNumber})")
+        }
+        List<Closure<?>> alts = new ArrayList<Closure<?>>()
+        // a bare `throw` in the block: it never runs through
+        boolean bareThrow = exact && tryStmts.any { Object[] ex = VerifyChecker.explicitThrow(it); ex != null && ex[1] == null }
+        if (!bareThrow) {
+            List<Statement> normal = exact ? through : tryStmts
+            alts.add({ -> symExec(normal, enc, s); null })
+        }
+        for (CatchStatement cs : tcs.catchStatements) {
+            List<Statement> body = asList(cs.code)
+            if (exact) {
+                for (List<Statement> way : VerifyChecker.catchWays(tcs, cs)) {
+                    List<Statement> w = way
+                    alts.add({ -> symExec(w, enc, s); symExec(body, enc, s); null })
+                }
+            } else {
+                alts.add({ -> havocWrites(tryStmts, enc, s); symExec(body, enc, s); null })
+            }
+        }
+        if (alts.isEmpty()) { s.assertExpr(s.boolLit(false)); return }   // the iteration can't complete normally
+        chooseAmong(alts, enc, s)
+        if (hasFin) symExec(asList(fin), enc, s)
+    }
+
+    /** Phase 391 — are all of {@code tcs}'s block's throws known, so its catches are entered only by their exact ways? */
+    static boolean exactTry(TryCatchStatement tcs) { throughKnownThrows(asList(tcs.tryStatement)) != null }
+
+    /** Phase 391 — the try block run through with each of its known throws not happening (its divisions' divisors
+     *  non-zero, an `if (c) throw` with ¬c); null when one of its statements' throws isn't known exactly. */
+    private static List<Statement> throughKnownThrows(List<Statement> tryStmts) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : tryStmts) {
+            Object[] ex = VerifyChecker.explicitThrow(st)
+            if (ex != null) {
+                if (ex[1] == null) return out                 // a bare throw: nothing after it runs through
+                out.add(assumeMarker(new NotExpression((Expression) ex[1])))
+                continue
+            }
+            List<Object[]> ts = VerifyChecker.stmtThrows(st)
+            if (ts == null) return null
+            for (Object[] t : ts) out.add(assumeMarker(new NotExpression((Expression) t[1])))
+            out.add(st)
+        }
+        out
+    }
+
+    private static Statement assumeMarker(Expression cond) {
+        AssertStatement m = new AssertStatement(new BooleanExpression(cond))
+        m.putNodeMetaData(VerifyChecker.REPLAY_ASSUME_KEY, Boolean.TRUE)
+        m
+    }
+
+    /** Phase 391 — a return, break or continue in {@code st} (a throw is a try block's to raise). */
+    private static boolean exitsWithin(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement r) { found[0] = true }
+            @Override void visitBreakStatement(BreakStatement r) { found[0] = true }
+            @Override void visitContinueStatement(ContinueStatement r) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+        })
+        found[0]
+    }
+
+    private static boolean containsThrow(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitThrowStatement(ThrowStatement r) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+        })
+        found[0]
+    }
+
+    /** Phase 391 — havoc what {@code stmts} may write (a catch's entry after any prefix of its block). */
+    private static void havocWrites(List<Statement> stmts, Encoder enc, SmtSession s) {
+        Set<String> scalars = new HashSet<String>(), arrays = new HashSet<String>(), lists = new HashSet<String>()
+        if (!innerFrame(stmts, scalars, arrays, lists)) {
+            throw new UnsupportedConstructException("a try block in a loop region whose writes can't be framed")
+        }
+        for (String nm : scalars) enc.havoc(nm)
+        for (String nm : arrays) { if (enc.isMapName(nm)) enc.havocMap(nm) else enc.havocArray(nm) }
+        for (String nm : lists) { enc.havocArray(nm); enc.havocSize(nm); if (enc.isSetName(nm)) enc.havocSet(nm) }
+    }
+
+    /** Phase 391 — run one of {@code alts} from the current state, chosen by a fresh selector, each under its own
+     *  assert guard; the states are merged as an ite over the selector (as {@link #summarizeWithBreaks} does). */
+    private static void chooseAmong(List<Closure<?>> alts, Encoder enc, SmtSession s) {
+        Encoder.EncoderSnapshot entry = enc.snapshotState()
+        if (alts.size() == 1) { alts.get(0).call(); return }
+        Object sel = s.intVar('try#sel' + (trySelCounter++))
+        s.assertExpr(s.and([s.le(s.intLit(0L), sel), s.lt(sel, s.intLit((long) alts.size()))]))
+        List<Encoder.EncoderSnapshot> states = new ArrayList<Encoder.EncoderSnapshot>()
+        List<Object> sels = new ArrayList<Object>()
+        for (int k = 0; k < alts.size(); k++) {
+            enc.restoreState(entry)
+            Object here = s.eq(sel, s.intLit((long) k))
+            s.pushAssertGuard(here)
+            try { alts.get(k).call() } finally { s.popAssertGuard() }
+            states.add(enc.snapshotState()); sels.add(here)
+        }
+        Encoder.EncoderSnapshot acc = states.get(states.size() - 1)
+        enc.restoreState(acc)
+        for (int k = states.size() - 2; k >= 0; k--) {
+            mergeStates(states.get(k), acc, entry, sels.get(k), enc, s)
+            acc = enc.snapshotState()
+        }
+    }
 
     /**
      * Phase 324 — the post-state of a nested loop that can also leave by {@code break}. Its writes are havocked
@@ -456,6 +673,20 @@ class LoopEncoder {
                    (ifs.elseBlock == null || innerFrameStmt(ifs.elseBlock, scalars, arrays, lists))
         }
         if (st instanceof AssertStatement) return true      // Phase 252 — an in-loop assert writes nothing
+        // Phase 391 — a switch writes what its arms do; a try what its block, catches and finally do
+        if (st instanceof SwitchStatement) {
+            SwitchStatement sw = (SwitchStatement) st
+            if (!guardWritesNothing(sw.expression)) return false
+            for (CaseStatement c : sw.caseStatements) if (!innerFrameStmt(c.code, scalars, arrays, lists)) return false
+            return innerFrameStmt(sw.defaultStatement, scalars, arrays, lists)
+        }
+        if (st instanceof TryCatchStatement) {
+            TryCatchStatement tcs = (TryCatchStatement) st
+            if (!innerFrameStmt(tcs.tryStatement, scalars, arrays, lists)) return false
+            for (CatchStatement c : tcs.catchStatements) if (!innerFrameStmt(c.code, scalars, arrays, lists)) return false
+            return innerFrameStmt(tcs.finallyStatement, scalars, arrays, lists)
+        }
+        if (st instanceof ThrowStatement) return true       // Phase 391 — a throw writes nothing (where allowed)
         if (st instanceof ExpressionStatement) {
             Expression e = ((ExpressionStatement) st).expression
             List<MethodCallExpression> adds = Encoder.leftShiftAdds(e)   // Phase 341 — xs << v appends

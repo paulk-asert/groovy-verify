@@ -8164,11 +8164,25 @@ class Encoder implements TheoryApi {
      * what a closure literal in it writes (`3.times { d = 0 }` — the call may run it). A replay that bound only the
      * top-level target read every one of them stale.
      */
-    static Set<String> nestedTargets(Statement st) {
+    static Set<String> nestedTargets(Statement st) { nestedTargets(st, false) }
+
+    /** Phase 391 — {@code literalArgs} false leaves out what a closure literal handed to the statement's own call writes
+     *  (`h({ x -> x[0] = 1 }, a)`): that is the call's to frame, by the literal it runs (Phase 390's site frame). */
+    static Set<String> nestedTargets(Statement st, boolean skipLiteralArgs) {
         Set<String> out = new LinkedHashSet<String>()
         Expression top = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
+        Set<ClosureExpression> skipped = Collections.newSetFromMap(new IdentityHashMap<ClosureExpression, Boolean>())
+        if (skipLiteralArgs && top instanceof MethodCall && !isCallableCall(top) &&
+                ((MethodCall) top).arguments instanceof TupleExpression) {
+            for (Expression a : ((TupleExpression) ((MethodCall) top).arguments).expressions) {
+                Expression b = a
+                while (b instanceof CastExpression) b = ((CastExpression) b).expression
+                if (b instanceof ClosureExpression) skipped.add((ClosureExpression) b)
+            }
+        }
         for (Expression e : ownExpressions(st)) {
             e.visit(new CodeVisitorSupport() {
+                @Override void visitClosureExpression(ClosureExpression ce) { if (!skipped.contains(ce)) super.visitClosureExpression(ce) }
                 void target(Expression t) {
                     if (t instanceof VariableExpression) out.add(((VariableExpression) t).name)
                     else if (t instanceof BinaryExpression && ((BinaryExpression) t).operation.type == Types.LEFT_SQUARE_BRACKET) target(((BinaryExpression) t).leftExpression)
