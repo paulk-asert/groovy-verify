@@ -62,8 +62,9 @@ class G434_p391_loop_parity {
                             }
                         }''')],
 
+        // Phase 392 — the first run that breaks it: f(1), whose one iteration falls from case 0 into s = s - 2
         [group: "P391 loop parity", name: "… and an arm falling through to the next",
-         expect: [PRES, "fails on: f(2)"],
+         expect: [PRES, "fails on: f(1)"],
          src: tc('''class A {
                             @Requires({ n >= 0 })
                             @Ensures({ result >= 0 })
@@ -240,8 +241,9 @@ class G434_p391_loop_parity {
                             }
                         }''')],
 
+        // Phase 392 — the helper's frame is havocked, which no exact run follows: the call is withheld
         [group: "P391 loop parity", name: "… and one that writes the array",
-         expect: [PRES, "fails on: g([7] as int[], 1)"],
+         expect: [PRES, "no failing call: the invariant is broken from a state it allows"], refute: "fails on: g(",
          src: tc('''final class A {
                             static void h(Closure c, int[] b) { c.call(b) }
                             @Requires({ a != null && n >= 0 && a.length > 0 && a[0] == 7 })

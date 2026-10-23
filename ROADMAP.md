@@ -17257,6 +17257,34 @@ finally, a catch after a call (havocked: proved, and a refutation with no call).
 writing the array (`g([7] as int[], 1)`). Survival: proved, and not under a short-circuit. Loud: a non-constant label,
 an arm that continues, a try that returns.
 
+## Phase 392 — a preservation refutation's call is a run  *(shipped — repro quality)*
+
+Phase 391's boundary: preservation is checked from any state the invariant allows at an iteration's start, and its
+call came from that model. Measured at HEAD, every probe showed `fails on: f(1)`: for an invariant that holds on every
+run but isn't inductive (`x <= 10` with `n <= 3`, and `s <= 2` behind a return at `i == 1`) — calls that pass — and
+for `s <= 2` and `s != 5`, which the third and fifth iterations break, not the first.
+
+- **The call comes from an exact run** (`exactPreservationWitness`): on a refutation, each exact path to an iteration's
+  start (Phase 385's `entryPathsTo`, 'body'), then one more pass of the body — each way through its top-level
+  continues (`bodyVariants`), a nested loop unrolled (`expansions`), an early exit not taken — then the invariant's
+  negation, in an auxiliary session that decides nothing. The first that refutes gives the diagnostic: `f(3)`, `f(5)`.
+  None does: the call is withheld (`PRESERVE_CALL_NOTE`, "it may hold on every run without being inductive:
+  strengthen it"). A channel method keeps its call (Phase 385's exemption).
+- **No call handler in the replay**, as Phase 385's witnesses: a call in the body havocks its callee's frame, which no
+  run follows, so such a body gets no witness (Phase 391's literal-helper case is now withheld).
+- **An element note from a witness:** `appendOffendingElements` reads an array's size from the model when it isn't a
+  counterexample key (a `new int[n]` on the way), so `a[0] = 1 — the spec requires 0` stays.
+
+**Changed cases:** P344's branch case and Phase 391's fall-through case show their first failing run (`f(2, 0)`,
+`f(1)`), both measured genuine; Phase 391's literal-helper preservation call is withheld.
+
+**Boundary:** a run that first breaks the invariant after eight iterations, a body with a call or a havocked try, or a
+loop nested deeper than one level gets no witness, so its call is withheld rather than found.
+
+**Shipped tests:** group `P392 preservation witness`, 5 cases. Withheld: a true but non-inductive invariant, and one an
+early exit keeps. Found: the first run that breaks it (`f(3)`), however late (`f(5)`). Kept: a for loop's `f([-1] as
+int[])`.
+
 ---
 
 ## Definition of done, per increment

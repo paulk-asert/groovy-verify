@@ -290,7 +290,7 @@ class G388_p344_exit_before_nested_loop {
                         }
                     }''')],
         // Unsound before: the nested loop's inv && !guard (k == 1) was assumed on the else path too, so s = -5 kept s >= 0.
-        [group: 'P344 break or continue before a nested loop', name: 'fixed: a loop in one branch no longer makes the other vacuous', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(2, 1)'],
+        [group: 'P344 break or continue before a nested loop', name: 'fixed: a loop in one branch no longer makes the other vacuous', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(2, 0)'],   // Phase 392 — the first exact run (m is free)
          src: tc('''class C {
                         @Requires({ n >= 0 && m >= 0 })
                         @Ensures({ result >= 0 })

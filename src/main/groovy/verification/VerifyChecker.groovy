@@ -16202,7 +16202,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 126 — surface the offending array element (post-body value vs the per-element spec) before
             // rendering; `enc` here holds the post-body array bindings.
             if (r.status == CheckResult.Status.REFUTED) appendOffendingElements(r, enc, s, site.spec.invariants)
-            r = shownPast(site.spec.body, r)
+            // Phase 392 — the state is any the invariant allows at an iteration's start, which no run need reach: the call
+            // is sought along the exact runs from entry (an iteration of the first eight, then one more pass of the body),
+            // and withheld when none breaks the invariant (it may hold on every run without being inductive)
+            if (r.status == CheckResult.Status.REFUTED && !currentChannelDesugared && currentChannelNames.isEmpty()) {
+                CheckResult w = exactPreservationWitness(node, site)
+                if (w != null) {
+                    addStaticTypeError(Reporter.formatLoopPreservation(node.name, invText(site), w), site.loopStmt)
+                    return
+                }
+                String prev = havocCallNote
+                havocCallNote = PRESERVE_CALL_NOTE
+                try { r = shownPast(site.spec.body, r) } finally { havocCallNote = prev }
+            } else {
+                r = shownPast(site.spec.body, r)
+            }
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopPreservation(node.name, invText(site), r), site.loopStmt)
@@ -16226,6 +16240,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Object[] c : clauses) {
                 String arr = (String) c[0]; String param = (String) c[1]; Expression expected = (Expression) c[2]
                 Long szL = r.counterexample.get(arr + '.size')
+                // Phase 392 — a witness run's array (`new int[n]` on the way) has its size under another symbol: read it
+                if (szL == null) {
+                    try { String d = s.evalDisplay(enc.sizeOf(arr)); szL = d != null && d ==~ /-?\d+/ ? Long.valueOf(d) : null }
+                    catch (Throwable ignored) { szL = null }
+                }
                 if (szL == null) continue
                 long sz = Math.min(szL, 16L)
                 Object arrHandle
@@ -16551,6 +16570,54 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    static final String PRESERVE_CALL_NOTE = 'no failing call: the invariant is broken from a state it allows at an ' +
+        'iteration\'s start, not one reached from entry, and no run of the loop\'s first eight iterations breaks it (it may ' +
+        'hold on every run without being inductive: strengthen it)'
+
+    /**
+     * Phase 392 — a run from entry whose next iteration breaks the invariant, for the call a preservation refutation
+     * shows: each exact path to an iteration's start ({@link #entryPathsTo}, 'body'), then one pass of the body (each way
+     * through its top-level continues, a nested loop unrolled), then the invariant's negation, in an auxiliary session
+     * that decides nothing. Null when none refutes.
+     */
+    private CheckResult exactPreservationWitness(MethodNode node, LoopSite site) {
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+        int tries = 0
+        for (List<Statement> path : entryPathsTo(site, 'body')) {
+            for (List<Statement> run : bodyVariants(site.spec)) {
+                for (List<Statement> full : expansions(path + run)) {
+                    if (tries++ >= 2 * ENTRY_PATHS) return null
+                    SmtSession s = backend.session()
+                    if (s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
+                    try {
+                        Encoder enc = mkEncoder(s)
+                        if (reqAst != null) {
+                            Object pre = enc.translate(reqAst)
+                            if (pre != null) s.assertExpr(pre)
+                        }
+                        assumeIntJvmBounds(s, enc)
+                        assumeClassInvariants(s, enc)
+                        // (no call handler, as Phase 385's witnesses: a call's frame is havocked, which no run follows)
+                        if (!replayExact(full, enc, s)) continue
+                        s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
+                        CheckResult r = s.check()
+                        if (r.status != CheckResult.Status.REFUTED) continue
+                        appendOffendingElements(r, enc, s, site.spec.invariants)
+                        boolean prev = exactWitness
+                        exactWitness = true
+                        try { r = shown(r) } finally { exactWitness = prev }
+                        if (r.failingCall != null) return r
+                    } catch (Throwable ignored) {
+                        // a path the replay can't take exactly gives no witness
+                    } finally {
+                        try { s.close() } catch (Throwable ignored) {}
+                    }
+                }
+            }
+        }
+        null
     }
 
     static final String IN_LOOP_EXIT_CALL_NOTE = 'no failing call: the failure is at an exit inside the loop, in a state ' +
