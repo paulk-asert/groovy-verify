@@ -16161,7 +16161,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             Object g = enc.translate(spec.guard)
                             if (g != null) session.assertExpr(g)
                         }
-                        replaySafely(inLoopPrefix, enc, session, false, null)
+                        // Phase 382 — with the loop's call handler, so a contracted call in the prefix assumes its
+                        // @Ensures (`int[] owed = row(flat, off[e], members)` gave `owed` fresh oracles here, and the
+                        // callee's `shares != null` timed out — the loop's own pass, which an assert before the call
+                        // goes through, had the handler and proved it)
+                        LoopEncoder.LoopCallHandler prevHandler = LoopEncoder.callHandler.get()
+                        if (prevHandler == null) LoopEncoder.callHandler.set(relyCallHandler(currentMethod))
+                        try {
+                            replaySafely(inLoopPrefix, enc, session, false, null)
+                        } finally {
+                            LoopEncoder.callHandler.set(prevHandler)
+                        }
                         handledInLoop = true
                     }
                 }

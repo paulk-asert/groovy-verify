@@ -3860,9 +3860,15 @@ class Encoder implements TheoryApi {
      */
     Object sumOf(Object arr, Object loH, Object hiH) {
         Object term = sumOfRaw(arr, loH, hiH)
-        Object[] st = [arr, loH, hiH, term] as Object[]   // Phase 379 — bounded by any element-bounding quantifier
-        sumTerms.add(st)
-        for (Object[] b : new ArrayList<Object[]>(elementBounds)) sumBoundLemma(b, st)
+        // Phase 379 — bounded by any element-bounding quantifier. Phase 382 — but only a sum outside any quantifier's
+        // body: one inside (`(0..<k).every { flat[off[it]..<off[it] + m].sum(0) == … }`) is over the bound variable,
+        // which the lemma, asserted at the top level, would leave free — the call sites around such a quantifier
+        // (ClearSplit's `afterExpense(bal, p, amount[e], owed)`, `handOut(shares, joined, left)`) timed out
+        if (quantDepth == 0) {
+            Object[] st = [arr, loH, hiH, term] as Object[]
+            sumTerms.add(st)
+            for (Object[] b : new ArrayList<Object[]>(elementBounds)) sumBoundLemma(b, st)
+        }
         term
     }
 
@@ -6793,7 +6799,8 @@ class Encoder implements TheoryApi {
             Object streamQ = translateStreamEvery(mce, recv, (ClosureExpression) args.get(0), m == 'any')
             if (streamQ != null) return streamQ
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
-            if (q != null && m == 'every') registerElementBounds(recv, (ClosureExpression) args.get(0), q)   // Phase 379
+            // Phase 379 — not one nested in another quantifier's body (Phase 382: its term is over that one's variable)
+            if (q != null && m == 'every' && quantDepth == 0) registerElementBounds(recv, (ClosureExpression) args.get(0), q)
             if (q != null) return q
         }
         return NO_MATCH
@@ -6822,8 +6829,8 @@ class Encoder implements TheoryApi {
             (fc != null && ((fc <= 0 && isSizeExpr(re.to)) || (varLo != null && fc <= varLo))) ||
             startPlusNonNegative(re)) {
             // a constant start as a literal, so an enclosing quantifier reads it as its variable's lower bound
-            Object lo = fc != null ? session.intLit((long) fc + exL) : session.plus(a, session.intLit(exL))
-            return [lo, session.plus(b, session.intLit(1L - exR))] as Object[]
+            Object lo = fc != null ? session.intLit((long) fc + exL) : offset(a, exL)
+            return [lo, offset(b, 1L - exR)] as Object[]
         }
         Object up = session.le(a, b)
         if (reversedRanges != null && quantLowerBounds.isEmpty() && quantDepth == 0) {   // a hidden indicator, so a refutation
@@ -6832,8 +6839,8 @@ class Encoder implements TheoryApi {
             session.assertExpr(session.eq(session.intVar(n), session.ite(up, session.intLit(0L), session.intLit(1L))))
             reversedRanges.put(n, re.text)
         }
-        Object lo = session.ite(up, session.plus(a, session.intLit(exL)), session.plus(b, session.intLit(exR)))
-        Object hi = session.ite(up, session.plus(b, session.intLit(1L - exR)), session.plus(a, session.intLit(1L - exL)))
+        Object lo = session.ite(up, offset(a, exL), offset(b, exR))
+        Object hi = session.ite(up, offset(b, 1L - exR), offset(a, 1L - exL))
         [lo, hi] as Object[]
     }
 
@@ -6902,6 +6909,10 @@ class Encoder implements TheoryApi {
     /** Phase 380 — the enclosing quantifiers' variables with a constant lower bound, and how deep in quantifiers. */
     private final Map<String, Long> quantLowerBounds = new HashMap<String, Long>()
     private int quantDepth = 0
+
+    /** Phase 382 — {@code t + k}, or {@code t} itself when k is 0: a folded `0..<a.length` keeps the bound term
+     *  `a.length` (as before Phase 381), not `a.length + 0`, which the facts over `a.length` don't match. */
+    private Object offset(Object t, long k) { k == 0L ? t : session.plus(t, session.intLit(k)) }
 
     /** Phase 380 — how many ints a constant range iterates. */
     static int rangeCount(int from, int to, boolean exL, boolean exR) {

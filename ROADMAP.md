@@ -16945,6 +16945,34 @@ did): `containsWithinBounds` on a decimal range — a constant, a parameter, an 
 end excluded, and on a descending int range, constant and symbolic, as the 6.0.0 runtime answers; and a decimal range's
 `contains` (membership among its steps) outside the fragment.
 
+## Phase 382 — a call in a loop sees the calls before it  *(shipped — completeness: the ClearSplit port's fourth finding)*
+
+In ClearSplit's fold, `int[] owed = row(flat, off[e], members)` then `bal = afterExpense(bal, p, amount[e], owed)`: an
+`assert` of `afterExpense`'s precondition placed just before the call proved, but the call itself was "Could not decide
+precondition of afterExpense at this call site (solver: timeout)" — even at a 60 s budget, so not load, though the
+machine was (load average ~600). Cutting `afterExpense`'s `@Requires` down to `bal != null && shares != null` still
+timed out; the SMT dump showed why: `owed`'s oracles were fresh ones (`owed#…#ra0`), with no trace of `row`'s
+`@Ensures`. A call inside an annotated loop has its precondition checked (`verifyCallSite`) under the loop's invariant
+and guard, with the body replayed up to the call through `LoopEncoder` — with **no call handler** installed, so the
+replay's Phase 375 array rule left a contracted call's result unknown. `owed != null` was then not provable, and the
+quantified invariant kept the solver from building the refutation: a timeout. The loop's own pass, which checks the
+assert, installs the handler.
+
+- **The replay frames the calls before it** (`relyCallHandler`, as the loop's own pass): each contracted call in the
+  in-loop prefix assumes its callee's `@Ensures`.
+- Two latent defects found on the way, neither the cause: Phase 379's sum-bound lemma recorded a sum (and registered an
+  element bound) built inside a quantifier's body, so its lemma, asserted at the top level, held the quantifier's
+  variable free — now only top-level ones; and Phase 381's folded range bound `0..<a.length` as `a.length + 0`, a
+  different term from the `a.length` the facts state — no zero offset now.
+
+**Also checked:** the report's other timeout, `Split.equally`'s `handOut(shares, joined, left)` (3 of 8 runs at 01c8f8d,
+none at b0c7c4d), timed five times each at b0c7c4d and on this tree, back to back at 8 s: identical (96 checks, the same
+two auxiliary queries at the cap, no diagnostic) — consistent with the `+ 0` bound having been its cause.
+
+**Shipped tests:** group `P382 call in a loop`, 3 cases. Refuted falsely before: a contracted call's result reaching a
+later call's precondition in a loop. Undecided before: the report's repro, whole. Plus a guard: a length the callee
+doesn't promise isn't assumed.
+
 ---
 
 ## Definition of done, per increment
