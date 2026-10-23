@@ -58,10 +58,19 @@ import java.util.concurrent.atomic.AtomicLong
 class Z3Backend implements SmtBackend {
 
     final int timeoutMs
+    /** Phase 383 — the configured budget, before any load scaling: the VC cache keys on it, so a proof found under a
+     *  scaled budget is reused, and the counts the perf budget asserts don't drift with the machine's load. */
+    final int baseTimeoutMs
 
-    Z3Backend(int timeoutMs = 2000) {
+    Z3Backend(int timeoutMs = 2000, int baseTimeoutMs = timeoutMs) {
         this.timeoutMs = timeoutMs
+        this.baseTimeoutMs = baseTimeoutMs
+        effectiveBudgetPeak.accumulateAndGet((long) timeoutMs, (a, b) -> Math.max(a, b))
     }
+
+    /** Phase 383 — the largest per-check budget a backend was made with (the load-scaled one), for the perf line. */
+    private static final AtomicLong effectiveBudgetPeak = new AtomicLong()
+    static long effectiveBudgetMax() { effectiveBudgetPeak.get() }
 
     @Override
     SmtSession session() {
@@ -70,7 +79,9 @@ class Z3Backend implements SmtBackend {
         Params p = ctx.mkParams()
         p.add("timeout", timeoutMs)
         solver.setParameters(p)
-        new Z3Session(ctx, solver, timeoutMs)
+        Z3Session z = new Z3Session(ctx, solver, timeoutMs)
+        z.keyTimeoutMs = baseTimeoutMs
+        z
     }
 
     /**
@@ -178,6 +189,8 @@ class Z3Session implements SmtSession {
 
     /** Phase 337 — > 0 for an auxiliary session (see {@link #auxiliary}): its timeout. */
     private int auxTimeoutMs = 0
+    /** Phase 383 — the budget the VC cache keys on (the backend's base, unscaled). */
+    int keyTimeoutMs = -1
 
     /**
      * Phase 337 — mark this session as an auxiliary query that decides no obligation, only how a result is reported
@@ -1466,10 +1479,16 @@ class Z3Session implements SmtSession {
     private static final int MAX_SLICE_CHECKS = 8
     private static final int SLICE_TIMEOUT_MS = 1000
 
+    /** Phase 383 — a slice's budget scales with the check's: half of it, at least {@link #SLICE_TIMEOUT_MS} (and never
+     *  more than the check's). It was a fixed 1 s, so under CI's 8 s budget a loaded runner gave the slice no more room
+     *  than a 2 s laptop run, and a proof only a slice finds (LemmaScript's `allocate`, its nonlinear invariant) failed
+     *  `check` with "Could not decide" while every other check had four times the headroom. */
+    private int sliceTimeoutMs() { Math.min(timeoutMs, Math.max(SLICE_TIMEOUT_MS, (int) (timeoutMs / 2))) }
+
     private boolean sliceUnsat(List<BoolExpr> terms) {
         if (sliceChecksLeft-- <= 0) return false
         long t0 = System.nanoTime()
-        boolean unsat = provesUnsat(terms, Math.min(timeoutMs, SLICE_TIMEOUT_MS))
+        boolean unsat = provesUnsat(terms, sliceTimeoutMs())
         Z3Backend.recordSolverCheck((long) ((System.nanoTime() - t0) / 1_000_000L), false)
         unsat
     }
@@ -1538,7 +1557,7 @@ class Z3Session implements SmtSession {
      * guards against a hard-VC UNKNOWN being reused under a different bound.
      */
     private String vcKey() {
-        String t = auxTimeoutMs > 0 ? "a:${auxTimeoutMs}" : "t:${timeoutMs}"
+        String t = auxTimeoutMs > 0 ? "a:${auxTimeoutMs}" : "t:${keyTimeoutMs >= 0 ? keyTimeoutMs : timeoutMs}"
         if (assertedExprs.isEmpty()) return "${t}\n<empty>"
         List<String> reprs = new ArrayList<String>(assertedExprs.size())
         for (BoolExpr e : assertedExprs) reprs.add(e.toString())
@@ -1598,7 +1617,9 @@ class Z3Session implements SmtSession {
         long elapsedMs = (long)((System.nanoTime() - t0) / 1_000_000L)
         Z3Backend.recordSolverCheck(elapsedMs, false)
         if (System.getenv('Z3_TIMING') == '1' && elapsedMs > 500) {
-            System.err.println("[Z3] check ${status} in ${elapsedMs}ms")
+            String rl = '?'
+            try { for (com.microsoft.z3.Statistics.Entry en : solver.getStatistics().getEntries()) if (en.Key == 'rlimit count') rl = en.getValueString() } catch (Throwable ignored) { }
+            System.err.println("[Z3] check ${status} in ${elapsedMs}ms rlimit=${rl}")
         }
         if (status == Status.UNSATISFIABLE) {
             return CheckResult.verified()

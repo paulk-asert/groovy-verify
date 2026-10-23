@@ -4015,7 +4015,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Refute-direction VCs (model search) are hardware-speed sensitive — CI runners need more headroom
         // than a dev laptop for the same crisp refutation.
         String tmo = System.getProperty('verify.z3.timeoutMs', System.getenv('VERIFY_Z3_TIMEOUT_MS') ?: '2000')
-        backend = new Z3Backend(tmo.isInteger() ? tmo.toInteger() : 2000)
+        int base = tmo.isInteger() ? tmo.toInteger() : 2000
+        backend = new Z3Backend((int) (base * loadFactor()), base)
+    }
+
+    /**
+     * Phase 383 — how much more time a check gets on a loaded machine: the load average per core, between 1 and 4. A
+     * fixed budget let a busy machine flip verdicts (`merge`, P197 and LemmaScript's `allocate` timed out at a load
+     * average of ~600 and passed alone); scaled, a quiet machine is unchanged and a loaded one gets up to four times the
+     * room. Off with {@code -Dverify.z3.loadScaling=false} or {@code VERIFY_Z3_LOAD_SCALING=0}.
+     */
+    static double loadFactor() {
+        String off = System.getProperty('verify.z3.loadScaling', System.getenv('VERIFY_Z3_LOAD_SCALING') ?: 'true')
+        if (off == 'false' || off == '0') return 1.0d
+        String forced = System.getProperty('verify.z3.loadFactor')   // a fixed factor (tests), still within [1, 4]
+        if (forced != null && forced.isNumber()) return Math.max(1.0d, Math.min(4.0d, forced.toDouble()))
+        try {
+            double la = java.lang.management.ManagementFactory.operatingSystemMXBean.systemLoadAverage
+            int cores = Runtime.runtime.availableProcessors()
+            if (la <= 0 || cores <= 0) return 1.0d
+            return Math.max(1.0d, Math.min(4.0d, la / cores))
+        } catch (Throwable ignored) {
+            return 1.0d
+        }
     }
 
     @Override

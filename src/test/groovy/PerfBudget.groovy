@@ -59,7 +59,8 @@ class PerfBudget {
         long hits = Z3Backend.vcCacheHits(), misses = Z3Backend.vcCacheMisses()
         "perf: ${hits + misses} solver checks (${misses} solved / ${hits} cached), " +
             "${Z3Backend.solverMsTotal()} ms in Z3 (max ${Z3Backend.solverMsMax()} ms, " +
-            "${Z3Backend.slowCheckCount()} over 500 ms), ${Z3Backend.unknownResults()} UNKNOWN"
+            "${Z3Backend.slowCheckCount()} over 500 ms), ${Z3Backend.unknownResults()} UNKNOWN" +
+            (Z3Backend.effectiveBudgetMax() > 0 ? ", budget up to ${Z3Backend.effectiveBudgetMax()} ms" : '')
     }
 
     /** Assert the ceilings; the message carries the full report so a trip is self-explanatory. */
@@ -69,6 +70,8 @@ class PerfBudget {
         assert calls <= MAX_CHECK_CALLS               : "check-call ceiling exceeded — ${r}"
         assert Z3Backend.vcCacheMisses() <= MAX_DISTINCT_VCS : "distinct-VC ceiling exceeded — ${r}"
         assert Z3Backend.unknownResults() <= MAX_UNKNOWN     : "UNKNOWN ceiling exceeded — ${r}"
-        assert Z3Backend.solverMsMax() <= MAX_SINGLE_CHECK_MS : "single-check backstop exceeded — ${r}"
+        // Phase 383 — relative to the largest budget a check was given, which load scaling can take past 30 s (8 s × 4)
+        long backstop = Math.max(MAX_SINGLE_CHECK_MS, 2L * Z3Backend.effectiveBudgetMax())
+        assert Z3Backend.solverMsMax() <= backstop : "single-check backstop exceeded — ${r}"
     }
 }

@@ -16973,6 +16973,31 @@ two auxiliary queries at the cap, no diagnostic) — consistent with the `+ 0` b
 later call's precondition in a loop. Undecided before: the report's repro, whole. Plus a guard: a length the callee
 doesn't promise isn't assumed.
 
+## Phase 383 — a loaded machine gets more time  *(shipped — robustness: verdicts that flipped with load)*
+
+Three corpus cases timed out only on a busy machine (a load average of ~600, with other sessions sharing it) and passed
+alone: LemmaScript's `allocate`, P208's `merge`, and P197's "trace loop refutes when a round does not advance".
+Measured quiet (`Z3_TIMING=1`, which now also prints each slow check's `rlimit count`): `merge`'s proof takes ~0.8 s
+and P197's refutation ~0.9 s of the 2 s default, ~2.5× headroom; `allocate`'s full query always runs to the cap and
+its proof comes from Phase 321's nonlinear slice. A deterministic budget (Z3's `rlimit`) doesn't fit: queries do 20M
+to 275M units of work in the same 2 s, so one cap would let the deliberately-undecided canaries run for many seconds.
+
+- **The slice's budget scales with the check's** (`Z3Session.sliceTimeoutMs`): half of it, at least 1 s, never more
+  than the check's. It was a fixed 1 s, so under CI's 8 s `check` a loaded runner gave `allocate`'s slice no more room
+  than a laptop's 2 s run, and `check` failed on it while every other check had four times the headroom.
+- **A loaded machine gets more time** (`VerifyChecker.loadFactor`, Paul's call): the per-check budget is the configured
+  one × the load average per core, clamped to [1, 4] — unchanged on a quiet machine, up to 8 s at the 2 s default on a
+  busy one. Off with `-Dverify.z3.loadScaling=false` / `VERIFY_Z3_LOAD_SCALING=0`; `-Dverify.z3.loadFactor=` forces a
+  factor. The VC cache keys on the configured budget, not the scaled one, so the counts the perf budget asserts don't
+  drift with load; the perf line reports the largest budget used ("budget up to … ms"), and the single-check backstop is
+  relative to it (30 s, or twice the largest budget).
+
+**Boundary:** load is sampled when a compile starts, so a spike mid-compile isn't followed; above 4× the load per core
+a check can still time out. A deliberately-undecided canary costs up to four times as long on a loaded machine.
+
+**Shipped tests:** `LoadFactorTest` (3): the factor within [1, 4], a forced factor clamped, scaling turned off. The three
+cases pass at the default budget and at 8 s.
+
 ---
 
 ## Definition of done, per increment
