@@ -17313,6 +17313,29 @@ its nullity, a scalar argument. Still warned: an unbounded array, an unconstrain
 on something else, on two different arguments, keeping it, reassigning the argument, open to override, and an actual
 the literal itself writes.
 
+## Phase 394 — a try's return value is read before its finally  *(shipped — completeness)*
+
+Phase 389's boundary: a return inside a try evaluates its value, then the finally runs, then the method returns that
+value — so a finally writing what the return reads changes nothing returned (`int k = n; try { return k } finally {
+k = 0 }` returns n). The path walk kept the return expression as it was, which needed the finally not to write what it
+reads, and skipped loudly otherwise.
+
+- **The value is snapshotted** (`BodyEncoder`, the finally walk): when the finally writes a name the return reads, the
+  path assigns the return expression to a temporary (`$fin$N`) before the finally's steps and returns the temporary,
+  positioned on the original return so the diagnostic stays there. Only an int-like value (`int`, `long`, `short`,
+  `byte`, boxed — `integralValue`), which the path's untyped temporary holds; anything else stays a loud skip, with
+  that reason.
+
+**Changed cases:** Phase 389's "a finally writing what the return reads" and G269's finally case now prove (both
+skipped loudly).
+
+**Boundary:** a boolean, String or collection return value still skips. A catch's entry state for the postcondition is
+still the havoc, even where Phase 387's exact ways are known (`try { k = 10.intdiv(d) … } catch … { return k }` can't
+prove `k == 7`; its call is withheld).
+
+**Shipped tests:** group `P394 try-return snapshot`, 5 cases. Kept through the finally: the variable, a claim about
+the finally's write refuted, an expression, a long. A boolean still skips loudly.
+
 ---
 
 ## Definition of done, per increment

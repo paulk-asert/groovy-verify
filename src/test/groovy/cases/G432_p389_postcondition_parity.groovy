@@ -96,9 +96,9 @@ class G432_p389_postcondition_parity {
                         }
                     }''')],
 
-        // The boundary: the return's value is read before the finally runs, which the walk doesn't snapshot
-        [group: "P389 postcondition parity", name: "a finally writing what the return reads skips loudly",
-         expect: "'finally' writes what the try's return reads",
+        // Phase 394 — the return's value is read before the finally runs: snapshotted, it is n (it skipped loudly)
+        [group: "P389 postcondition parity", name: "a finally writing what the return reads keeps the value read",
+         ok: true,
          src: tc('''class A {
                         @Ensures({ result == n })
                         static int f(int n) {

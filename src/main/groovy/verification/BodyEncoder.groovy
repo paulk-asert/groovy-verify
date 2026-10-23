@@ -34,6 +34,7 @@ import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.ASTNode
+import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
@@ -478,14 +479,22 @@ class BodyEncoder {
                 }
                 Set<String> finWrites = assignedIn(fin)
                 for (Path t : inner.terminated) {
-                    // the return value is evaluated before the finally runs: kept as it is when the finally can't change it
-                    if (t.result != null && !Collections.disjoint(finWrites, namesIn(t.result))) {
-                        throw new UnsupportedConstructException(
-                            "'finally' writes what the try's return reads (line ${fin.lineNumber})")
-                    }
+                    // the return value is evaluated before the finally runs: kept as it is when the finally can't change it,
+                    // else (Phase 394) snapshotted into a temporary first, which the method then returns
                     Expression rv = t.result
                     Path tp = copy(t)
                     tp.result = null
+                    if (rv != null && !Collections.disjoint(finWrites, namesIn(rv))) {
+                        if (!integralValue(rv)) {
+                            throw new UnsupportedConstructException(
+                                "'finally' writes what the try's return reads, a value that isn't an integer (line ${fin.lineNumber})")
+                        }
+                        String tmp = '$fin$' + (finCounter++)
+                        tp.steps.add(new Assign(tmp, rv))
+                        VariableExpression snap = new VariableExpression(tmp)
+                        snap.setSourcePosition(rv)   // the diagnostic stays on the return
+                        rv = snap
+                    }
                     WalkResult rf = walkStatements(asList(fin), [tp] as List<Path>, false)
                     for (Path q : rf.live) { q.result = rv; res.terminated.add(q) }
                     res.terminated.addAll(rf.terminated)
@@ -788,6 +797,15 @@ class BodyEncoder {
                 res.live.addAll(rCatch.live)
             }
             return res
+    }
+
+    private static int finCounter = 0
+
+    /** Phase 394 — an int-like value (`int`, `long`, `short`, `byte`, boxed): the path's untyped temporary holds it. */
+    private static boolean integralValue(Expression e) {
+        ClassNode t = Encoder.staticTypeOf(e)
+        t != null && t.redirect().name in ['int', 'long', 'short', 'byte', 'java.lang.Integer', 'java.lang.Long',
+            'java.lang.Short', 'java.lang.Byte']
     }
 
     /** Phase 389 — does {@code st} hold a return, throw, break or continue (a finally's would replace how the try leaves)? */

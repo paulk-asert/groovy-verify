@@ -103,10 +103,10 @@ class G269_p192_try_catch {
                  return n + 1
              }
          }''')],
-        // Phase 389 — a finally is modelled, but this one writes the `n` the try's return reads (evaluated before the
-        // finally runs), which the path walk doesn't snapshot — still loud.
-        [group: 'P192 try-catch', name: 'a finally writing what the return reads skips loudly',
-         expect: "'finally' writes what the try's return reads",
+        // Phase 389 — a finally is modelled; Phase 394 — and the `n * 0` its return reads is snapshotted before the
+        // finally writes n, so the postcondition proves (it skipped loudly).
+        [group: 'P192 try-catch', name: 'a finally writing what the return reads proves',
+         ok: true,
          src: tc('''class C {
              @Ensures({ result >= 0 })
              static int f(int n) {
