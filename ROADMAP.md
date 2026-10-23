@@ -17134,6 +17134,30 @@ user exception subclass, a catch of `Exception`, a catch in a loop. Withheld: an
 of another type, no throwing run fails, a call before the throw. Postconditions: the catch's return (`f(0)`, not
 `f(-2147483648)`), a write before the throw, a try in a branch, a withheld call, and Phase 223's exact entry kept.
 
+## Phase 388 — a path past a division didn't divide by zero  *(shipped — precision, and an unsound survival fact)*
+
+Phase 387's boundary: a postcondition is checked on a normal return, yet the path walk never assumed the statements
+on the way completed. `try { return 10.intdiv(d) } catch …` refuted the try's return at `d = 0` — a run that throws
+into the catch, reported on the wrong line — and `int q = 10.intdiv(d); return d + 5` couldn't prove `result != 5`.
+
+- **Division survival** (`assertSurvivalFacts`): a division the path moved past — `intdiv`, `remainder`, `/`, `%` on
+  integral or `BigDecimal` operands (a floating one never throws) — has a non-zero divisor. Asserted where Phase 222's
+  call facts already were (an assignment's value, in the postcondition walk and the obligation replay), and now also
+  for a branch condition (`Guard`) and the return value.
+- **Survival covers only what every run evaluates** — **unsound before**: Phase 222 visited every spec'd call in the
+  expression, so `boolean ok = b != 0 && Math.floorDiv(a, b) > 0; return b` assumed floorDiv's `b == 0` arm false on
+  every path and proved `result != 0`, which `f(0, 0)` breaks. A short-circuit's right operand, a ternary's arms, an
+  elvis's fallback, a closure's body and a safe call's arguments now give no fact; an expression that writes inside it
+  gives none.
+
+**Boundary:** the loop replays (`LoopEncoder`) don't assume survival, so a loop body's division doesn't narrow the
+states after it; nor does an index, a null receiver or an unspec'd call.
+
+**Shipped tests:** group `P388 survival`, 8 cases. The try's return refutes at a divisor that doesn't throw (`f(-5)`);
+an assignment's, a branch condition's and a return value's division narrow the postcondition to a proof. No fact from
+a short-circuit's right operand or a ternary's arm, nor (unsound before) from a spec'd call a short-circuit skips; an
+evaluated spec'd call keeps its fact.
+
 ---
 
 ## Definition of done, per increment

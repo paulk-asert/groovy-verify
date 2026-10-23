@@ -48,6 +48,7 @@ import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ArrayExpression
+import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MapEntryExpression
@@ -11904,6 +11905,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             "guard '${g.cond.text}' is outside fragment")
                     }
                     session.assertExpr(g.positive ? c : session.not(c))
+                    assertSurvivalFacts(session, enc, g.cond, node)   // Phase 388 — the condition was evaluated
                 } else if (step instanceof Havoc) {
                     // Phase 192 — catch-entry state: the try block may have executed any prefix before
                     // throwing, so the name's value is unknown here. Rebind to a fresh UNCONSTRAINED
@@ -12211,6 +12213,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
 
             // A void method (e.g. a lemma) has no result; its postcondition is over parameters.
+            // Phase 388 — the method returned, so the return expression didn't throw
+            if (p.result != null) assertSurvivalFacts(session, enc, p.result, node)
             if (p.result != null) {
                 // Phase 78 — a list-literal (or List.of/map/set factory) return binds result's CONTENTS:
                 // `result` is recorded as a factory container, so `result.size()` and a *constant-index*
@@ -17456,16 +17460,48 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * must-throw — valid for iff and one-directional arms alike). Contract-position mentions of the same
      * methods deliberately do NOT get this (a spec references a value, it doesn't execute a call) — that
      * is why it lives in the body paths, not in the Phase 218 admission axiom.
+     *
+     * <p>Phase 388 — only what {@code e} evaluates on every run: not a short-circuit's right operand, a ternary's
+     * arms, an elvis's fallback, a closure's body or a safe call (`b != 0 && Math.floorDiv(a, b) > 0` assumed
+     * `b != 0` on every path — unsound). And a division the program moved past didn't divide by zero: its integral
+     * (or BigDecimal) divisor isn't 0 (`return 10.intdiv(d)` refuted at d = 0, a run that throws instead).
      */
     private void assertSurvivalFacts(SmtSession s, Encoder enc, Expression e, MethodNode caller) {
-        if (e == null) return
+        if (e == null || !Encoder.nestedTargets(new ExpressionStatement(e)).isEmpty()) return
         VerifyChecker self = this
         e.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (call.safe) { call.objectExpression.visit(this); return }
+                List<Expression> args = call.arguments instanceof ArgumentListExpression ?
+                    ((ArgumentListExpression) call.arguments).expressions : null
+                String m = call.methodAsString
+                if ((m == 'intdiv' || m == 'remainder') && args?.size() == 1 && !call.implicitThis &&
+                        self.integralValue(call.objectExpression) && self.integralValue(args.get(0))) {
+                    divisor(args.get(0))
+                }
                 handle(call, call.arguments); super.visitMethodCallExpression(call)
             }
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
                 handle(call, call.arguments); super.visitStaticMethodCallExpression(call)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) { be.leftExpression.visit(this); return }
+                if ((op == Types.DIVIDE || op == Types.MOD || op == Types.REMAINDER) &&
+                        self.integralOrDecimal(be.leftExpression) && self.integralOrDecimal(be.rightExpression)) {
+                    divisor(be.rightExpression)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitTernaryExpression(TernaryExpression t) { t.booleanExpression.visit(this) }
+            @Override void visitShortTernaryExpression(ElvisOperatorExpression t) { t.trueExpression.visit(this) }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+            private void divisor(Expression d) {
+                Object ne = enc.translate(new BinaryExpression(d, Token.newSymbol(Types.COMPARE_NOT_EQUAL, -1, -1),
+                    new ConstantExpression(0, true)))
+                if (ne == null) return
+                s.assertExpr(ne)
+                if (Reporter.EXPLAIN) s.explainNoteFact("survival fact ${d.text} != 0 — a division the path moved past".toString(), ne)
             }
             private void handle(Expression call, Expression argsExpr) {
                 ClassNode owner = staticOwnerType(call) ?: self.instanceReceiverType(call)
