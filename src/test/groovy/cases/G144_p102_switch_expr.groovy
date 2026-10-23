@@ -135,9 +135,10 @@ class G144_p102_switch_expr {
                             return r
                         }
                     }''')],
-        // ── the boundary, said out loud: an arm that runs on into the next is not modelled.
-        [group: 'P102 switch expr', name: 'a colon-form arm that falls through is refused loudly',
-         expect: 'switch case falls through to the next',
+        // Phase 389 — an arm that runs on into the next is modelled: `case 1` falls into `r = 9`, so 7 refutes
+        // (it was refused loudly before).
+        [group: 'P102 switch expr', name: 'a colon-form arm that falls through runs on into the next',
+         expect: 'Cannot prove postcondition of fall',
          src: tc('''class C {
                         @Requires({ i == 1 })
                         @Ensures({ result == 7 })

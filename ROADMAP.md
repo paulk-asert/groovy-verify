@@ -17158,6 +17158,39 @@ an assignment's, a branch condition's and a return value's division narrow the p
 a short-circuit's right operand or a ternary's arm, nor (unsound before) from a spec'd call a short-circuit skips; an
 evaluated spec'd call keeps its fact.
 
+## Phase 389 — postcondition parity: a finally, a fall-through, a write inside an expression  *(shipped — completeness)*
+
+Since Phases 373–374 the obligation checks follow a finally, a switch fall-through and a write inside an expression;
+the postcondition's path walk (`BodyEncoder`) still skipped all three loudly (`'finally' unsupported`, `switch case
+falls through to the next`, `assignment 'r = ((n = m) + n)' is outside fragment`).
+
+- **A finally** runs after the try block and after each catch, on every path that leaves them — falling through or
+  returning (`walkTry`, then the finally walked from each). A return's value is evaluated before the finally runs, so it
+  is kept as it is, which needs the finally not to write what it reads (else a loud skip; the walk doesn't snapshot it).
+  Refused loudly: a finally that itself returns, throws or breaks (`leavesWithin`, it would replace how the try leaves),
+  and one in return position with an implicit return (only explicit returns are modelled there).
+- **A switch fall-through:** entered by case k, the run is arms k, k+1, … until one leaves (`armRun`); stacked labels
+  (`case 1: case 2:`) share an arm, and the last case falls into the default (written last — Groovy 6 requires it).
+  Refused in return position.
+- **A write inside an expression** (`evalOrderWays`): a statement whose own expression writes — an assignment's value,
+  a return value, a branch condition — is lowered by Phase 374's `EvalOrder` into its ways in Java's evaluation order,
+  one per way through its short-circuits and ternaries, each with its condition assumed (the `REPLAY_ASSUME_KEY`
+  markers now walk as guards). Together the ways are every run; a lowering at its cap (it may have dropped a way) or
+  one EvalOrder doesn't model is left as it was, a loud skip.
+
+**Changed cases:** G269's `finally` case reads what its finally writes, so it stays a loud skip, with the new reason;
+G144's colon-form fall-through now refutes (`case 1: r = 7; case 2: r = 9` returns 9) instead of being refused. Three
+increment cases that skipped get their verdict, each measured on the runtime: G209's `x = i++ + i` refutes
+`result == 0` (x is 1, `fails on: f()`), its `i = i++` proves `result == 0` (i keeps 0), and G418's
+`b && (i++ >= 0)` refutes `result == 1` at `f(false)`.
+
+**Boundary:** a switch statement or a try inside an annotated loop's body is still outside the loop engine.
+
+**Shipped tests:** group `P389 postcondition parity`, 16 cases. A finally: proved, refuted by its writes, after a return
+in the try, after a catch (`f(-6)`), and two loud skips. A fall-through: proved, refuted by its run (`f(1)`), stacked
+labels, a case into the default. A write inside an expression: proved, refuted, in a return, in a branch condition, and
+a write a short-circuit may skip (refutes at `f(1)`) or reaches (proved).
+
 ---
 
 ## Definition of done, per increment

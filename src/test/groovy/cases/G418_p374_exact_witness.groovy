@@ -57,8 +57,9 @@ class G418_p374_exact_witness {
                     }''')],
 
         // Before: the postcondition proved, over the hoisted increment. Now it is skipped, loudly.
+        // Phase 389 — the postcondition walk takes it in evaluation order now (it skipped): with b false, i stays 0
         [group: "P374 exact witness", name: "a postcondition over an increment under &&",
-         expect: "Skipped verification of postcondition for f", refute: "Cannot prove",
+         expect: ["Cannot prove postcondition of f", "fails on: f(false)"],
          src: tc('''class A {
                         @Ensures({ result == 1 })
                         static int f(boolean b) {

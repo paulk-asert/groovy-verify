@@ -33,6 +33,7 @@ import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
@@ -48,6 +49,10 @@ import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.expr.SwitchExpression
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.BreakStatement
+import org.codehaus.groovy.ast.stmt.ContinueStatement
+import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.stmt.CaseStatement
 import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.stmt.Statement
@@ -407,6 +412,18 @@ class BodyEncoder {
             return walkStatements(asList(s), [prefix] as List<Path>, tail)
         }
 
+        // Phase 389 — a statement whose own expression writes inside it (`r = (n = m) + n`, `if ((n = m) < 0)`), run in
+        // Java's evaluation order: its ways (EvalOrder), each a straight-line sequence, together every run
+        List<List<Statement>> ways = evalOrderWays(s, tail)
+        if (ways != null) {
+            for (List<Statement> way : ways) {
+                WalkResult r = walkStatements(way, [copy(prefix)] as List<Path>, tail)
+                res.terminated.addAll(r.terminated)
+                res.live.addAll(r.live)
+            }
+            return res
+        }
+
         if (s instanceof ReturnStatement) {
             Path np = copy(prefix)
             np.result = ((ReturnStatement) s).expression
@@ -414,7 +431,8 @@ class BodyEncoder {
             return res
         }
 
-        if (s instanceof AssertStatement && s.getNodeMetaData(ChannelDesugar.ASSUME_ONLY_KEY) != null) {
+        if (s instanceof AssertStatement && (s.getNodeMetaData(ChannelDesugar.ASSUME_ONLY_KEY) != null ||
+                                             s.getNodeMetaData(VerifyChecker.REPLAY_ASSUME_KEY) != null)) {
             // A synthetic assume-only assert (Phase 334's branch condition, the channel ghosts' facts): a plain fact.
             Path np = copy(prefix)
             np.steps.add(new Guard(((AssertStatement) s).booleanExpression, true))
@@ -444,38 +462,42 @@ class BodyEncoder {
         if (s instanceof TryCatchStatement) {
             TryCatchStatement tcs = (TryCatchStatement) s
             Statement fin = tcs.finallyStatement
-            if (fin != null && !(fin instanceof EmptyStatement) &&
-                !(fin instanceof BlockStatement && ((BlockStatement) fin).statements.isEmpty())) {
-                throw new UnsupportedConstructException(
-                    "'finally' unsupported (line ${tcs.lineNumber})")
+            boolean hasFin = fin != null && !(fin instanceof EmptyStatement) &&
+                !(fin instanceof BlockStatement && ((BlockStatement) fin).statements.isEmpty())
+            // Phase 389 — a finally runs after the block or a catch, however it leaves: modelled when it falls through
+            // (no return/throw/break of its own, which would replace how the try leaves) and outside return position
+            if (hasFin) {
+                if (leavesWithin(fin)) {
+                    throw new UnsupportedConstructException("'finally' that returns, throws or breaks (line ${fin.lineNumber})")
+                }
+                WalkResult inner = walkTry(tcs, prefix, false)
+                // in return position, a path falling out of the block or a catch would return its last value, which
+                // the finally doesn't change but which isn't modelled here: only explicit returns are
+                if (tail && !inner.live.isEmpty()) {
+                    throw new UnsupportedConstructException("'finally' in return position, with an implicit return (line ${tcs.lineNumber})")
+                }
+                Set<String> finWrites = assignedIn(fin)
+                for (Path t : inner.terminated) {
+                    // the return value is evaluated before the finally runs: kept as it is when the finally can't change it
+                    if (t.result != null && !Collections.disjoint(finWrites, namesIn(t.result))) {
+                        throw new UnsupportedConstructException(
+                            "'finally' writes what the try's return reads (line ${fin.lineNumber})")
+                    }
+                    Expression rv = t.result
+                    Path tp = copy(t)
+                    tp.result = null
+                    WalkResult rf = walkStatements(asList(fin), [tp] as List<Path>, false)
+                    for (Path q : rf.live) { q.result = rv; res.terminated.add(q) }
+                    res.terminated.addAll(rf.terminated)
+                }
+                WalkResult rl = walkStatements(asList(fin), inner.live, false)
+                res.terminated.addAll(rl.terminated)
+                res.live.addAll(rl.live)
+                return res
             }
-            // Phase 192 — the happy path: the try block ran to completion (its implicit obligations are
-            // still collected and checked by the other passes; this fork concerns only the @Ensures
-            // value flow). Walked in the incoming tail context, so `try { 1 } catch (E e) { 0 }` in
-            // return position resolves both implicit returns.
-            int prefixLen = prefix.steps.size()
-            WalkResult rTry = walkStatements(asList(tcs.tryStatement), [copy(prefix)] as List<Path>, tail)
-            res.terminated.addAll(rTry.terminated)
-            res.live.addAll(rTry.live)
-            // Catch-entry state: the try block may have executed ANY prefix of itself before throwing, so
-            // every local it assigns (on any of its paths) is unknown in the handler — havoc each. Heap
-            // effects (array-element / field stores, standalone call statements) can't be framed per-name
-            // this way, so they push the whole method out of the fragment, loudly.
-            List<String> assigned = tryAssignedNames(rTry, prefixLen, tcs)
-            for (CatchStatement cs : tcs.catchStatements) {
-                Path pc = copy(prefix)
-                // Phase 223 — catch-reachability: entering this handler means some try-block source threw
-                // the caught type; when every such source is arm-characterised, the disjunction of the
-                // matching arm conditions is a fact at catch entry (`catch (ArithmeticException e)` after
-                // `Math.floorDiv(a, b)` knows `b == 0`).
-                Expression fact = catchEntryFact(tcs, cs, assigned, prefix)
-                pc.steps.add(new CatchEntry(tcs, cs, assigned.size() + (fact != null ? 1 : 0)))   // Phase 387
-                for (String n : assigned) pc.steps.add(new Havoc(n))
-                if (fact != null) pc.steps.add(new SoftAssume(fact))
-                WalkResult rCatch = walkStatements(asList(cs.code), [pc] as List<Path>, tail)
-                res.terminated.addAll(rCatch.terminated)
-                res.live.addAll(rCatch.live)
-            }
+            WalkResult inner = walkTry(tcs, prefix, tail)
+            res.terminated.addAll(inner.terminated)
+            res.live.addAll(inner.live)
             return res
         }
 
@@ -684,20 +706,29 @@ class BodyEncoder {
             if (cases == null || cases.isEmpty()) {
                 throw new UnsupportedConstructException("switch with no cases (line ${sw.lineNumber})")
             }
-            // Fall-through is not modelled: every arm must LEAVE, by the arrow form's implicit break or by an
-            // explicit break / return / throw. A colon-form arm that runs on into the next is refused loudly.
-            for (CaseStatement c : cases) {
-                if (!armLeaves(c.code)) {
-                    throw new UnsupportedConstructException(
-                        "switch case falls through to the next (line ${c.lineNumber}) — only arms that leave are modelled")
-                }
+            // Phase 389 — an arm that doesn't leave (no break / return / throw at its end, an empty stacked label)
+            // runs on into the next, and so on until one leaves: entered by case k, the run is arms k, k+1, …. The
+            // default is the last arm only when it is written last; one in between with a fall-through is refused.
+            Statement dflt0 = sw.defaultStatement
+            boolean hasDefault = dflt0 != null && !(dflt0 instanceof EmptyStatement)
+            boolean fallsThrough = cases.any { !armLeaves(it.code) }
+            if (fallsThrough && tail) {
+                throw new UnsupportedConstructException(
+                    "switch case falls through to the next (line ${cases.find { !armLeaves(it.code) }.lineNumber}) in return position")
             }
+            if (fallsThrough && hasDefault && !cases.every { before(it, dflt0) }) {
+                throw new UnsupportedConstructException(
+                    "switch case falls through, with the default written before a case (line ${dflt0.lineNumber})")
+            }
+            List<Statement> arms = new ArrayList<Statement>(cases*.code)
+            if (hasDefault) arms.add(dflt0)
             List<Expression> tested = new ArrayList<Expression>()
-            for (CaseStatement c : cases) {
+            for (int k = 0; k < cases.size(); k++) {
+                CaseStatement c = cases.get(k)
                 Path p = copy(prefix)
                 for (Expression prev : tested) p.steps.add(new Guard(subjectEq(sw.expression, prev), false))
                 p.steps.add(new Guard(subjectEq(sw.expression, c.expression), true))
-                WalkResult r = walkStatements(armBody(c.code), [p] as List<Path>, tail)
+                WalkResult r = walkStatements(armRun(arms, k), [p] as List<Path>, tail)
                 res.terminated.addAll(r.terminated)
                 res.live.addAll(r.live)
                 tested.add(c.expression)
@@ -726,12 +757,153 @@ class BodyEncoder {
                 (s.getNodeMetaData(ContractExpansionTransform.LOOP_SKIP_KEY) != null ? ": ${s.getNodeMetaData(ContractExpansionTransform.LOOP_SKIP_KEY)}" : ''))
     }
 
+    /** Phase 192 — a try's block and its catches, without its finally (Phase 389 runs that after). */
+    private static WalkResult walkTry(TryCatchStatement tcs, Path prefix, boolean tail) {
+        WalkResult res = new WalkResult()
+            // Phase 192 — the happy path: the try block ran to completion (its implicit obligations are
+            // still collected and checked by the other passes; this fork concerns only the @Ensures
+            // value flow). Walked in the incoming tail context, so `try { 1 } catch (E e) { 0 }` in
+            // return position resolves both implicit returns.
+            int prefixLen = prefix.steps.size()
+            WalkResult rTry = walkStatements(asList(tcs.tryStatement), [copy(prefix)] as List<Path>, tail)
+            res.terminated.addAll(rTry.terminated)
+            res.live.addAll(rTry.live)
+            // Catch-entry state: the try block may have executed ANY prefix of itself before throwing, so
+            // every local it assigns (on any of its paths) is unknown in the handler — havoc each. Heap
+            // effects (array-element / field stores, standalone call statements) can't be framed per-name
+            // this way, so they push the whole method out of the fragment, loudly.
+            List<String> assigned = tryAssignedNames(rTry, prefixLen, tcs)
+            for (CatchStatement cs : tcs.catchStatements) {
+                Path pc = copy(prefix)
+                // Phase 223 — catch-reachability: entering this handler means some try-block source threw
+                // the caught type; when every such source is arm-characterised, the disjunction of the
+                // matching arm conditions is a fact at catch entry (`catch (ArithmeticException e)` after
+                // `Math.floorDiv(a, b)` knows `b == 0`).
+                Expression fact = catchEntryFact(tcs, cs, assigned, prefix)
+                pc.steps.add(new CatchEntry(tcs, cs, assigned.size() + (fact != null ? 1 : 0)))   // Phase 387
+                for (String n : assigned) pc.steps.add(new Havoc(n))
+                if (fact != null) pc.steps.add(new SoftAssume(fact))
+                WalkResult rCatch = walkStatements(asList(cs.code), [pc] as List<Path>, tail)
+                res.terminated.addAll(rCatch.terminated)
+                res.live.addAll(rCatch.live)
+            }
+            return res
+    }
+
+    /** Phase 389 — does {@code st} hold a return, throw, break or continue (a finally's would replace how the try leaves)? */
+    private static boolean leavesWithin(Statement st) {
+        boolean[] found = [false] as boolean[]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement r) { found[0] = true }
+            @Override void visitThrowStatement(ThrowStatement r) { found[0] = true }
+            @Override void visitBreakStatement(BreakStatement r) { found[0] = true }
+            @Override void visitContinueStatement(ContinueStatement r) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+        })
+        found[0]
+    }
+
+    /** Phase 389 — the names {@code st} assigns, in any form (`=`, `op=`, `++`/`--`). */
+    private static Set<String> assignedIn(Statement st) {
+        Set<String> out = new HashSet<String>()
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                    out.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) out.add(((VariableExpression) de.leftExpression).name)
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name)
+            }
+        })
+        out
+    }
+
+    /** Phase 389 — the variable names {@code e} reads. */
+    private static Set<String> namesIn(Expression e) {
+        Set<String> out = new HashSet<String>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) { out.add(ve.name) }
+        })
+        out
+    }
+
+    /**
+     * Phase 389 — {@code s}'s ways in evaluation order ({@link EvalOrder#lowerStatement}) when its own expression
+     * writes inside it; null when it doesn't, or the lowering isn't modelled or may have dropped a way (at its cap) —
+     * the statement is then taken as it is (and skipped loudly where it can't be translated). An expression statement
+     * in return position keeps its value, so it isn't lowered.
+     */
+    private static List<List<Statement>> evalOrderWays(Statement s, boolean tail) {
+        List<List<Statement>> ways = null
+        if (s instanceof ReturnStatement) {
+            Expression e = ((ReturnStatement) s).expression
+            if (e == null || !EvalOrder.writes(e)) return null
+            List<EvalOrder.Lowered> ls = EvalOrder.lower(e, null)
+            if (ls == null) return null
+            ways = new ArrayList<List<Statement>>()
+            for (EvalOrder.Lowered l : ls) {
+                ReturnStatement rs = new ReturnStatement(l.value)
+                rs.setSourcePosition(s)
+                List<Statement> way = new ArrayList<Statement>(l.pre)
+                way.add(rs)
+                ways.add(way)
+            }
+        } else if (s instanceof IfStatement) {
+            if (!EvalOrder.writes(((IfStatement) s).booleanExpression.expression)) return null
+            ways = EvalOrder.lowerStatement(s, null)
+        } else if (s instanceof ExpressionStatement && !tail) {
+            Expression e = ((ExpressionStatement) s).expression
+            if (Encoder.isIncDec(e) || Encoder.isCompoundAssign(e)) return null
+            // an assignment's own write is its target: what writes inside it is in its value (or an element's index)
+            List<Expression> own = new ArrayList<Expression>()
+            if (e instanceof BinaryExpression && Types.ofType(((BinaryExpression) e).operation.type, Types.ASSIGNMENT_OPERATOR)) {
+                BinaryExpression be = (BinaryExpression) e
+                if (be.rightExpression != null) own.add(be.rightExpression)
+                if (be.leftExpression instanceof BinaryExpression) own.add(((BinaryExpression) be.leftExpression).rightExpression)
+                else if (!(be.leftExpression instanceof VariableExpression)) return null
+            } else {
+                own.add(e)
+            }
+            if (!own.any { EvalOrder.writes(it) }) return null
+            ways = EvalOrder.lowerStatement(s, null)
+        }
+        if (ways == null || ways.isEmpty() || ways.size() >= EvalOrder.CAP) return null
+        ways
+    }
+
     /** `subject == label`, the guard a case arm runs under. */
     private static Expression subjectEq(Expression subject, Expression label) {
         BinaryExpression be = new BinaryExpression(subject,
             Token.newSymbol(Types.COMPARE_EQUAL, subject.lineNumber, subject.columnNumber), label)
         be.setSourcePosition(label)
         be
+    }
+
+    /** Phase 389 — the statements run when the switch enters {@code arms[k]}: each arm in turn, until one leaves. */
+    private static List<Statement> armRun(List<Statement> arms, int k) {
+        List<Statement> run = new ArrayList<Statement>()
+        for (int j = k; j < arms.size(); j++) {
+            if (armLeaves(arms.get(j))) { run.addAll(armBody(arms.get(j))); break }
+            Statement code = arms.get(j)
+            if (code instanceof EmptyStatement) continue   // a stacked label (`case 1: case 2:`)
+            run.addAll(code instanceof BlockStatement ? ((BlockStatement) code).statements : [code])
+        }
+        run
+    }
+
+    /** Phase 389 — does {@code a} end before {@code b} starts in the source? Unpositioned: not known, so no. */
+    private static boolean before(ASTNode a, ASTNode b) {
+        a.lastLineNumber > 0 && b.lineNumber > 0 &&
+            (a.lastLineNumber < b.lineNumber || (a.lastLineNumber == b.lineNumber && a.lastColumnNumber <= b.columnNumber))
     }
 
     /** An arm's statements with the trailing `break` dropped — it ends the arm, it has no other effect. */

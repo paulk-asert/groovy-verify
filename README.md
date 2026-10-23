@@ -212,11 +212,15 @@ you write:
   range labels (since Groovy 6.0.0-beta-3 static type checking requires a switch expression to be exhaustive —
   a `default`, or an enum subject with every constant covered — and the verifier's part is knowing when that
   `default` is *dead* under the precondition); plus
-  side-effecting assignment, `++` / `--`, and parallel swap; and `try` / `catch` (no `finally`) — the
+  side-effecting assignment, `++` / `--`, and parallel swap, with a write inside an expression (`(n = m) + n`)
+  taken in Java's evaluation order; the colon-style `switch` *statement*, an arm without a `break` running on
+  into the next; and `try` / `catch` / `finally` — the
   happy path walked exactly, each handler entered with sound catch-entry state (and, when the try's
   throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
-  after `Math.floorDiv(a, b)` knows `b == 0`).
-  *Out:* a labelled `continue`, `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  after `Math.floorDiv(a, b)` knows `b == 0`), and a `finally` run after either (one that doesn't itself
+  return or throw).
+  *Out:* a labelled `continue`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), a
+  `switch` *statement* or a `try` inside an annotated loop's body, and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 

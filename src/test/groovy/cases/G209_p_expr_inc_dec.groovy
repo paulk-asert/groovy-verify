@@ -99,7 +99,9 @@ class G209_p_expr_inc_dec {
         // Soundness: when a variable appears TWICE (`i++ + i`), Java advances `i` mid-statement so the 2nd
         // `i` sees the new value (x == 1). The hoist refuses this case (the read comes *after* the inc), so
         // it skips *loudly* — a false `result == 0` is never proven (the old hoist did, unsoundly).
-        [group: 'P expr inc/dec', name: 'i++ + i (read after inc) skips loudly, no false proof', expect: 'outside fragment',
+        // Phase 389 — taken in evaluation order now (it skipped loudly): `i++` gives 0, then `i` reads 1, so x is 1
+        [group: 'P expr inc/dec', name: 'i++ + i (read after inc) refutes, no false proof',
+         expect: ['Cannot prove postcondition of f', 'fails on: f()'],
          src: tc('class C { @Ensures({ result == 0 }) static int f() { int i = 0; int x = i++ + i; return x } }')],
         // Eval-order route: `dst[i] = src[i++]` — `i` appears twice, but the LHS-index read is evaluated
         // *before* the `i++`, so both read the old `i`. The single-index copy now verifies.
@@ -121,7 +123,9 @@ class G209_p_expr_inc_dec {
                         int[] a = new int[10]; int i = 5; a[i] = i++; return a[5] } }''')],
         // Clobber soundness: `i = i++` — Java's store wins, so `i` stays 0. The inc target equals the write
         // target, so the hoist refuses it (a hoisted `i = i+1` after would wrongly make it 1): skips loudly.
-        [group: 'P expr inc/dec', name: 'i = i++ (self-assign clobber) skips loudly', expect: 'outside fragment',
+        // Phase 389 — taken in evaluation order now (it skipped loudly): `i++` gives 0, then i is assigned it, so 0
+        // (measured on the runtime)
+        [group: 'P expr inc/dec', name: 'i = i++ (self-assign clobber) keeps the old value', ok: true,
          src: tc('class C { @Ensures({ result == 0 }) static int f() { int i = 0; i = i++; return i } }')],
         // Pre-increment in the RHS: `++i` hoists *before*, so every read sees the new value. `x = ++i + i`
         // (i: 5 -> 6, then 6 + 6) is sound because `++i` is the FIRST occurrence: verifies result == 12.
