@@ -87,8 +87,8 @@ class G249_he072_will_it_fly {
         // `every` palindrome and the `sum` aggregate), so finding a SAT model that violates the conjunction defeats
         // the solver: it soft-fails to "could not decide" rather than handing back a crisp counterexample. Same
         // prove-friendly / refute-hostile asymmetry as the gcd/recurrence helpers — never a false *pass*.
-        [group: 'HE072 will_it_fly', name: 'forgetting the palindrome check is rejected (refute-hostile: could not decide)',
-         ok: false, expect: 'Could not decide',
+        [group: 'HE072 will_it_fly', name: 'forgetting the palindrome check is rejected (refuted)',
+         ok: false, expect: ['Cannot prove postcondition of willItFly', 'fails on: willItFly('],   // Phase 384: was undecided
          src: tc('''class C {
                         @Requires({ q != null })
                         @Ensures({ result == ((0..<q.size()).every { q[it] == q[q.size() - 1 - it] } && ((int) q.sum(0)) <= w) })

@@ -50,8 +50,8 @@ class G191_p69_sum_under_store {
         // the weak direction (Z3 must construct a model of the quantified sum axioms → timeout), and the
         // integer-only PBT fallback can't evaluate the array. So the conservation VERIFIES cleanly while a
         // violation fails as UNKNOWN — honest (never a silent pass), if without a counterexample.
-        [group: 'P69 sum-under-store', name: 'N-account skim fails the build (could not decide)',
-         expect: 'Could not decide postcondition',
+        [group: 'P69 sum-under-store', name: 'N-account skim fails the build (refuted)',
+         expect: ['Cannot prove postcondition of transfer', 'fails on: transfer('],   // Phase 384: a bounded sum witness; it was undecided
          src: tc('''class Bank {
                        int[] bal
                        @Requires({ 0 <= i && i < bal.length && 0 <= j && j < bal.length && i != j })

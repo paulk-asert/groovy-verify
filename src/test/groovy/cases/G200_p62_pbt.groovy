@@ -41,8 +41,8 @@ class G200_p62_pbt {
         // concrete tester can't evaluate array contents, so it finds nothing and the diagnostic stays an
         // honest "could not decide" — bounded testing never fabricates a false refutation outside its
         // (integer-only) fragment.
-        [group: 'P62 pbt', name: 'array-sum UNKNOWN stays could-not-decide (testing bails)',
-         expect: 'Could not decide postcondition',
+        [group: 'P62 pbt', name: 'an array-sum claim is refuted, not passed (testing bails)',
+         expect: ['Cannot prove postcondition', 'fails on: f('],   // Phase 384: a bounded sum witness; it was undecided
          src: tc('class C { @Requires({ a != null && a.length > 0 }) @Ensures({ result == a.sum() }) static int f(int[] a) { 0 } }')],
     ]
 }

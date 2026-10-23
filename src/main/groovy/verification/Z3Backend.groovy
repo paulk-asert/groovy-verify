@@ -198,8 +198,12 @@ class Z3Session implements SmtSession {
      * is not counted as an undecided verdict. The check itself is still counted.
      */
     void auxiliary(int ms) {
-        auxTimeoutMs = ms
-        Params p = ctx.mkParams(); p.add('timeout', ms); solver.setParameters(p)
+        auxTimeoutMs = ms   // the cache keys on this, unscaled
+        // Phase 384 — scaled by the machine's load as the check's budget is (Phase 383): an auxiliary query picks the
+        // failing call shown, and on a loaded machine its fixed budget picked a different one (P344's `f(2, 1)` became
+        // `f(1, 2)` at a load average of ~600)
+        int scaled = keyTimeoutMs > 0 && timeoutMs > keyTimeoutMs ? (int) (ms * ((double) timeoutMs / keyTimeoutMs)) : ms
+        Params p = ctx.mkParams(); p.add('timeout', scaled); solver.setParameters(p)
     }
 
     @Override
@@ -1629,11 +1633,115 @@ class Z3Session implements SmtSession {
             if (auxTimeoutMs > 0) return CheckResult.unknown(reason)
             // Phase 321 — a query mixing nonlinear arithmetic with quantified axioms gets a second, sliced, attempt.
             if (mixedQuery() && nonlinearSliceProves()) return CheckResult.verified()
+            // Phase 384 — a refutation the sum axioms hide: a model found over small arrays, confirmed against the whole
+            // query with its values pinned
+            CheckResult witness = sumWitness()
+            if (witness != null) return witness
             Z3Backend.recordSolverCheck(0L, true)
             return CheckResult.unknown(reason)
         }
-        // SATISFIABLE: extract counterexample for variables we declared
-        Model m = solver.getModel()
+        refutationFromModel(solver.getModel())
+    }
+
+    /** Phase 384 — the widest range a bounded sum witness unrolls: arrays of up to this many elements. */
+    private static final int SUM_WITNESS_K = 3
+
+    /**
+     * Phase 384 — a counterexample the array-sum axioms keep the solver from building. A claim over {@code xs.sum()} that
+     * is false is "Could not decide" rather than refuted: to say so the solver must model the sum function under its
+     * quantified base/step axioms, and it times out (the ClearSplit fold without its hypothesis, `m4`'s
+     * `v.sum() == 0` across `v = bump(v)`, a sum bound the elements don't give). So the query is retried without those
+     * axioms, every sum term in it ranging over at most {@link #SUM_WITNESS_K} elements and defined as their plain
+     * addition. A model of that is only a candidate (a sum inside a quantifier isn't defined there): the ORIGINAL query
+     * is checked again with every declared constant pinned to the candidate's values, which, all concrete, the solver
+     * decides; only a satisfiable answer is reported, as an ordinary refutation. Nothing here proves anything.
+     */
+    private CheckResult sumWitness() {
+        if (sumFn == null) return null
+        long t0 = System.nanoTime()
+        try {
+            List<BoolExpr> kept = new ArrayList<BoolExpr>()
+            boolean dropped = false
+            for (BoolExpr e : assertedExprs) {
+                if (isSumAxiom(e)) dropped = true
+                else kept.add(e)
+            }
+            if (!dropped) return null
+            Set<Expr> sums = new LinkedHashSet<Expr>()
+            for (BoolExpr e : kept) collectGroundSums(e, sums)
+            if (sums.isEmpty()) return null
+            Solver sub = ctx.mkSolver()
+            Params p = ctx.mkParams(); p.add('timeout', sliceTimeoutMs()); sub.setParameters(p)
+            for (BoolExpr e : kept) sub.add(e)
+            for (Expr s : sums) {
+                Expr[] a = s.getArgs()
+                ArrayExpr arr = (ArrayExpr) a[0]
+                ArithExpr lo = (ArithExpr) a[1], hi = (ArithExpr) a[2]
+                sub.add(ctx.mkLe(ctx.mkSub(hi, lo), ctx.mkInt(SUM_WITNESS_K)))
+                ArithExpr acc = ctx.mkInt(0)
+                for (int i = 0; i < SUM_WITNESS_K; i++) {
+                    ArithExpr idx = (ArithExpr) ctx.mkAdd(lo, ctx.mkInt(i))
+                    acc = (ArithExpr) ctx.mkAdd(acc, (ArithExpr) ctx.mkITE(ctx.mkLt(idx, hi), ctx.mkSelect(arr, idx), ctx.mkInt(0)))
+                }
+                sub.add(ctx.mkEq(s, acc))
+            }
+            if (sub.check() != Status.SATISFIABLE) return null
+            Model candidate = sub.getModel()
+            // The candidate, with the sum function read as the TRUE sum of the array over [lo, hi), is a model of the
+            // original query: the axioms define exactly that function, each sum term outside a quantifier was defined as
+            // that very addition (its range at most K), and nothing else mentions the function. So when no sum sits
+            // inside a kept quantifier, the candidate is the counterexample. Otherwise the original is checked again
+            // with the candidate's values pinned.
+            if (!kept.any { BoolExpr e -> sumUnderQuantifier(e, false) }) return refutationFromModel(candidate)
+            solver.push()
+            try {
+                List<Expr> consts = new ArrayList<Expr>()
+                consts.addAll(vars.values()); consts.addAll(boolVars.values()); consts.addAll(arrays.values())
+                consts.addAll(sets.values()); consts.addAll(sortedVars.values()); consts.addAll(sortedArrays.values())
+                for (Expr c : consts) {
+                    Expr v = candidate.evaluate(c, true)
+                    if (v != null) solver.add(ctx.mkEq(c, v))
+                }
+                if (solver.check() != Status.SATISFIABLE) return null
+                return refutationFromModel(solver.getModel())
+            } finally {
+                solver.pop()
+            }
+        } catch (Throwable ignored) {
+            return null
+        } finally {
+            Z3Backend.recordSolverCheck((long) ((System.nanoTime() - t0) / 1_000_000L), false)
+        }
+    }
+
+    /** Phase 384 — the sum function's own base/step axioms (their bound variables are `sum$…`, Encoder.sumOf). */
+    private static boolean isSumAxiom(BoolExpr e) {
+        if (!e.isQuantifier()) return false
+        com.microsoft.z3.Symbol[] names = ((com.microsoft.z3.Quantifier) e).getBoundVariableNames()
+        names.length > 0 && names.every { com.microsoft.z3.Symbol n -> n.toString().startsWith('sum$') }
+    }
+
+    /** Phase 384 — does a sum application occur inside a quantifier in {@code e}? */
+    private boolean sumUnderQuantifier(Expr e, boolean under) {
+        if (e.isQuantifier()) return sumUnderQuantifier(((com.microsoft.z3.Quantifier) e).getBody(), true)
+        if (e.isApp()) {
+            if (under && e.getFuncDecl().equals(sumFn)) return true
+            for (Expr a : e.getArgs()) if (sumUnderQuantifier(a, under)) return true
+        }
+        false
+    }
+
+    /** Phase 384 — the sum applications in {@code e} outside any quantifier (their arguments are then ground). */
+    private void collectGroundSums(Expr e, Set<Expr> out) {
+        if (e.isQuantifier()) return
+        if (e.isApp()) {
+            if (e.getFuncDecl().equals(sumFn)) out.add(e)
+            for (Expr a : e.getArgs()) collectGroundSums(a, out)
+        }
+    }
+
+    /** SATISFIABLE: extract counterexample for variables we declared, from {@code m}. */
+    private CheckResult refutationFromModel(Model m) {
         lastModel = m    // Phase 126 — retain for post-check element evaluation (evalDisplay)
         Map<String, Long> ce = [:]
         vars.each { name, var ->

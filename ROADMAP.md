@@ -16998,6 +16998,41 @@ a check can still time out. A deliberately-undecided canary costs up to four tim
 **Shipped tests:** `LoadFactorTest` (3): the factor within [1, 4], a forced factor clamped, scaling turned off. The three
 cases pass at the default budget and at 8 s.
 
+## Phase 384 — a false sum claim gets a counterexample  *(shipped — completeness: "Could not decide" over `.sum()`)*
+
+Four phases in a row ended with a false claim over an array's `.sum()` reported as "Could not decide … (solver:
+timeout)": the ClearSplit `m4` and `foldWithout`, Phase 379's guards (a sum bound the elements don't give), a wrong
+`bump` body. Refuting them needs a model of the sum function `sumArr$` under its quantified base/step axioms, which the
+solver can't build in budget.
+
+- **A bounded witness** (`Z3Session.sumWitness`, after Phase 321's nonlinear slice, on an UNKNOWN only): the query again
+  without the sum axioms (recognised by their `sum$…` bound variables), each sum term outside a quantifier ranging over
+  at most three elements (`hi - lo <= 3`) and defined as their addition. A model of that, with the sum function read as
+  the TRUE sum of the array over `[lo, hi)`, is a model of the original: the axioms define exactly that function, each
+  ground sum term was defined as that very addition, and the store law and Phase 379's lemmas are theorems about it — so
+  when no sum sits inside a kept quantifier, the model is the counterexample (`refutationFromModel`, shared with an
+  ordinary refutation). Otherwise the original query is checked again with every declared constant pinned to the model;
+  only a satisfiable answer counts (Z3 is often incomplete there, so such a case stays undecided). The slice budget
+  (Phase 383) bounds it. It turns an undecided verdict into a refutation; it never proves.
+- **Auxiliary queries scale with load too** (Phase 383 left them fixed): the witness search that picks the failing call
+  shown chose a different call on a loaded machine (P344's `f(2, 1)` became `f(1, 2)` at a load average of ~600). The
+  cache still keys on the unscaled budget.
+
+**Changed cases:** seven that expected "Could not decide" over a sum are now refuted, each counterexample checked:
+G107's bare `.sum()` at the empty edge (on entry: the empty slice's sum is null), G191's N-account skim, G200's array
+sum, G249's will_it_fly without the palindrome check, G354's allocate first attempt, G422's fold without its hypothesis.
+And G388's P344 case pinned `fails on: f(2, 1)`: the model Z3 returns varies with its timeout, which Phase 383 now scales
+with load, and `f(1, 2)` is as genuine (row 0 is skipped) — it now accepts any failing call.
+
+**Boundary:** a sum inside a quantifier (`(0..<k).every { a[0..<it].sum() … }`) keeps the axioms' undecided verdict
+unless the pinned re-check settles it. A postcondition refuted only through a weak loop invariant shows a `fails on:`
+call that may not fail (the state is the invariant's, not a run's: `allocate(0, [1, 1, 1] as int[])` passes) — as
+before this phase, for any such refutation; Phase 371 withholds the call inside loop regions, not after them.
+
+**Shipped tests:** group `P384 sum witness`, 7 cases. Undecided before: a sum the elements' bounds don't cap, a sum over
+elements the precondition doesn't bound, a sum after a store, an unmet callee sum precondition, a sum invariant a call
+breaks, a body whose sum is off. Plus true sum bounds, still proved.
+
 ---
 
 ## Definition of done, per increment

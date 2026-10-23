@@ -361,7 +361,7 @@ class G354_lemmascript_port {
                     }''')],
         // The agent's first attempt stops after flooring: allocate(10, [1, 1, 1]) is [3, 3, 3]. Not proved; the
         // solver can't build a counterexample through the recursive sum axioms, so it is "could not decide".
-        [group: 'LemmaScript port', name: 'allocate first attempt loses the remainder', expect: 'Could not decide postcondition of allocate',
+        [group: 'LemmaScript port', name: 'allocate first attempt loses the remainder', expect: 'Cannot prove postcondition of allocate',   // Phase 384: refuted (a bounded sum witness), not undecided
          src: tc('''class C {
                         @Requires({ weights != null && total >= 0 && weights.every { int w -> w >= 0 } && weights.sum() > 0 })
                         @Ensures({ result.sum() == total })

@@ -32,7 +32,7 @@ class G107_p91_nested {
         // unconstrained (only a numeric *array*'s `.sum()` empties to 0), so it can no longer establish it — a
         // refute-hostile boundary that soft-fails to "could not decide" on this heavy nested VC. The `.sum(0)`
         // variant below is the empty-safe workaround (and the form the README "Examples" now shows).
-        [group: 'P91 nested', name: 'matrix sum: bare .sum() refused at the empty edge', expect: 'Could not decide',
+        [group: 'P91 nested', name: 'matrix sum: bare .sum() refused at the empty edge', expect: 'Cannot prove loop invariant holds on entry',   // Phase 384: refuted (the empty slice's sum is null), not undecided
          src: tc('''class C {
                         @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
                         @Ensures({ result == a[0..<n * m].sum() })

@@ -187,10 +187,10 @@ class G422_p378_sum_fold {
                         }
                     }""")],
 
-        // Without that hypothesis it must not prove: reported (a refutation needs a model of the sum's axioms). Before:
-        // reported too, at its establishment.
+        // Without that hypothesis it must not prove: refuted (Phase 384's bounded sum witness; before, undecided — a
+        // refutation needed a model of the sum's axioms).
         [group: "P378 sum fold", name: "… and doesn't without its hypothesis",
-         expect: "loop-invariant preservation in foldWithout",
+         expect: "Cannot prove loop invariant is preserved by the loop body in foldWithout",   // Phase 384: refuted, was undecided
          src: tc("""class A {${ROW}
                         @Requires({ members > 0 && payer != null && amount != null && off != null && flat != null })
                         @Requires({ payer.length == amount.length && off.length == amount.length })

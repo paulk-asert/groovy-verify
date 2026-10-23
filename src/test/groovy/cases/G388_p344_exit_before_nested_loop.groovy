@@ -95,7 +95,9 @@ class G388_p344_exit_before_nested_loop {
                             return s
                         }
                     }''')],
-        [group: 'P344 break or continue before a nested loop', name: 'a claim as if the skipped row ran refutes', expect: ['Cannot prove postcondition', 'fails on: f(2, 1)'],
+        // Phase 384: any failing call (`f(2, 1)` or `f(1, 2)`, both genuine — row 0 is skipped): which one the model
+        // gives varies with the solver budget, which Phase 383 scales with the machine's load.
+        [group: 'P344 break or continue before a nested loop', name: 'a claim as if the skipped row ran refutes', expect: ['Cannot prove postcondition', 'fails on: f('],
          src: tc('''class C {
                         @Requires({ n >= 1 && m >= 0 })
                         @Ensures({ result == n * m })
