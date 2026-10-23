@@ -17285,6 +17285,34 @@ loop nested deeper than one level gets no witness, so its call is withheld rathe
 early exit keeps. Found: the first run that breaks it (`f(3)`), however late (`f(5)`). Kept: a for loop's `f([-1] as
 int[])`.
 
+## Phase 393 — a helper's closure literal has its argument's facts  *(shipped — false positives)*
+
+Seen throughout Phases 390–392: `h({ int[] x -> x[0] = 1 }, a)` warned `index may be out of bounds … 0 < x.size()`
+under `@Requires({ a.length > 0 })` — a site inside a closure is checked with its parameters free (Phase 372), and
+Phase 380's range facts covered only the GDK iterators (`each`, `times`, `every`, …).
+
+- **The helper's parameter facts** (`helperParamFacts`, from `closureParamFacts` for an instance or static call,
+  `helperOf`): when the call runs a same-class helper no override can replace (static, private, final, or of a final
+  class) and the helper uses the callable parameter only by calling it (`c.call(b)`, `f.apply(b)`, a `!= null` test
+  aside), and every such call passes the same formal at a closure parameter's position, a formal the helper never
+  assigns, that closure parameter is the caller's actual there: equal to it, for a value; for an array, the same
+  length and nullity — not its contents, which the helper or an earlier run of the closure may write; for another
+  reference, its nullity. A coerced literal (`{ x -> … } as Function`) counts.
+- **Read after the closure's havoc** (`HELPER_PARAM_KEY`): the closure's own writes through its parameter havoc it
+  (Phase 372), but its length and nullity are fixed per call, so the fact is asserted after the havoc — and dropped when
+  the actual is itself among what the closure may change.
+- **A coercion keeps null** (`Encoder.nullityOfExpr`): `{ … } as Function` is non-null, so a helper's `f != null`
+  precondition discharges at the site.
+
+**Boundary:** a helper calling the literal on anything but one unassigned formal (a computed value, two different
+formals), keeping or handing on the callable, or open to override gives no fact; contents and list sizes aren't
+carried; the call stays withheld (Phase 372's note).
+
+**Shipped tests:** group `P393 helper closure facts`, 11 cases. Proved: an array's length bounding the literal's index,
+its nullity, a scalar argument. Still warned: an unbounded array, an unconstrained scalar, a helper calling the literal
+on something else, on two different arguments, keeping it, reassigning the argument, open to override, and an actual
+the literal itself writes.
+
 ---
 
 ## Definition of done, per increment

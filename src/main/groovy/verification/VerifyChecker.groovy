@@ -5510,16 +5510,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // checked `j[it]` with `it` free (`it = -1`). The range is evaluated once, as the call starts, so its bounds are
         // read here, in the state at the call, before the havoc of what may change by the time the closure runs.
         List<Object> ranges = new ArrayList<Object>()
+        List<Expression> helperFacts = new ArrayList<Expression>()
         for (Expression fact : closureParamFactsFor((ASTNode) site['node'])) {
+            if (fact.getNodeMetaData(HELPER_PARAM_KEY) != null) { helperFacts.add(fact); continue }
             Object t = enc.translate(fact)
             if (t != null) ranges.add(t)
         }
         for (String n : h) havocLocation(enc, n)
         for (Object t : ranges) s.assertExpr(t)
+        // Phase 393 — a helper's parameter fact relates the closure's parameter (bound per call: its length and nullity
+        // survive the havoc of what the closure writes through it) to the caller's actual, so it is read after the havoc,
+        // and only when the actual isn't among what it havocks
+        for (Expression fact : helperFacts) {
+            String p = (String) fact.getNodeMetaData(HELPER_PARAM_KEY)
+            if (namesRead(fact).any { it != p && h.contains(it) }) continue
+            Object t = enc.translate(fact)
+            if (t != null) s.assertExpr(t)
+        }
         String prev = closureCallNote
         closureCallNote = CLOSURE_CALL_NOTE
         try { dischargeObligationAt(s, enc, site) } finally { closureCallNote = prev }
     }
+
+    /** Phase 393 — marks a helper's parameter fact ({@link #helperParamFacts}) with the closure parameter it is about. */
+    static final String HELPER_PARAM_KEY = 'verification.helperParam'
 
     static final String CLOSURE_CALL_NOTE = 'no failing call: the failure is inside a closure, in a call whose ' +
         'arguments and captured state the check takes as unknown rather than following from entry'
@@ -5537,7 +5551,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (at == null || currentMethod == null) return Collections.<Expression> emptyList()
         Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
         if (body == null) return Collections.<Expression> emptyList()
-        if (!body.is(closureFactsBody)) { closureFactsBody = body; closureFactsMap = closureParamFacts(body) }
+        if (!body.is(closureFactsBody)) { closureFactsBody = body; closureFactsMap = closureParamFacts(body, currentMethod.declaringClass) }
         closureFactsMap.get(at) ?: Collections.<Expression> emptyList()
     }
 
@@ -5552,7 +5566,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * `b <= p && p <= a`. A nested closure keeps its outer facts, except those over a name its own parameter (or
      * implicit `it`) shadows.
      */
-    private static IdentityHashMap<ASTNode, List<Expression>> closureParamFacts(Statement body) {
+    private static IdentityHashMap<ASTNode, List<Expression>> closureParamFacts(Statement body, ClassNode owner = null) {
         IdentityHashMap<ASTNode, List<Expression>> out = new IdentityHashMap<ASTNode, List<Expression>>()
         List<List<Expression>> stack = new ArrayList<List<Expression>>()
         stack.add(new ArrayList<Expression>())
@@ -5562,29 +5576,51 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Expression> cur = stack.get(stack.size() - 1)
                 if (!cur.isEmpty()) out.put(n, cur)
             }
-            void enter(ClosureExpression ce, Expression fact) {
+            void enter(ClosureExpression ce, Expression fact) { enter(ce, fact == null ? Collections.<Expression> emptyList() : [fact]) }
+            void enter(ClosureExpression ce, List<Expression> facts) {
                 Set<String> params = new HashSet<String>()
                 if (ce.parameters != null && ce.parameters.length > 0) for (Parameter p : ce.parameters) params.add(p.name)
                 else if (!ce.isParameterSpecified()) params.add('it')
                 List<Expression> next = stack.get(stack.size() - 1).findAll { Expression f -> !namesRead(f).any { params.contains(it) } }
-                if (fact != null) next.add(fact)
+                next.addAll(facts)
                 stack.add(next)
                 try { ce.code?.visit(this) } finally { stack.remove(stack.size() - 1) }
             }
-            @Override void visitClosureExpression(ClosureExpression ce) { enter(ce, null) }
+            @Override void visitClosureExpression(ClosureExpression ce) { enter(ce, Collections.<Expression> emptyList()) }
             @Override void visitMethodCallExpression(MethodCallExpression mce) {
                 mark(mce)
                 mce.objectExpression.visit(this)
                 mce.method.visit(this)
                 Expression args = mce.arguments
                 List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : [args]
-                for (Expression a : as) {
-                    if (a instanceof ClosureExpression) enter((ClosureExpression) a, iterationFact(mce, (ClosureExpression) a))
+                MethodNode helper = helperOf(mce, owner)   // Phase 393
+                for (int i = 0; i < as.size(); i++) {
+                    Expression a = as.get(i)
+                    if (a instanceof ClosureExpression) {
+                        Expression it = iterationFact(mce, (ClosureExpression) a)
+                        enter((ClosureExpression) a, it != null ? [it] :
+                            helper != null ? helperParamFacts(helper, i, as, (ClosureExpression) a) : Collections.<Expression> emptyList())
+                    } else if (helper != null && stripCasts(a) instanceof ClosureExpression) {
+                        mark(a)   // a coerced literal (`{ x -> … } as Function`)
+                        enter((ClosureExpression) stripCasts(a), helperParamFacts(helper, i, as, (ClosureExpression) stripCasts(a)))
+                    }
                     else a.visit(this)
                 }
             }
             @Override void visitBinaryExpression(BinaryExpression e) { mark(e); super.visitBinaryExpression(e) }
-            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression e) { mark(e); super.visitStaticMethodCallExpression(e) }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression e) {
+                mark(e)
+                // Phase 393 — a same-class static helper handed a closure literal
+                MethodNode helper = helperOf(e, owner)
+                List<Expression> as = e.arguments instanceof TupleExpression ? ((TupleExpression) e.arguments).expressions : [e.arguments]
+                for (int i = 0; i < as.size(); i++) {
+                    Expression a = as.get(i)
+                    if (stripCasts(a) instanceof ClosureExpression && helper != null) {
+                        enter((ClosureExpression) stripCasts(a), helperParamFacts(helper, i, as, (ClosureExpression) stripCasts(a)))
+                    }
+                    else a.visit(this)
+                }
+            }
             @Override void visitPropertyExpression(PropertyExpression e) { mark(e); super.visitPropertyExpression(e) }
             @Override void visitPostfixExpression(PostfixExpression e) { mark(e); super.visitPostfixExpression(e) }
             @Override void visitPrefixExpression(PrefixExpression e) { mark(e); super.visitPrefixExpression(e) }
@@ -5593,6 +5629,129 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         body.visit(v)
         out
+    }
+
+    /** Phase 393 — the method a call runs when it is a same-class helper with a body no override replaces (static,
+     *  private, final, or of a final class) and one method of that name and arity; else null. */
+    private static MethodNode helperOf(Expression call, ClassNode owner) {
+        if (owner == null) return null
+        String name
+        Expression args
+        ClassNode in
+        if (call instanceof StaticMethodCallExpression) {
+            in = ((StaticMethodCallExpression) call).ownerType; name = ((StaticMethodCallExpression) call).method
+            args = ((StaticMethodCallExpression) call).arguments
+        } else if (call instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) call
+            Expression o = mce.objectExpression
+            boolean self = mce.implicitThis || (o instanceof VariableExpression && ((VariableExpression) o).isThisExpression())
+            if (self) in = owner
+            else if (o instanceof ClassExpression) in = o.type
+            else return null
+            name = mce.methodAsString; args = mce.arguments
+        } else return null
+        if (in == null || name == null || !(args instanceof TupleExpression) || in.redirect().name != owner.redirect().name) return null
+        int arity = ((TupleExpression) args).expressions.size()
+        List<MethodNode> ms = in.getMethods(name).findAll { MethodNode m -> m.parameters.length == arity && m.code != null }
+        if (ms.size() != 1) return null
+        MethodNode m = ms.get(0)
+        boolean fixed = m.isStatic() || m.isPrivate() || m.isFinal() || java.lang.reflect.Modifier.isFinal(m.declaringClass.modifiers)
+        fixed ? m : null
+    }
+
+    /**
+     * Phase 393 — what helper {@code h} hands the closure literal {@code ce} it is passed (as argument {@code at},
+     * of {@code actuals}): when {@code h} uses that parameter only by calling it (`c.call(b)`, `f.apply(b)`; a `!= null`
+     * test aside) and every call passes, at a closure parameter's position, the same formal of {@code h} that {@code h}
+     * never assigns, that closure parameter IS the caller's actual there. A value: equal to it. An array: its length
+     * and nullity — not its contents, which {@code h} or an earlier run of the closure may write. Another reference:
+     * its nullity. Facts over the caller's names, read in the state at the call (Phase 380's discipline).
+     */
+    private static List<Expression> helperParamFacts(MethodNode h, int at, List<Expression> actuals, ClosureExpression ce) {
+        List<Expression> out = new ArrayList<Expression>()
+        if (at >= h.parameters.length) return out
+        String cn = h.parameters[at].name
+        Statement body = (Statement) h.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: h.code
+        if (body == null) return out
+        List<List<Expression>> calls = new ArrayList<List<Expression>>()
+        Set<String> assigned = new HashSet<String>()
+        boolean[] escapes = [false]
+        Set<VariableExpression> asReceiver = Collections.newSetFromMap(new IdentityHashMap<VariableExpression, Boolean>())
+        Set<VariableExpression> inNullTest = Collections.newSetFromMap(new IdentityHashMap<VariableExpression, Boolean>())
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                Expression o = mce.objectExpression
+                if (o instanceof VariableExpression && ((VariableExpression) o).name == cn && Encoder.isCallableCall(mce) &&
+                        mce.arguments instanceof TupleExpression) {
+                    asReceiver.add((VariableExpression) o)
+                    calls.add(((TupleExpression) mce.arguments).expressions)
+                }
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if (Types.ofType(op, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                    assigned.add(((VariableExpression) be.leftExpression).name)
+                }
+                if ((op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) && isNull(be.rightExpression) &&
+                        be.leftExpression instanceof VariableExpression) {
+                    inNullTest.add((VariableExpression) be.leftExpression)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                if (pe.expression instanceof VariableExpression) assigned.add(((VariableExpression) pe.expression).name)
+                super.visitPostfixExpression(pe)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                if (pe.expression instanceof VariableExpression) assigned.add(((VariableExpression) pe.expression).name)
+                super.visitPrefixExpression(pe)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (ve.name == cn && !asReceiver.contains(ve) && !inNullTest.contains(ve)) escapes[0] = true
+            }
+            private boolean isNull(Expression e) { e instanceof ConstantExpression && ((ConstantExpression) e).value == null }
+        })
+        if (escapes[0] || assigned.contains(cn) || calls.isEmpty()) return out
+        List<String> names = ce.parameters != null && ce.parameters.length > 0 ? ce.parameters*.name :
+            !ce.isParameterSpecified() ? ['it'] : Collections.<String> emptyList()
+        for (int j = 0; j < names.size(); j++) {
+            String formal = null
+            boolean same = true
+            for (List<Expression> args : calls) {
+                Expression a = j < args.size() ? args.get(j) : null
+                String fn = a instanceof VariableExpression ? ((VariableExpression) a).name : null
+                if (fn == null || (formal != null && fn != formal)) { same = false; break }
+                formal = fn
+            }
+            int fi = same && formal != null && !assigned.contains(formal) ? h.parameters.findIndexOf { it.name == formal } : -1
+            if (fi < 0 || fi >= actuals.size()) continue
+            Expression actual = actuals.get(fi)
+            if (!(actual instanceof VariableExpression || actual instanceof ConstantExpression)) continue
+            VariableExpression p = new VariableExpression(names.get(j))
+            ClassNode ft = h.parameters[fi].type
+            Token eq = Token.newSymbol(Types.COMPARE_EQUAL, -1, -1), and = Token.newSymbol(Types.LOGICAL_AND, -1, -1)
+            if (isImmutableType(ft)) {
+                out.add(helperFact(new BinaryExpression(p, eq, actual), p.name))
+                continue
+            }
+            if (!(actual instanceof VariableExpression)) continue
+            ConstantExpression nul = new ConstantExpression(null)
+            Token or = Token.newSymbol(Types.LOGICAL_OR, -1, -1), ne = Token.newSymbol(Types.COMPARE_NOT_EQUAL, -1, -1)
+            // the same object: null exactly when the actual is
+            out.add(helperFact(new BinaryExpression(new BinaryExpression(new BinaryExpression(actual, eq, nul), or,
+                new BinaryExpression(p, ne, nul)), and, new BinaryExpression(new BinaryExpression(actual, ne, nul), or,
+                new BinaryExpression(p, eq, nul))), p.name))
+            if (ft.isArray()) {
+                out.add(helperFact(new BinaryExpression(new PropertyExpression(p, 'length'), eq, new PropertyExpression(actual, 'length')), p.name))
+            }
+        }
+        out
+    }
+
+    private static Expression helperFact(Expression e, String param) {
+        e.putNodeMetaData(HELPER_PARAM_KEY, param)
+        e
     }
 
     /** Phase 380 — {@code p} among the ints {@code re} iterates, either direction, either end excluded (as

@@ -4411,6 +4411,7 @@ class Encoder implements TheoryApi {
      */
     Object nullityOfExpr(Expression e) {
         if (e == null) return null
+        if (e instanceof CastExpression) return nullityOfExpr(((CastExpression) e).expression)   // Phase 393 — a coercion keeps null
         if (e instanceof ConstantExpression) return session.boolLit(((ConstantExpression) e).value == null)
         if (e instanceof VariableExpression) {
             String n = ((VariableExpression) e).name

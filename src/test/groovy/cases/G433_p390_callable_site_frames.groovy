@@ -55,9 +55,9 @@ class G433_p390_callable_site_frames {
                         static void g(int[] a) { h({ int[] x -> x[0] = 1 }, a) }
                     }''')],
 
-        // (the literal's own `x[0]` keeps its index obligation — its parameter's size is the closure's to know)
+        // (Phase 393 — the literal's own `x[0]` is bounded too: h calls it on b, so x is a, whose length is > 0)
         [group: "P390 callable site frames", name: "… and only that argument",
-         expect: "index may be out of bounds", refute: POST,
+         ok: true,
          src: tc('''final class A {
                         @Requires({ c != null && b != null && b.length > 0 })
                         static void h(Closure c, int[] b) { c.call(b) }
