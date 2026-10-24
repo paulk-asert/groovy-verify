@@ -276,6 +276,7 @@ verifier, not the code, ran out of road.
 | rests on … a value the verifier doesn't model | the claim depends on something outside the fragment | bind it to a modelled form, or accept the warning |
 | what a statement writes inside it | a nested write, a finally or a fall-through was havocked | split the statement if the call matters |
 
-The search is bounded: a run whose failure needs more than eight iterations of a loop, or many iterations of an outer
-one, is outside it, and its call is withheld rather than found. A withheld call never means the check passed — the
+The search is bounded: the shortest runs first, then runs spread across the iterations of nested loops; a failure that
+needs more than eight iterations of a loop, or loops with unrelated bounds, can fall outside it, and its call is
+withheld rather than found. A withheld call never means the check passed — the
 warning stands; only the call is missing.

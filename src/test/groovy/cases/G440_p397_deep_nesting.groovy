@@ -149,8 +149,9 @@ class G440_p397_deep_nesting {
                             }
                         }''')],
 
+        // Phase 398 — and its run is found (it had no call: the shortest paths stayed in the first outer iteration)
         [group: "P397 deep nesting", name: "a return three loops down is checked",
-         expect: ["Cannot prove postcondition of f"],
+         expect: ["Cannot prove postcondition of f", "fails on: f(2)"],
          src: tc('''class A {
                             @Requires({ n >= 0 })
                             @Ensures({ result >= 0 })

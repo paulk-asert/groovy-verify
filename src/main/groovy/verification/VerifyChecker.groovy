@@ -6929,6 +6929,71 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out.size() > ENTRY_PATHS ? new ArrayList<List<Statement>>(out.subList(0, ENTRY_PATHS)) : out
     }
 
+    /** Phase 398 — {@link #loopEntryPaths}' candidates, uncapped, each as [the path, the most iterations any one loop on it
+     *  runs, the iterations of all of them]: this loop's own (the iteration it reaches) and those of the loops unrolled
+     *  on the way ({@link #expansionsTagged}). */
+    private static List<Object[]> loopEntryPathsTagged(List<Statement> base, LoopSpec spec, String at) {
+        List<List<Statement>> sym = new ArrayList<List<Statement>>()
+        List<Integer> iters = new ArrayList<Integer>()
+        if (base == null) return Collections.<Object[]> emptyList()
+        // Phase 385 — an iteration is one of its body's runs: a top-level `if (c) continue` forks it (it was replayed as
+        // never taken, so no witness took the continue — P344's `f(1, 0)`)
+        List<List<Statement>> runs = bodyVariants(spec)
+        List<List<Statement>> heads = [new ArrayList<Statement>(base)] as List<List<Statement>>
+        if (spec.isDoWhile) {
+            if (at == 'body') { sym.add(new ArrayList<Statement>(base)); iters.add(0) }
+            heads = extendEach(heads, runs)
+        }
+        for (int j = 0; j < ENTRY_UNROLL && sym.size() < 4 * ENTRY_PATHS; j++) {
+            if (j > 0) heads = extendEach(heads.collect { List<Statement> h -> withAssume(h, spec.guard) }, runs)
+            for (List<Statement> head : heads) {
+                sym.add(at == 'head' ? new ArrayList<Statement>(head) :
+                    withAssume(head, at == 'exit' ? (Expression) new NotExpression(spec.guard) : spec.guard))
+                iters.add(j)
+            }
+        }
+        List<Object[]> out = new ArrayList<Object[]>()
+        for (int k = 0; k < sym.size(); k++) {
+            int j = iters.get(k)
+            for (Object[] x : expansionsTagged(sym.get(k))) {
+                // a loop left by its guard ('exit') has completed j iterations; one at 'head'/'body' is part-way
+                int cmin = (int) x[3], cmax = (int) x[4], pmax = (int) x[5]
+                if (at == 'exit') { cmin = Math.min(cmin, j); cmax = Math.max(cmax, j) } else pmax = Math.max(pmax, j)
+                out.add([x[0], Math.max(j, (int) x[1]), j + (int) x[2], cmin, cmax, pmax] as Object[])
+            }
+        }
+        out
+    }
+
+    /** Phase 398 — the candidates a witness search keeps, each [path, max, sum]: fewest iterations of any one loop first,
+     *  then fewest in all, then the shortest — so the run through the second iteration of each of three loops comes
+     *  before the eighth of one alone (shortest-first kept only the first loops' earliest runs, and a failure needing a
+     *  later outer iteration was never tried). Capped at {@link #ENTRY_PATHS}. */
+    private static List<Object[]> byIterations(List<Object[]> cands) { byIterations(cands, ENTRY_PATHS) }
+
+    /** Phase 398 — could a candidate be a run of loops that share a bound: the loops it completes all ran the same
+     *  number of times, and every loop it is part-way through is at an iteration below that (a loop left after 0
+     *  iterations beside one at its first is infeasible when they share n)? A candidate completing none qualifies. */
+    private static boolean uniform(Object[] t) {
+        (int) t[4] < 0 || ((int) t[3] == (int) t[4] && (int) t[5] < (int) t[3])
+    }
+
+    private static List<Object[]> byIterations(List<Object[]> cands, int cap) {
+        List<Object[]> sorted = new ArrayList<Object[]>(cands)
+        sorted.sort { Object[] a, Object[] b -> compareIterations(a, b) }
+        sorted.size() > cap ? new ArrayList<Object[]>(sorted.subList(0, cap)) : sorted
+    }
+
+    private static int compareIterations(Object[] a, Object[] b) {
+        // a run whose completed loops all ran alike (they share a bound, as nested loops over n usually do) first: the
+        // ones that don't are mostly infeasible
+        int c = Integer.compare(uniform(a) ? 0 : 1, uniform(b) ? 0 : 1)
+        if (c == 0) c = Integer.compare((int) a[1], (int) b[1])
+        if (c == 0) c = Integer.compare((int) a[2], (int) b[2])
+        if (c == 0) c = Integer.compare(((List) a[0]).size(), ((List) b[0]).size())
+        c
+    }
+
     /** Phase 371 — the loop-free variants of a path: each loop in it unrolled 0..{@link #ENTRY_UNROLL}-1 times and left
      *  by its guard (recursively, for a loop in its body). None when a statement can't be: a for-in over a collection
      *  without its desugar, a loop inside a branch, a closure. */
@@ -6966,6 +7031,73 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             acc = next
         }
         acc
+    }
+
+    /** Phase 398 — {@link #expansions}, each variant as [path, max, sum] of the iterations its unrolled loops run; the
+     *  product of a statement's variants with the path so far is taken fewest-iterations first ({@link #product}). */
+    private static List<Object[]> expansionsTagged(List<Statement> path) {
+        List<Object[]> acc = new ArrayList<Object[]>()
+        acc.add([new ArrayList<Statement>(), 0, 0, Integer.MAX_VALUE, -1, -1] as Object[])
+        for (Statement st : path) {
+            List<Object[]> vs
+            if (st instanceof LoopingStatement) {
+                vs = loopVariantsTagged((LoopingStatement) st)
+            } else if (st instanceof IfStatement && inexactReplay(st)) {
+                // Phase 385 — a branch holding a loop (`if (cont) {} else while …`, how Phase 344 lowers a continue before
+                // a nested loop): each way, its condition assumed, the branch's statements expanded in turn (an exit in
+                // it the replay can't follow rejects that path there)
+                IfStatement ifs = (IfStatement) st
+                Expression c = ifs.booleanExpression.expression
+                vs = new ArrayList<Object[]>()
+                for (Object[] v : expansionsTagged(topStatements(ifs.ifBlock))) {
+                    vs.add([withAssume([] as List<Statement>, c) + (List<Statement>) v[0], v[1], v[2], v[3], v[4], v[5]] as Object[])
+                }
+                List<Statement> elseStmts = ifs.elseBlock == null || ifs.elseBlock instanceof EmptyStatement ?
+                    new ArrayList<Statement>() : topStatements(ifs.elseBlock)
+                for (Object[] v : expansionsTagged(elseStmts)) {
+                    vs.add([withAssume([] as List<Statement>, new NotExpression(c)) + (List<Statement>) v[0], v[1], v[2], v[3], v[4], v[5]] as Object[])
+                }
+                vs = byIterations(vs, 4 * ENTRY_PATHS)
+            } else if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null || inexactReplay(st)) {
+                return Collections.<Object[]> emptyList()
+            } else {
+                vs = [[[st] as List<Statement>, 0, 0, Integer.MAX_VALUE, -1, -1] as Object[]]
+            }
+            if (vs.isEmpty()) return Collections.<Object[]> emptyList()
+            acc = product(acc, vs)
+        }
+        acc
+    }
+
+    /** Phase 398 — the tag of a path made of {@code a}'s and {@code b}'s: the larger max, the sums added, the completed
+     *  loops' counts pooled. */
+    private static Object[] combine(List<Statement> path, Object[] a, Object[] b) {
+        [path, Math.max((int) a[1], (int) b[1]), (int) a[2] + (int) b[2], Math.min((int) a[3], (int) b[3]),
+         Math.max((int) a[4], (int) b[4]), Math.max((int) a[5], (int) b[5])] as Object[]
+    }
+
+    /** Phase 398 — the concatenations of {@code as} (each sorted fewest-iterations first) with {@code bs}, taken by
+     *  diagonals of their ranks — every pair whose larger rank is d before any with d + 1 — up to 4 × {@link #ENTRY_PATHS},
+     *  so the cap keeps the low-iteration combinations of both rather than all of the first one's. */
+    private static List<Object[]> product(List<Object[]> as, List<Object[]> bs) {
+        int cap = 4 * ENTRY_PATHS
+        List<Object[]> out = new ArrayList<Object[]>()
+        int n = Math.max(as.size(), bs.size())
+        for (int d = 0; d < n && out.size() < cap; d++) {
+            // the pairs whose larger rank is d: (i, d) for i <= d, then (d, j) for j < d
+            List<int[]> pairs = new ArrayList<int[]>()
+            for (int i = 0; i <= d; i++) pairs.add([i, d] as int[])
+            for (int j = 0; j < d; j++) pairs.add([d, j] as int[])
+            for (int[] ij : pairs) {
+                if (ij[0] >= as.size() || ij[1] >= bs.size()) continue
+                Object[] a = as.get(ij[0]), b = bs.get(ij[1])
+                List<Statement> c = new ArrayList<Statement>((List<Statement>) a[0])
+                c.addAll((List<Statement>) b[0])
+                out.add(combine(c, a, b))
+                if (out.size() >= cap) break
+            }
+        }
+        byIterations(out, cap)
     }
 
     /** Phase 385 — the runs of one iteration of {@code spec}'s body: a top-level `if (c) continue` either continues
@@ -7020,6 +7152,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * markers), its init, then its own iterations. Phase 397 — at any depth, through each enclosing loop in turn.
      */
     private List<List<Statement>> entryPathsTo(LoopSite site, String at) {
+        // Phase 398 — the shortest paths first, as before; then, as a second pass, the ones balanced by iterations
+        // (balancedEntryPaths), so a call needing a later outer iteration is still sought — without displacing any
+        List<List<Statement>> first = shortestEntryPaths(site, at)
+        List<List<Statement>> out = new ArrayList<List<Statement>>(first)
+        for (Object[] t : taggedEntryPaths(site, at)) if (!first.contains(t[0])) out.add((List<Statement>) t[0])
+        out
+    }
+
+    /** Phase 397's {@link #entryPathsTo}: shortest first, through every enclosing loop. */
+    private List<List<Statement>> shortestEntryPaths(LoopSite site, String at) {
         if (site.outer == null) return loopEntryPaths(site.originalPrefix, site.spec, at)
         List<Statement> body = site.outer.spec.body
         List<Statement> before = null
@@ -7034,7 +7176,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (site.spec.init != null) before.addAll(site.spec.init)
         List<List<Statement>> out = new ArrayList<List<Statement>>()
         // Phase 397 — through every enclosing loop: the outer loop's own iteration starts, however deep it is
-        for (List<Statement> p : entryPathsTo(site.outer, 'body')) {
+        for (List<Statement> p : shortestEntryPaths(site.outer, 'body')) {
             List<Statement> b = new ArrayList<Statement>(p)
             b.addAll(before)
             out.addAll(loopEntryPaths(b, site.spec, at))
@@ -7044,6 +7186,35 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out.size() > ENTRY_PATHS ? new ArrayList<List<Statement>>(out.subList(0, ENTRY_PATHS)) : out
     }
 
+    /** Phase 398 — {@link #entryPathsTo}'s paths with their iterations per enclosing loop, chosen {@link #byIterations}
+     *  from every combination of the enclosing loop's candidates and this loop's own. */
+    private List<Object[]> taggedEntryPaths(LoopSite site, String at) {
+        if (site.outer == null) return byIterations(loopEntryPathsTagged(site.originalPrefix, site.spec, at))
+        List<Statement> body = site.outer.spec.body
+        List<Statement> before = null
+        if (body.any { it.is(site.loopStmt) }) {
+            before = stmtsBefore(body, site.loopStmt)
+        } else {
+            for (Object[] bl : branchInnerLoops(body)) {
+                if (((Statement) bl[0]).is(site.loopStmt)) { before = new ArrayList<Statement>((List<Statement>) bl[1]); break }
+            }
+        }
+        if (before == null) return Collections.<Object[]> emptyList()
+        if (site.spec.init != null) before.addAll(site.spec.init)
+        // Phase 397 — through every enclosing loop: the outer loop's own iteration starts, however deep it is; Phase 398 —
+        // every combination with this loop's own, kept by iterations (it took the first outer paths' until the cap, so
+        // a run past the outer loop's first iteration was never tried: a return at `i == j == k == 1` had no call)
+        List<Object[]> cands = new ArrayList<Object[]>()
+        for (Object[] o : taggedEntryPaths(site.outer, 'body')) {
+            List<Statement> b = new ArrayList<Statement>((List<Statement>) o[0])
+            b.addAll(before)
+            for (Object[] t : loopEntryPathsTagged(b, site.spec, at)) {
+                cands.add(combine((List<Statement>) t[0], o, t))
+            }
+        }
+        byIterations(cands)
+    }
+
     /** One loop as run 0..{@link #ENTRY_UNROLL}-1 times, then left by its guard: its init, then guard and body. */
     private static List<List<Statement>> loopVariants(LoopingStatement loop) {
         LoopSpec spec = (LoopSpec) ((Statement) loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
@@ -7051,6 +7222,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (spec == null) return Collections.<List<Statement>> emptyList()
         List<Statement> base = spec.init != null ? new ArrayList<Statement>(spec.init) : new ArrayList<Statement>()
         return loopEntryPaths(base, spec, 'exit')
+    }
+
+    /** Phase 398 — {@link #loopVariants}, each with its [max, sum] of iterations, kept fewest-iterations first. */
+    private static List<Object[]> loopVariantsTagged(LoopingStatement loop) {
+        LoopSpec spec = (LoopSpec) ((Statement) loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (spec == null) spec = rawLoopSpec(loop)
+        if (spec == null) return Collections.<Object[]> emptyList()
+        List<Statement> base = spec.init != null ? new ArrayList<Statement>(spec.init) : new ArrayList<Statement>()
+        byIterations(loopEntryPathsTagged(base, spec, 'exit'))
     }
 
     /** Phase 371 — an unannotated loop as the guard/body/update shape {@link LoopSpec} speaks (its init in

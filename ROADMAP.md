@@ -17430,6 +17430,34 @@ its call is withheld (a return three loops down at `i == j == k == 1`).
 loops down; two levels, a nested entry no run breaks (no call, it showed `f(1)`); a nested do-while holding loops,
 refused.
 
+## Phase 398 — a witness past the outer loop's first iteration  *(shipped — repro quality)*
+
+Phase 397's boundary: a witness is sought along at most `ENTRY_PATHS` (32) exact paths, the shortest — and for nested
+loops the shortest all stay inside the outer loop's first iteration (`entryPathsTo` filled its cap from the first
+outer paths), so a failure needing a later outer iteration had its call withheld: a return at `i == 1 && j == 1`,
+three loops down at `i == j == k == 1`, an inner entry broken on the third outer pass.
+
+- **A second pass, by iterations** (`taggedEntryPaths`, `loopEntryPathsTagged`, `expansionsTagged`,
+  `loopVariantsTagged`): every candidate carries [the most iterations any one loop on it runs, the iterations of all,
+  the counts of the loops it completes, the furthest a loop is part-way]. `byIterations` keeps runs that look feasible
+  for loops sharing a bound first — the loops it completes all ran alike, every loop part-way below that
+  (`uniform`) — then fewest iterations of any one loop, then fewest in all, then the shortest; `product` combines a
+  statement's variants with the path so far by diagonals of their ranks, so the cap keeps both sides' low-iteration
+  combinations. `entryPathsTo` returns the shortest paths first, exactly as before (`shortestEntryPaths`), then these:
+  a call found before is found as before, and the extra checks run only where the first pass found none.
+
+A first attempt ordered every path by iterations alone and lost Phase 397's `f(4)` (most low-iteration combinations
+are infeasible — a loop left after 0 iterations beside an enclosing one at its first); hence the second pass, and the
+feasibility ranking.
+
+**Changed cases:** G440's return three loops down now has its call (`fails on: f(2)`).
+
+**Boundary:** the second pass is still 32 paths; loops with different bounds, or a failure needing many iterations,
+can fall outside it (the call is withheld, as before).
+
+**Shipped tests:** group `P398 entry-path selection`, 3 cases, each without a call before: a return at a later outer
+iteration (`f(2)`), a nested entry broken on the third outer pass (`f(4)`), a return three loops down (`f(2)`).
+
 ---
 
 ## Definition of done, per increment
