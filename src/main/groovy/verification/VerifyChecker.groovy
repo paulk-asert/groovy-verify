@@ -5535,6 +5535,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 393 — marks a helper's parameter fact ({@link #helperParamFacts}) with the closure parameter it is about. */
     static final String HELPER_PARAM_KEY = 'verification.helperParam'
 
+    /** Phase 400 — an assert over a call's result: the solver chose a result the callee's contract allows, no run's. */
+    static final String CALL_RESULT_NOTE = 'no failing call: the assertion rests on what a call returns, which the ' +
+        'verifier knows only from the callee\'s @Ensures — strengthen the contract if the assertion should follow from it'
+
     static final String CLOSURE_CALL_NOTE = 'no failing call: the failure is inside a closure, in a call whose ' +
         'arguments and captured state the check takes as unknown rather than following from entry'
 
@@ -5949,13 +5953,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (site instanceof AssertSite) {
             AssertSite asite = (AssertSite) site
             Object p = enc.translateGoal(asite.cond)
+            // Phase 400 — a call in the condition (`assert inc(41) == 42`) is hoisted to a local bound by the callee's
+            // @Ensures, as a return value or an assignment's is (Phase 347): the condition skipped loudly whatever the
+            // contract said. Its result is only what the contract allows, so a refutation names no run (below).
+            boolean hoisted = false
+            if (p == null && exprContainsCall(asite.cond)) {
+                Expression hv = hoistValueCalls(asite.cond, enc, s, currentMethod)
+                if (hv != null) {
+                    p = enc.translateGoal(hv)
+                    hoisted = p != null
+                }
+            }
             if (p == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
                     "condition '${asite.cond.text}' is outside fragment"), asite.node)
                 return
             }
             s.assertExpr(s.not(p))                       // negation of the asserted predicate
-            CheckResult r = shown(s.check())
+            CheckResult r
+            if (hoisted) {
+                String prevNote = havocCallNote
+                havocCallNote = CALL_RESULT_NOTE
+                try { r = shown(s.check()) } finally { havocCallNote = prevNote }
+            } else {
+                r = shown(s.check())
+            }
             if (r.status != CheckResult.Status.VERIFIED) {
                 // If the assertion is over a method parameter, it is usually a caller precondition written as a
                 // runtime check; nudge toward @Requires, which documents it and is checked at every call site.

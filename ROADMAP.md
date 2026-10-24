@@ -17476,6 +17476,30 @@ gates run: Phase 392's preservation witness +461 checks / +374 distinct, Phase 3
 **Shipped tests:** none new — the budget is asserted by the `test` run, and the second pass's three cases (G441) keep
 their calls.
 
+## Phase 400 — an assert over a call is checked against the callee's contract  *(shipped — completeness)*
+
+Seen in groovy6-functional: moving its demos from the embedded early verifier (which never looked at `assert`) to
+groovy-verify, every runtime spot check in a `main` — `assert inc(41) == 42`, `assert max(3, 5) == 5` — became a
+compile-time obligation and skipped loudly (`condition '(MinMax.inc(41) == 42)' is outside fragment`), so the demos
+traded their asserts for an `expect(...)` helper. Nothing was lost in groovy-verify: inline asserts are obligations
+since `273345b` (2026-06-16), and a call in one was skipped at every commit since (measured at `5e29afb` too) —
+Phase 347 hoisted calls out of a return value and an assignment's right-hand side, never out of an assert's condition.
+
+- **Hoisted** (`dischargeObligationAt`'s `AssertSite`, Phase 347's `hoistValueCalls`): when the condition doesn't
+  translate and holds a call, each call is bound to a local constrained by the callee's `@Ensures` (its frame havocked,
+  its precondition still checked at the call site), and the rewritten condition is checked. `inc(41) == 42` proves, as
+  does `isqrt(9) == 3` from `r * r <= n < (r + 1) * (r + 1)`; in a loop body and before a postcondition too.
+- **A refutation names no run** (`CALL_RESULT_NOTE`): the result is whatever the contract allows (`max` promises only
+  `result >= a && result >= b`, so the solver's 6 for `max(3, 5)` is no call's), so the call is withheld with a note
+  to strengthen the contract if the assertion should follow from it.
+
+**Boundary:** a contract-free method (`viaLiteral() { isqrt(5) }`) is evaluated as its body, and a call inside that body
+isn't hoisted: its claim stays "may not hold", with no call. An assert over a call the verifier can't frame still skips.
+
+**Shipped tests:** group `P400 assert-condition calls`, 7 cases. Proved: a call its contract settles, a nonlinear one,
+in a loop, before a postcondition. Undecided with no call: a weaker contract (`max`, `abs`), a contradicted claim. And
+the call's own precondition, still checked.
+
 ---
 
 ## Definition of done, per increment
