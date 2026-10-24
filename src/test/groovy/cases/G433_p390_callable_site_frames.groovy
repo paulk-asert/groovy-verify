@@ -47,7 +47,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "a literal writing its parameter writes the argument",
-         expect: [POST, "fails on: g([7] as int[])"],
+         expect: [POST, "no failing call: the failure rests on what a call leaves in"],
          src: tc('''final class A {
                         static void h(Closure c, int[] b) { c.call(b) }
                         @Requires({ a != null && a.length > 0 && a[0] == 7 })
@@ -67,7 +67,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "the helper's own writes still count",
-         expect: [POST, "fails on: g([7] as int[])"],
+         expect: [POST, "no failing call: the failure rests on what a call leaves in"],
          src: tc('''final class A {
                         static void h(Closure c, int[] b) { c.call(b); b[0] = 3 }
                         @Requires({ a != null && a.length > 0 && a[0] == 7 })
@@ -76,7 +76,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "a literal writing the caller's field",
-         expect: [POST, "count (after a call)", "fails on: g()"],
+         expect: [POST, "count (after a call)", "no failing call: the failure rests on what a call leaves in"],
          src: tc('''class A {
                         int count
                         static void h(Closure c) { c.call() }
@@ -88,7 +88,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "… a captured local",
-         expect: [POST, "fails on: g()"],
+         expect: [POST, "no failing call: the failure rests on what a call leaves in"],
          src: tc('''class A {
                         static void h(Closure c) { c.call() }
                         @Ensures({ result == 0 })
@@ -100,7 +100,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "… through a method of the caller's class",
-         expect: [POST, "fails on: g()"],
+         expect: [POST, "no failing call: the failure rests on what a call leaves in"],
          src: tc('''final class A {
                         int count
                         void bump() { count = count + 1 }
@@ -113,7 +113,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "a local bound to a literal",
-         expect: [POST, "fails on: g([7] as int[])"],
+         expect: [POST, "no failing call: the failure rests on what a call leaves in"],
          src: tc('''final class A {
                         static void h(Closure c, int[] b) { c.call(b) }
                         @Requires({ a != null && a.length > 0 && a[0] == 7 })
@@ -135,7 +135,7 @@ class G433_p390_callable_site_frames {
                     }''')],
 
         [group: "P390 callable site frames", name: "… and one that writes",
-         expect: [POST, "fails on: g([7] as int[])"],
+         expect: [POST, "no failing call: the failure rests on what a call leaves in"],
          src: tc('''final class A {
                         static int h(java.util.function.Function<int[], Integer> f, int[] b) { f.apply(b) }
                         @Requires({ a != null && a.length > 0 && a[0] == 7 })

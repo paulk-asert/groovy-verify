@@ -38,6 +38,10 @@ interface SmtBackend {
 @CompileStatic
 interface SmtSession extends AutoCloseable {
 
+    /** Phase 406 — what this session's model may hold no run's value for: a call's havocked location that nothing
+     *  pins (`var:` + the havoc symbol's name, `base:` + a caller array's name). Copied onto each check's result. */
+    Set<String> witnessTaints()
+
     /** Declare an integer variable; returns a backend-specific handle. */
     Object intVar(String name)
 
@@ -698,8 +702,12 @@ class CheckResult {
         new CheckResult(status: status, reason: reason, failingCall: failingCall,
             counterexample: counterexample == null ? null : new LinkedHashMap<String, Long>(counterexample),
             sortedCounterexample: sortedCounterexample == null ? null : new LinkedHashMap<String, String>(sortedCounterexample),
-            notes: notes == null ? null : new ArrayList<String>(notes))
+            notes: notes == null ? null : new ArrayList<String>(notes),
+            taints: new HashSet<String>(taints))
     }
+
+    /** Phase 406 — the session's {@link SmtSession#witnessTaints} when it was checked. */
+    Set<String> taints = new HashSet<String>()
 
     static CheckResult verified() {
         new CheckResult(status: Status.VERIFIED)

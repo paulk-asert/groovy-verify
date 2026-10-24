@@ -97,7 +97,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // Unsound before: a callee with no @Modifies was read as writing nothing, so `int s = bump()` kept count == 0 past `count = 99`.
-        [group: 'P347 a call is framed by its writes', name: 'a contracted writer with no @Modifies is framed by its body', expect: ['Cannot prove postcondition', 'count (after a call)', 'fails on: f()'],
+        [group: 'P347 a call is framed by its writes', name: 'a contracted writer with no @Modifies is framed by its body', expect: ['Cannot prove postcondition', 'count (after a call)', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''final class C {
                         int count = 0
                         @Ensures({ result == 1 })
@@ -108,7 +108,7 @@ class G391_p347_call_frames {
                             int s = bump()
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove postcondition', 'fails on: f()'],
+        [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''final class C {
                         int count = 0
                         @Ensures({ result == 1 })
@@ -120,7 +120,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // `int s = 2 + bump()`: the call is hoisted to a framed local, as a return expression's calls are.
-        [group: 'P347 a call is framed by its writes', name: 'the same inside an expression', expect: ['Cannot prove postcondition', 'fails on: f()'],
+        [group: 'P347 a call is framed by its writes', name: 'the same inside an expression', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''final class C {
                         int count = 0
                         @Ensures({ result == 1 })
@@ -131,7 +131,7 @@ class G391_p347_call_frames {
                             int s = 2 + bump()
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'a reassignment whose right-hand side calls the writer', expect: ['Cannot prove postcondition', 'fails on: f()'],
+        [group: 'P347 a call is framed by its writes', name: 'a reassignment whose right-hand side calls the writer', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''final class C {
                         int count = 0
                         int bump() { count = 99; return 1 }
@@ -143,7 +143,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // The frame is transitive: bump() calls reset(), which writes count.
-        [group: 'P347 a call is framed by its writes', name: 'a write reached through a helper the callee calls', expect: ['Cannot prove postcondition', 'fails on: f()'],
+        [group: 'P347 a call is framed by its writes', name: 'a write reached through a helper the callee calls', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''final class C {
                         int count = 0
                         private void reset() { count = 99 }
@@ -156,7 +156,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // Unsound before: clobber(a) was a pure function to the encoder, so a[0] == 0 survived a[0] = -1.
-        [group: 'P347 a call is framed by its writes', name: 'a contract-free call that stores into an array parameter', expect: ['Cannot prove postcondition', 'fails on: f(new int[1])'],
+        [group: 'P347 a call is framed by its writes', name: 'a contract-free call that stores into an array parameter', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''class C {
                         static int clobber(int[] a) { if (a.length > 0) a[0] = -1; return 0 }
                         @Requires({ a != null && a.length > 0 && a[0] == 0 })
@@ -165,7 +165,7 @@ class G391_p347_call_frames {
                             int s = clobber(a)
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'a contracted one too', expect: ['Cannot prove postcondition', 'fails on: f(new int[1])'],
+        [group: 'P347 a call is framed by its writes', name: 'a contracted one too', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''class C {
                         @Requires({ a != null && a.length > 0 })
                         @Ensures({ result == 0 })
@@ -176,7 +176,7 @@ class G391_p347_call_frames {
                             int s = clobber(a)
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'a declared @Modifies wins, and is framed as before', expect: ['Cannot prove postcondition', 'fails on: f()'],
+        [group: 'P347 a call is framed by its writes', name: 'a declared @Modifies wins, and is framed as before', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
          src: tc('''class C {
                         int count = 0
                         @Modifies({ this.count })
@@ -196,7 +196,7 @@ class G391_p347_call_frames {
                         int bump() { count = 99; return 1 }
                     }''')],
         // Unsound before: `s = s + bump()` havocked s and nothing else, so count == 0 was preserved.
-        [group: 'P347 a call is framed by its writes', name: 'a writer called as a value in a loop body', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1)'],
+        [group: 'P347 a call is framed by its writes', name: 'a writer called as a value in a loop body', expect: ['Cannot prove loop invariant is preserved', 'no failing call: the invariant is broken from a state it allows'],
          src: tc('''final class C {
                         int count = 0
                         int bump() { count = 99; return 1 }
@@ -231,7 +231,7 @@ class G391_p347_call_frames {
                             return s
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'an array parameter written by a call in a loop body', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1, new int[1])'],
+        [group: 'P347 a call is framed by its writes', name: 'an array parameter written by a call in a loop body', expect: ['Cannot prove loop invariant is preserved', 'no failing call: the invariant is broken from a state it allows'],
          src: tc('''class C {
                         static int clobber(int[] a) { if (a.length > 0) a[0] = -1; return 0 }
                         @Requires({ a != null && a.length > 0 && a[0] == 0 && n >= 0 })
@@ -248,7 +248,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // A same-class static call statement is a StaticMethodCallExpression after STC; the loop engine took only the instance form.
-        [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1, new int[1])'],
+        [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove loop invariant is preserved', 'no failing call: the invariant is broken from a state it allows'],
          src: tc('''class C {
                         static int clobber(int[] a) { if (a.length > 0) a[0] = -1; return 0 }
                         @Requires({ a != null && a.length > 0 && a[0] == 0 && n >= 0 })

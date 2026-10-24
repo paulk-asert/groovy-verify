@@ -2732,6 +2732,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
         // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
         String callNote = loopCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404
+        // Phase 406 — a value a call's frame left unknown: the model picked one; a run may never get it
+        if (r.failingCall != null && callNote == null && r.taints && r.counterexample != null) {
+            List<String> on = new ArrayList<String>()
+            for (String k : r.counterexample.keySet()) {
+                java.util.regex.Matcher cm = CALL_HAVOC_KEY.matcher(k)
+                if (r.taints.contains('var:' + k) && cm.matches()) on.add(cm.group(1).replace('$', '.'))
+                else if (r.taints.contains('base:' + k.split(/[.\[?#$]/, 2)[0]) && !UNMODELLED_KEY.matcher(k).matches()) on.add(k.split(/[.\[?#$ ]/, 2)[0])
+            }
+            if (!on.isEmpty()) {
+                r.failingCall = null
+                String note = String.format(TAINT_CALL_NOTE, on.unique().collect { "'${it}'" }.join(', '))
+                if (!r.notes.contains(note)) r.notes.add(note)
+            }
+        }
         if (r.failingCall != null && callNote != null) {
             r.failingCall = null
             if (!r.notes.contains(callNote)) r.notes.add(callNote)
@@ -12604,6 +12618,46 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
              wt.isInterface() || ot.isInterface())
     }
 
+    /** Phase 406 — does the callee's @Ensures fix {@code loc} after the call: a top-level conjunct `loc == E` (or
+     *  `this.loc == E`, either side) whose E reads loc only as `old.loc`? Then the model's value there is the one any
+     *  run gets, given the rest. */
+    private static boolean pinnedByEnsures(Expression ens, String loc) {
+        if (ens == null || loc == null) return false
+        List<Expression> cs = new ArrayList<Expression>()
+        splitConjuncts(ens, cs)
+        for (Expression c : cs) {
+            if (!(c instanceof BinaryExpression) || ((BinaryExpression) c).operation.type != Types.COMPARE_EQUAL) continue
+            BinaryExpression be = (BinaryExpression) c
+            for (int side = 0; side < 2; side++) {
+                Expression l = side == 0 ? be.leftExpression : be.rightExpression
+                Expression r = side == 0 ? be.rightExpression : be.leftExpression
+                boolean names = (l instanceof VariableExpression && ((VariableExpression) l).name == loc) ||
+                    (l instanceof PropertyExpression && ((PropertyExpression) l).objectExpression instanceof VariableExpression &&
+                     ((VariableExpression) ((PropertyExpression) l).objectExpression).name == 'this' &&
+                     ((PropertyExpression) l).propertyAsString == loc)
+                if (names && !readsCurrent(r, loc)) return true
+            }
+        }
+        false
+    }
+
+    /** Phase 406 — does {@code e} read {@code loc}'s post-call value (bare or `this.loc`, not `old.loc`)? */
+    private static boolean readsCurrent(Expression e, String loc) {
+        boolean[] hit = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression v) { if (v.name == loc) hit[0] = true }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression && ((VariableExpression) pe.objectExpression).name == 'old') return
+                super.visitPropertyExpression(pe)
+            }
+        })
+        hit[0]
+    }
+
+    static final String TAINT_CALL_NOTE = 'no failing call: the failure rests on what a call leaves in %s, which the ' +
+        'verifier knows only from its frame and @Ensures, not from its body — an @Ensures that states it would let the ' +
+        'call be shown'
+
     /** Phase 405 — the effect of a standalone call no handler frames: what the frame inference says it may write (a
      *  known read writes nothing; a library mutator its receiver or arguments; an unresolved call on this object — a
      *  generated accessor — every instance field), each havocked and marked so a failure resting on it shows no call. */
@@ -13615,7 +13669,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (fs != null) for (FieldNode f : fs) {
             if (f.isStatic()) continue
             String key = recvName + '$' + f.name
-            enc.bind(key, s.intVar('havoc$' + key + '$' + (havocCounter++)))
+            String hv = 'havoc$' + key + '$' + (havocCounter++)
+            enc.bind(key, s.intVar(hv))
+            s.witnessTaints().add('var:' + hv)   // Phase 406
             fields.add(f.name)
         }
 
@@ -19641,7 +19697,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     for (ClassNode c = ot; c != null; c = c.superClass) for (FieldNode f : c.fields) if (!f.isStatic()) ofs.add(f.name)
                     for (String f : ofs) {
                         String key = callerLoc + '$' + f
-                        enc.bind(key, s.intVar('havoc$' + key + '$' + (havocCounter++)))
+                        String hv = 'havoc$' + key + '$' + (havocCounter++)
+                        enc.bind(key, s.intVar(hv))
+                        s.witnessTaints().add('var:' + hv)   // Phase 406 — what it wrote there is unknown
                     }
                     for (Expression inv : classInvariantTexts(ot)) {
                         Object h = enc.translateUnderReceiver(inv, callerLoc, ofs)
@@ -19683,8 +19741,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 enc.bind(oldKey, enc.varFor(callerLoc))            // old.X (scalar) = value at the call
                 enc.bindArray(oldKey, enc.arrayFor(callerLoc))     // old.X (array contents) at the call
-                enc.bind(callerLoc, s.intVar('havoc$' + callerLoc + '$' + (havocCounter++)))     // havoc
+                String hv = 'havoc$' + callerLoc + '$' + (havocCounter++)
+                enc.bind(callerLoc, s.intVar(hv))     // havoc
                 enc.bindArray(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                // Phase 406 — the model's value here is one the frame allows, no run's, unless the @Ensures pins it
+                if (!pinnedByEnsures(ensuresAst, loc)) {
+                    s.witnessTaints().add('var:' + hv)
+                    if (enc.isArrayTyped(callerLoc) || enc.isListTyped(callerLoc)) s.witnessTaints().add('base:' + callerLoc)
+                }
                 // A modified set field is havoced (and snapshotted) too, so a caller can't assume a
                 // set the callee may mutate is unchanged, and the callee's `old.s` reframes from the call.
                 if (currentSetElementTypes.containsKey(callerLoc)) {
@@ -19708,7 +19772,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (resized == null || resized.contains(loc)) {
                         if (!savedSize.containsKey(oldKey)) savedSize.put(oldKey, enc.peekSize(oldKey + '.size'))
                         enc.bindSize(oldKey, enc.sizeOf(callerLoc))
-                        Object fresh = s.intVar('havoc$' + callerLoc + '.size()$' + (havocCounter++))   // shown "xs.size() (after a call)"
+                        String hs = 'havoc$' + callerLoc + '.size()$' + (havocCounter++)
+                        Object fresh = s.intVar(hs)   // shown "xs.size() (after a call)"
+                        s.witnessTaints().add('var:' + hs)   // Phase 406
                         s.assertExpr(s.and([s.ge(fresh, s.intLit(0L)), s.le(fresh, s.intLit(2147483647L))]))
                         enc.bindSize(callerLoc, fresh)
                     }
@@ -19746,6 +19812,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     enc.havocByCall(loc); enc.havocArray(loc); enc.havocSize(loc)
                 }
                 enc.bindNullity(loc, s.boolVar(loc + '?null#site' + (havocCounter++)))
+                s.witnessTaints().add('base:' + loc)   // Phase 406
             }
         }
 

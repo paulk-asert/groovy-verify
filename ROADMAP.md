@@ -17696,6 +17696,33 @@ its argument, a generated setter, `xs << v` (value flow); a static helper writin
 its argument, directly and through a helper; a shadowing setter; an assert before and after an annotated loop. And
 precision kept: a constructor setting its own fields, a print and pure reads, a true assert after a loop.
 
+## Phase 406 — call-havoc witnesses  *(shipped — honesty)*
+
+Found probing Phase 403. A call's frame havocs what it may write, and the model is free to pick any value its @Ensures
+allows there (`c$other (after a call) = 6`). The failing call was printed from that model whatever the callee does:
+`fails on: f(new Counter(other: 5))` though `bump()` sets `other` to 5 and the claim holds, or though only a subclass
+writes it.
+
+- **Witness taints** (`SmtSession.witnessTaints`, `CheckResult.taints`): each havoc a call's frame makes — a caller
+  location (`assumeCalleeEnsures`), a written object parameter's fields, a resized collection's size, a closure
+  literal's captured writes (Phase 390), the all-fields havoc of an unresolved receiver call (`applyCrossClassCall`) —
+  is recorded on the session (`var:` + the symbol, `base:` + an array or list's name), unless the callee's @Ensures
+  pins the location (`pinnedByEnsures`: a top-level `loc == E` whose E reads loc only as `old.loc`). The session's
+  taints are copied onto every verdict it gives, cached or not, so they can't leak between checks.
+- **A refutation resting on one shows no call** (`shown`, `TAINT_CALL_NOTE`): "no failing call: the failure rests on
+  what a call leaves in 'c.other', which the verifier knows only from its frame and @Ensures, not from its body — an
+  @Ensures that states it would let the call be shown". A failure that doesn't rest on it keeps its call.
+
+**Changed cases:** 22 expectations moved from a `fails on:` line to that note — P347's writers (`count = 99`,
+an array store), P369/P390's closure literals run where called, P405's static helper, constructor helper and shadowing
+setter. Each of those calls does fail at runtime, but the verifier didn't know it: the body's effect wasn't modelled,
+only its frame. Modelling a simple contract-free callee's effect exactly (a straight-line body's writes as the
+@Ensures it implies) would bring them back, with precision besides: the claim above would prove.
+
+**Shipped tests:** group `P406 call-havoc witnesses`, 4 cases. A claim over what a call leaves (in a field, in an
+array a helper writes) shows no call; a value the callee's @Ensures fixes, and a failure not resting on the call, keep
+theirs.
+
 ---
 
 ## Definition of done, per increment
