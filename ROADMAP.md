@@ -17092,7 +17092,7 @@ a parameter's `toList()`, `collect`/`findAll`/`groupBy` all did, and the local's
 
 **Boundary:** the receiver's own obligation stays (`null.toList()` throws). `xs.collect { }` on a nullable `xs` still
 draws a receiver NPE that the runtime doesn't throw (`null.collect {}` is `[]` under `@TypeChecked`'s dynamic dispatch)
-— a false positive left as is, conservative. `(4.5..6.5).toList().size()` isn't modelled (the claim is undecided, with
+— a false positive left as is, conservative (Phase 396 exempts it). `(4.5..6.5).toList().size()` isn't modelled (the claim is undecided, with
 no call).
 
 **Shipped tests:** group `P386 fresh collection`, 12 cases. No NPE: a decimal range's `toList()`, a char range's, a
@@ -17367,6 +17367,32 @@ loaded machine's scaled budget lets the solver refute it (the case's point, "not
 obligation along the ways; refuted: a write before the throw (`f(0)`). Havoc kept: a catch of Throwable, of an Error, a
 boxed read, an array creation, a GString, and a block with a call (Phase 192's teeth: a violating catch, a value the
 block assigned).
+
+## Phase 396 — a call a null receiver answers isn't a dereference  *(shipped — false positive, Phase 386's boundary)*
+
+`xs.collect { }` on a nullable list drew `Possible NullPointerException … fails on: f(null)`, and `f(null)` returns:
+dispatched dynamically, a call on null runs on NullObject, whose GDK methods answer. Measured on Groovy 6 for each
+receiver kind and compile mode (`@TypeChecked` against `@CompileStatic`), and kept to what was measured:
+
+- **Dispatched dynamically** (`nullSafeCall`): a Collection's `collect`, `findAll`, `find`, `every`, `any` (one closure),
+  `grep` (none or one argument), `inject` (a seed and a closure), `iterator`, `equals`, `toString` and `asBoolean` give
+  `[]`, null, true/false or the seed; an array's or a String's `collect` and `findAll` give `[]`.
+- **Not exempt:** a Map — its `findAll` and `each` throw a `GroovyCastException` on null (NullObject's list isn't the
+  map STC casts it to); a user class's own method of the same name (its receiver isn't a collection); a safe call; and
+  every other method (`size`, `join`, `sum`, `first`, … throw).
+- **Statically compiled** (`staticallyCompiled`: `@CompileStatic` on the method or an enclosing class, no
+  `@CompileDynamic`): the GDK method is handed null as `self` and throws, but for a collection's `toString`/`asBoolean`
+  and an array's or a String's `collect` — only those are exempt there.
+
+**Changed cases:** G365's "findAll on a possibly-null list is a dereference" pinned the false positive; it now proves
+(no obligation, and `[]` meets its `every` postcondition).
+
+**Boundary:** the sets are the measured ones; a method outside them keeps its obligation, sound and possibly a false
+positive (`iterator` on an array, say). A null map's `collect` answers too, but Maps are excluded whole.
+
+**Shipped tests:** group `P396 null-safe calls`, 10 cases. No NPE: a list's `collect`, `findAll`/`grep`/`every`/`any`,
+`find`/`inject`, an array's `collect`, and a statically compiled `toString`. Kept: a list's `size` and `join`, a map's
+`findAll`, a user class's `collect`, and a statically compiled `collect`.
 
 ---
 

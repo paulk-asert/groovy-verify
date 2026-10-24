@@ -177,8 +177,9 @@ class G365_p320_list_building {
                             return ps
                         }
                     }''')],
-        // The receiver may still be null.
-        [group: 'P320 list building', name: 'findAll on a possibly-null list is a dereference', expect: 'Possible NullPointerException: Cannot invoke method findAll() on null object',
+        // The receiver may still be null — and Phase 396 measured that dispatched dynamically `null.findAll { }` is `[]`,
+        // not an NPE: no obligation (it was one), and the empty result meets the postcondition.
+        [group: 'P320 list building', name: 'findAll on a possibly-null list is no dereference', ok: true,
          src: tc('''class C {
                         @Ensures({ result.every { int t -> t > 0 } })
                         static List<Integer> pos(List<Integer> xs) {

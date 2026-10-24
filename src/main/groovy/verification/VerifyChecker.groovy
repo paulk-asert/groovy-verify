@@ -6061,6 +6061,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 277 — and a local bound to a `new …`: a constructor yields an object or throws.
             // Phase 386 — or to a GDK fresh-collection call (`List r = xs.toList()`): the lazy superset.
             if (currentNewLocalNames.contains(df.receiver) || freshCollectionLocalNames().contains(df.receiver)) return
+            // Phase 396 — a call a null receiver answers rather than throws on (`null.collect { }` is [] when dispatched
+            // dynamically, measured): no obligation
+            if (df.indexExpr == null && df.node instanceof MethodCallExpression && nullSafeCall((MethodCallExpression) df.node)) return
             if (df.indexExpr != null) {
                 // Phase 37 — indexed receiver (xs[i].method() / xs.get(i).method()): consult the
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
@@ -9512,6 +9515,56 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         news.addAll(ActorMailbox.contextParamNames(code))
         news.removeAll(reassigned)
         news
+    }
+
+    /**
+     * Phase 396 — the calls a null receiver answers, measured on Groovy 6 for each receiver kind (name → argument counts).
+     * Dispatched dynamically (`@TypeChecked`), a call on null runs on NullObject, whose GDK `collect`, `findAll`, `grep`,
+     * `find`, `every`, `any`, `inject`, `iterator`, `equals`, `toString` and `asBoolean` give `[]`, null, true/false or the
+     * seed; a Map's `findAll`/`each` throw a cast exception instead (its result isn't a Map), so a Map is never exempt.
+     * Statically compiled, the GDK method is called with null as its `self`, and only these stay: a collection's
+     * `toString`/`asBoolean`, an array's or a String's `collect`.
+     */
+    private static final Map<String, List<Integer>> NULL_SAFE_COLLECTION = [collect: [1], findAll: [1], grep: [0, 1],
+        find: [1], every: [1], any: [1], inject: [2], iterator: [0], equals: [1], toString: [0], asBoolean: [0]]
+    private static final Map<String, List<Integer>> NULL_SAFE_ARRAY_OR_STRING = [collect: [1], findAll: [1]]
+    private static final Map<String, List<Integer>> NULL_SAFE_STATIC_COLLECTION = [toString: [0], asBoolean: [0]]
+    private static final Map<String, List<Integer>> NULL_SAFE_STATIC_ARRAY_OR_STRING = [collect: [1]]
+
+    private boolean nullSafeCall(MethodCallExpression mce) {
+        if (mce.safe || mce.implicitThis) return false
+        String m = mce.methodAsString
+        if (m == null || !(mce.arguments instanceof TupleExpression)) return false
+        List<Expression> args = ((TupleExpression) mce.arguments).expressions
+        ClassNode rt = Encoder.staticTypeOf(mce.objectExpression)
+        if (rt == null) return false
+        boolean collection = !rt.isArray() && (rt.implementsInterface(ClassHelper.make(Collection)) ||
+            rt.redirect().name in ['java.util.Collection', 'java.util.List', 'java.util.Set', 'java.lang.Iterable'])
+        boolean arrayOrString = rt.isArray() || rt.redirect().name == 'java.lang.String'
+        if (!collection && !arrayOrString) return false
+        // a closure-taking method is the GDK's only with a closure where it takes one (`inject(seed, closure)` last)
+        if (m in ['collect', 'findAll', 'find', 'every', 'any', 'inject'] && !(args && isClosureArg(args.get(args.size() - 1)))) return false
+        boolean stat = staticallyCompiled(currentMethod)
+        Map<String, List<Integer>> safe = collection ? (stat ? NULL_SAFE_STATIC_COLLECTION : NULL_SAFE_COLLECTION) :
+            (stat ? NULL_SAFE_STATIC_ARRAY_OR_STRING : NULL_SAFE_ARRAY_OR_STRING)
+        safe.get(m)?.contains(args.size()) ?: false
+    }
+
+    private static boolean isClosureArg(Expression a) {
+        a instanceof ClosureExpression || Encoder.staticTypeOf(a)?.redirect()?.name == 'groovy.lang.Closure'
+    }
+
+    /** Phase 396 — is {@code m} statically compiled: @CompileStatic on it or an enclosing class, no @CompileDynamic on it? */
+    private static boolean staticallyCompiled(MethodNode m) {
+        if (m == null) return false
+        Closure<Boolean> has = { List<AnnotationNode> as, String n -> as.any { it.classNode?.nameWithoutPackage == n } }
+        if (has(m.annotations, 'CompileDynamic')) return false
+        if (has(m.annotations, 'CompileStatic')) return true
+        for (ClassNode c = m.declaringClass; c != null; c = c.outerClass) {
+            if (has(c.annotations, 'CompileDynamic')) return false
+            if (has(c.annotations, 'CompileStatic')) return true
+        }
+        false
     }
 
     /** Phase 386 — the GDK methods whose contract is a fresh collection: each returns one or throws, never null
