@@ -17538,8 +17538,8 @@ with "Skipped assertion safety check (the method body is outside the value-flow 
   `ISqrt.isqrt`'s frame was unknown (`static call 'ISqrt.isqrt(…)' with no @Pure or @Modifies spec`) and every helper
   calling it unbounded — no pure helper, no hoist. A primary class node of the same compilation unit has its body at
   hand, and a STATIC's body is the one that runs (no override), so its frame is read, and its contract-free statics
-  evaluated, as a same-file sibling's. Instance receivers keep the same-file scope (`moduleClass`), where overriders
-  are searched.
+  evaluated, as a same-file sibling's. Instance receivers keep the same-file scope (`moduleClass`); their overriders
+  are searched over the whole compilation since Phase 403.
 - **An assert whose call can't be hoisted skips alone** (Phase 400's hoist): `assumeCalleeEnsures` throws for an
   unbounded callee, and the throw left the whole value-flow pass — every assert in the method skipped under the generic
   reason, naming neither. It is caught for that one assert, which skips with the reason (`condition '(A.t() == 3)' is
@@ -17555,6 +17555,37 @@ runtime, as the session noted) all six prove.
 **Shipped tests:** group `P402 other files of the compilation`, 3 cases. A static in another file framed and its
 contract used (all three asserts prove); without its contract only what follows anyway; an assert over an unboundable
 call skips alone, naming why, beside one that proves.
+
+## Phase 403 — overrides in other files of the compilation  *(shipped — soundness fix)*
+
+The instance-method half of Phase 402. Probed first, side by side, same-file against other-file: a call on an
+instance receiver whose class is in another file was already framed like a same-file one — a final class's body is
+the call's frame and value, a non-final one is open to a subclass compiled elsewhere (the Phase 360 skip, worded the
+same either way), and a helper writing through such a receiver havocs it the same. The difference was where the world
+is closed — a sealed class, or `closedWorld: true` (Phase 362): the search for the overrides a virtual call may
+dispatch to (`overriders`, Phase 359) scanned the caller's own file's module. `Sub extends Counter` in `Sub.groovy`,
+overriding `bump()` to write `other`, went unseen, `c.bump()` was framed by `Counter.bump()` alone, and
+`@Requires({ c.other == 5 }) @Ensures({ result == 5 })` over `c.bump(); return c.other` proved — `f(new Sub(other: 5))`
+returns 99.
+
+- **`unitClasses(mod)`**: every class of the compilation (`mod.unit.classes`; a module outside a unit keeps its own).
+  The searches that close the world over subtypes use it: `overriders`, `libraryReceiverOverrides`,
+  `unitSubtypeDeclares`, the closed-world accessor hierarchy (Phase 362), the subtype fields an override may write
+  (Phase 359's frame visibility), and `userDeclared`'s scan for an untyped receiver. Each only grows what is searched,
+  so the change can only make a frame larger or refuse a value — never prove more.
+
+Found while probing, not fixed here (each is file-independent):
+- *A field array a callee writes may be a parameter array the caller reads.* `h.poke()` writing `h.arr[0]` leaves
+  `a[0]` as it was, so `@Ensures({ result == old.a[0] })` over `h.poke(); return a[0]` proves — `f(new Holder(arr: a), a)`
+  returns 99. A third shape of the no-aliasing assumption, alongside the two Phase 194 made loud.
+- *A call-havocked value is not checked against the callee.* `c$other (after a call) = 6` is any value the frame
+  allows, and the failing call is printed from it: `fails on: f(new Counter(other: 5))` though `bump()` sets 5 (the
+  claim holds), or though only `Sub` writes `other`.
+
+**Shipped tests:** group `P403 overrides in other files of the compilation`, 5 cases. A closed world's override in
+another file frames the call (also with the base class beside the caller); a sealed class's permitted subclass in
+another file does too — all three proved before; an override in another file bounds the call's value (refused before
+too, kept as a guard); with no override in the compilation the body still frames and values the call.
 
 ---
 

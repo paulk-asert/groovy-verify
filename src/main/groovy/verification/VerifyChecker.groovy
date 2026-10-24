@@ -3301,7 +3301,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (dc == null || m.isStatic() || m.isPrivate()) return out
         ModuleNode mod = WRITE_OWNER.get()?.module ?: dc.module
         if (mod == null) return out
-        for (ClassNode cn : mod.classes) {
+        for (ClassNode cn : unitClasses(mod)) {
             if (cn.name == dc.name || generatedCallable(cn) || !(cn.isDerivedFrom(dc) || cn.implementsInterface(dc))) continue
             for (MethodNode om : cn.getDeclaredMethods(m.name)) {
                 if (!om.isStatic() && om.parameters.length == m.parameters.length && om.code != null) out.add(om)
@@ -3319,7 +3319,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ModuleNode mod = WRITE_OWNER.get()?.module
         if (t == null || t == ClassHelper.OBJECT_TYPE || t.isPrimaryClassNode() || mod == null) return null
         List<MethodNode> out = new ArrayList<MethodNode>()
-        for (ClassNode cn : mod.classes) {
+        for (ClassNode cn : unitClasses(mod)) {
             if (cn.name == t.name || generatedCallable(cn) || !(cn.isDerivedFrom(t) || cn.implementsInterface(t))) continue
             for (MethodNode om : cn.getDeclaredMethods(m)) if (!om.isStatic() && om.parameters.length == as.size() && om.code != null) out.add(om)
         }
@@ -3330,10 +3330,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static boolean unitSubtypeDeclares(ClassNode t, String m) {
         ModuleNode mod = WRITE_OWNER.get()?.module
         if (t == null || mod == null) return false
-        for (ClassNode cn : mod.classes) {
+        for (ClassNode cn : unitClasses(mod)) {
             if (cn.name != t.name && !generatedCallable(cn) && (cn.isDerivedFrom(t) || cn.implementsInterface(t)) && !cn.getDeclaredMethods(m).isEmpty()) return true
         }
         false
+    }
+
+    /** Phase 403 — every class of {@code mod}'s compilation, not just its own file's: a subclass in `Sub.groovy` overrides
+     *  `Counter.bump()` as surely as one beside it, so the searches for overrides, subtypes and their fields span the run
+     *  (a module outside any unit — an in-memory parse — keeps its own classes). */
+    static List<ClassNode> unitClasses(ModuleNode mod) {
+        mod?.unit != null ? mod.unit.classes : (mod?.classes ?: Collections.<ClassNode>emptyList())
     }
 
     /** Phase 369 — a class Groovy generates for a closure literal: a subclass of Closure only by construction, whose
@@ -3540,7 +3547,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         while (!todo.isEmpty()) { ClassNode k = todo.pop().redirect(); hierarchy.add(k); todo.addAll(k.permittedSubclasses ?: []) }
         // Phase 362 — closed world: an open class's subclasses in this unit are seen, so their accessors count too
         ModuleNode mod = WRITE_OWNER.get()?.module
-        if (open && mod != null) for (ClassNode k : mod.classes) if (k.name != c.name && k.isDerivedFrom(c)) hierarchy.add(k)
+        if (open && mod != null) for (ClassNode k : unitClasses(mod)) if (k.name != c.name && k.isDerivedFrom(c)) hierarchy.add(k)
         for (ClassNode h : hierarchy) {
             for (String n : names.unique(false)) for (MethodNode m : h.getDeclaredMethods(n)) {
                 if (m.isStatic() || m.parameters.length != (write ? 1 : 0)) continue
@@ -3774,7 +3781,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 359 — a field only a subclass of the unit declares, written by an override a same-class call
             // dispatches to: the receiver's, so still caller-visible (a caller holding the subclass havocs it)
             ModuleNode mod = m.declaringClass?.module
-            if (mod != null && !m.isStatic()) for (ClassNode cn : mod.classes) {
+            if (mod != null && !m.isStatic()) for (ClassNode cn : unitClasses(mod)) {
                 if (cn.name != m.declaringClass.name && cn.isDerivedFrom(m.declaringClass)) for (FieldNode f : cn.fields) visible.add(f.name)
             }
             // Phase 351 — a local that holds a parameter or field (`int[] b = a`, `Counter d = c`) writes it: a write
@@ -14822,7 +14829,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (t == null || t.redirect() == ClassHelper.OBJECT_TYPE) {
             ClassNode owner = WRITE_OWNER.get()
             if (owner?.module == null) return false
-            for (ClassNode cn : owner.module.classes) if (!cn.getDeclaredMethods(m).isEmpty()) return true
+            for (ClassNode cn : unitClasses(owner.module)) if (!cn.getDeclaredMethods(m).isEmpty()) return true
             return false
         }
         for (ClassNode c = t.redirect(); c != null; c = c.superClass) {
@@ -16122,8 +16129,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 350 — another class of {@link #WRITE_OWNER}'s compilation unit, by fully-qualified or simple name. */
     /** Phase 402 — a class compiled in the same run from ANOTHER file (`ISqrt.groovy` beside `GoodCalls.groovy`): for a
      *  STATIC call its body is the one that runs, as a same-file sibling's is (a static isn't overridden), so its frame
-     *  is read the same way. Instance receivers keep {@link #moduleClass}'s same-file scope (overriders are searched
-     *  there). Only primary class nodes — compiled from source in this run, body at hand. */
+     *  is read the same way. Instance receivers keep {@link #moduleClass}'s same-file scope (their overriders are searched
+     *  over the whole compilation, {@link #unitClasses}). Only primary class nodes — compiled from source in this run, body at hand. */
     private static ClassNode compiledClass(String n) {
         ClassNode owner = WRITE_OWNER.get()
         if (n == null || owner == null || owner.module?.unit == null || n == owner.name) return null
