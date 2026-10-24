@@ -13,7 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import org.codehaus.groovy.control.CompilationUnit
+import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.codehaus.groovy.control.Phases
 import org.codehaus.groovy.control.messages.ExceptionMessage
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage
 import verification.Z3Backend
@@ -78,9 +81,18 @@ class VerifyHarness {
         all
     }
 
-    static List<String> compile(String name, String src) {
+    static List<String> compile(String name, String src, Map<String, String> extraSources = null) {
         def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
         try {
+            if (extraSources) {
+                // Phase 402 — other FILES of the same compilation (`ISqrt.groovy` beside the case): one CompilationUnit,
+                // one module per file, as groovyc compiles a source set
+                CompilationUnit cu = new CompilationUnit(new CompilerConfiguration(), null, gcl)
+                cu.addSource("${name}.groovy", src)
+                extraSources.each { String file, String text -> cu.addSource(file, text) }
+                cu.compile(Phases.CLASS_GENERATION)
+                return null
+            }
             gcl.parseClass(src, "${name}.groovy")
             return null   // compiled cleanly
         } catch (MultipleCompilationErrorsException e) {
@@ -129,7 +141,7 @@ class VerifyHarness {
             System.setProperty('verify.specs', specDir.path)
         }
         try {
-            errors = compile(name, (String) c.src)
+            errors = compile(name, (String) c.src, (Map<String, String>) c.extraSources)
         } finally {
             if (specDir != null) {
                 if (priorSpecs != null) System.setProperty('verify.specs', priorSpecs) else System.clearProperty('verify.specs')

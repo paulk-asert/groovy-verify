@@ -6015,16 +6015,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // @Ensures, as a return value or an assignment's is (Phase 347): the condition skipped loudly whatever the
             // contract said. Its result is only what the contract allows, so a refutation names no run (below).
             boolean hoisted = false
+            String why = null
             if (p == null && exprContainsCall(asite.cond)) {
-                Expression hv = hoistValueCalls(asite.cond, enc, s, currentMethod)
-                if (hv != null) {
-                    p = enc.translateGoal(hv)
-                    hoisted = p != null
+                // Phase 402 — a call that can't be hoisted (its writes can't be bounded) skips THIS assert, saying why:
+                // it threw out of the whole value-flow pass, so every assert in the method skipped as "outside the
+                // value-flow fragment (a re-assignment or loop)", naming neither
+                try {
+                    Expression hv = hoistValueCalls(asite.cond, enc, s, currentMethod)
+                    if (hv != null) {
+                        p = enc.translateGoal(hv)
+                        hoisted = p != null
+                    }
+                } catch (UnsupportedConstructException e) {
+                    why = e.message
                 }
             }
             if (p == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
-                    "condition '${asite.cond.text}' is outside fragment"), asite.node)
+                    "condition '${asite.cond.text}' is outside fragment" + (why != null ? " (${why})" : '')), asite.node)
                 return
             }
             s.assertExpr(s.not(p))                       // negation of the asserted predicate
@@ -15559,7 +15567,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String shown = (ownerFqn != null ? ownerFqn.substring(ownerFqn.lastIndexOf('.') + 1) + '.' : '') + m + '(…)'
         if (as == null) return unbounded("call '${shown}' with unusual arguments")
         if (pureStaticClass(ownerFqn)) return pureStaticCallWrites(ownerFqn, m, args, ws)
-        ClassNode sib = moduleClass(ownerFqn)   // Phase 350 — a sibling class's static, by its inferred frame
+        ClassNode sib = moduleClass(ownerFqn) ?: compiledClass(ownerFqn)   // Phase 350 — a sibling class's static, by its inferred frame
         if (sib != null) return collectSiblingCallWrites(sib, m, as, ws, null, true) && collectWritesArgs(args, ws)
         MethodNode spec = ownerFqn != null && SpecRegistry.hasSpec(ownerFqn) ? SpecRegistry.lookup(ownerFqn, m, as.size(), null) : null
         if (spec != null) {
@@ -16112,6 +16120,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Phase 350 — another class of {@link #WRITE_OWNER}'s compilation unit, by fully-qualified or simple name. */
+    /** Phase 402 — a class compiled in the same run from ANOTHER file (`ISqrt.groovy` beside `GoodCalls.groovy`): for a
+     *  STATIC call its body is the one that runs, as a same-file sibling's is (a static isn't overridden), so its frame
+     *  is read the same way. Instance receivers keep {@link #moduleClass}'s same-file scope (overriders are searched
+     *  there). Only primary class nodes — compiled from source in this run, body at hand. */
+    private static ClassNode compiledClass(String n) {
+        ClassNode owner = WRITE_OWNER.get()
+        if (n == null || owner == null || owner.module?.unit == null || n == owner.name) return null
+        for (ClassNode cn : owner.module.unit.classes) {
+            if (!cn.is(owner) && cn.isPrimaryClassNode() && (cn.name == n || cn.nameWithoutPackage == n)) return cn
+        }
+        null
+    }
+
     private static ClassNode moduleClass(String n) {
         ClassNode owner = WRITE_OWNER.get()
         if (n == null || owner == null || owner.module == null || n == owner.name) return null

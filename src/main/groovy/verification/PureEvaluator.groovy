@@ -587,6 +587,11 @@ class PureEvaluator {
         for (ClassNode cn : owner.module.classes) {
             if (!cn.is(owner) && (cn.name == n || cn.nameWithoutPackage == n)) return cn
         }
+        // Phase 402 — or another file compiled in the same run: only its STATICS are resolved through here (`Util$tweak`),
+        // and a static's body is the one that runs
+        if (owner.module.unit != null) for (ClassNode cn : owner.module.unit.classes) {
+            if (!cn.is(owner) && cn.isPrimaryClassNode() && (cn.name == n || cn.nameWithoutPackage == n)) return cn
+        }
         null
     }
 

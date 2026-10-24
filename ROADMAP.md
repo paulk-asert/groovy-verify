@@ -17526,6 +17526,36 @@ open whatever `isqrt` promised.
 under a branch of the helper (GoodCalls' `viaIfCondition`). A wrong claim refutes with the call withheld; and no
 vacuity where the callee's precondition fails.
 
+## Phase 402 — a static in another file of the compilation, and an assert that skips alone  *(shipped — completeness)*
+
+Reported by the groovy6-functional session at `c365f72`: on the real GoodCalls every `via*` assert skipped, all six
+with "Skipped assertion safety check (the method body is outside the value-flow fragment (a re-assignment or loop))"
+— though `main` has neither, and the same class proved in the case harness. The difference was the files: there
+`ISqrt` is its own file (`ISqrt.groovy`), here it shared the case's source.
+
+- **A static from another file of the same compilation** (`compiledClass`, and `PureEvaluator.siblingClass`): the
+  sibling-class rules (Phase 350) looked only at the caller's own file's module, so `ISqrt` read as compiled elsewhere,
+  `ISqrt.isqrt`'s frame was unknown (`static call 'ISqrt.isqrt(…)' with no @Pure or @Modifies spec`) and every helper
+  calling it unbounded — no pure helper, no hoist. A primary class node of the same compilation unit has its body at
+  hand, and a STATIC's body is the one that runs (no override), so its frame is read, and its contract-free statics
+  evaluated, as a same-file sibling's. Instance receivers keep the same-file scope (`moduleClass`), where overriders
+  are searched.
+- **An assert whose call can't be hoisted skips alone** (Phase 400's hoist): `assumeCalleeEnsures` throws for an
+  unbounded callee, and the throw left the whole value-flow pass — every assert in the method skipped under the generic
+  reason, naming neither. It is caught for that one assert, which skips with the reason (`condition '(A.t() == 3)' is
+  outside fragment (call 't(…)' whose writes can't be bounded …)`); the others are checked.
+- **The harness compiles other files with a case** (`extraSources: ['ISqrt.groovy': …]`, `VerifyHarness.compile`):
+  one `CompilationUnit`, one module per file, as groovyc compiles a source set — single-source cases couldn't show this.
+
+Measured on the real groovy6-functional build (a scratch copy, `includeBuild` of this tree): with `ISqrt` as it is,
+`viaIfCondition(-1) == -1` proves and the five root claims are "may not hold" (isqrt has no `@Ensures`); with
+`@Ensures({ result >= 0 && (long) result * result <= x && x < ((long) result + 1) * (result + 1) })` (overflow-safe at
+runtime, as the session noted) all six prove.
+
+**Shipped tests:** group `P402 other files of the compilation`, 3 cases. A static in another file framed and its
+contract used (all three asserts prove); without its contract only what follows anyway; an assert over an unboundable
+call skips alone, naming why, beside one that proves.
+
 ---
 
 ## Definition of done, per increment
