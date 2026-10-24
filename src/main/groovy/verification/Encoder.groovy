@@ -321,6 +321,10 @@ class Encoder implements TheoryApi {
 
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
+    /** Phase 401 — a contracted call's value inside a pure helper's body (VerifyChecker binds it by the callee's
+     *  @Ensures), or null; and how deep the translation is in such bodies. */
+    Closure<Object> contractedValue = null
+    private int pureBodyDepth = 0
     /**
      * Per-*term* unfolding depth for the defining-equation expansion (Phase 8a). A {@code f#(args)} term
      * asserts its equation and unfolds its body's recursive calls to {@code depth - 1}, restoring the
@@ -7537,7 +7541,13 @@ class Encoder implements TheoryApi {
         if (v != null) return session.intLit(v)
 
         PureEvaluator.Call c = pureEvaluator.callInfo(e)
-        if (c == null) return null   // not a same-class call — outside the fragment
+        if (c == null) {
+            // Phase 401 — inside a pure helper's body a CONTRACTED call (no pure function itself) is its @Ensures'
+            // value (`viaLiteral() { isqrt(5) }`): the body failed to translate, so the helper's own symbol was left
+            // unconstrained, whatever its callee promised
+            if (pureBodyDepth > 0 && contractedValue != null) return contractedValue.call(e)
+            return null   // not a same-class call — outside the fragment
+        }
 
         // The call as a *shared* uninterpreted symbol f#(args). Two occurrences of the same call are the
         // same term (congruence) — which is what lets an inductive proof equate `chain(u,d)` with the
@@ -7582,9 +7592,13 @@ class Encoder implements TheoryApi {
                 try {
                     // Phase 211 — a String-valued body translates in the String sort (its ternary
                     // branches are String terms); other ranges keep the historic natural translation.
-                    Object bodyH = (pureRt != null && pureRt.name == 'java.lang.String')
-                        ? translateInSort(body, session.declareSort('String'))
-                        : translate(body)
+                    pureBodyDepth++
+                    Object bodyH
+                    try {
+                        bodyH = (pureRt != null && pureRt.name == 'java.lang.String')
+                            ? translateInSort(body, session.declareSort('String'))
+                            : translate(body)
+                    } finally { pureBodyDepth-- }
                     if (bodyH != null) session.assertExpr(session.eq(fSharp, bodyH))
                     // Phase 355 — a summarised loop's exit facts over its fresh `$loopK$…` names (each one it can't
                     // translate is left out: weaker, still sound)

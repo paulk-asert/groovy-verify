@@ -391,7 +391,48 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         MethodNode forWrites = currentMethod
         if (forWrites != null) made.inPlaceWritesSupplier = { -> inPlaceWritesOf(forWrites) }
         made.reversedRanges = currentReversedRanges   // Phase 380
+        made.contractedValue = { Expression call -> contractedCallValue(session, made, call) }   // Phase 401
         made
+    }
+
+    /**
+     * Phase 401 — the value of a contracted call met inside a pure helper's body: a fresh symbol bound by the callee's
+     * @Ensures, assumed only under its @Requires (unguarded, `h(n) { isqrt(n) }` at `h(-1)` would assume `r*r <= -1`
+     * and make everything after it vacuous). Only for a callee that writes nothing caller-visible (a pure helper can't
+     * call one that does) and isn't the method being verified (no inductive hypothesis here); else null, as before.
+     */
+    private Object contractedCallValue(SmtSession s, Encoder enc, Expression call) {
+        if (!(call instanceof MethodCall)) return null
+        String name = ((MethodCall) call).methodAsString
+        List<Expression> actuals = collectArgumentExpressions((MethodCall) call)
+        if (name == null || actuals == null) return null
+        MethodNode callee = resolveContractedCallee(currentMethod, name, actuals.size(), false, staticOwnerType(call), null, call)
+        if (callee == null || callee.is(currentMethod) || findEnsures(callee) == null) return null
+        Set<String> w = modifiedNames(callee)
+        if (w == null || !w.isEmpty()) return null
+        Expression reqAst = findRequires(callee) != null ? contractAstFor(callee, 'requires') : null
+        Object guard = null
+        if (reqAst != null) {
+            Map<String, Object> b = new LinkedHashMap<String, Object>()
+            for (int i = 0; i < callee.parameters.length; i++) {
+                Object h = enc.translate(actuals.get(i))
+                if (h == null) return null
+                b.put(callee.parameters[i].name, h)
+            }
+            guard = enc.translateWith(reqAst, b)
+            if (guard == null) return null
+        }
+        ClassNode rt = callee.returnType
+        Object sort = (rt != null && !isIntElement(rt)) ? enc.sortForType(rt) : null
+        // named `<callee>$result$<n>` so shown() can tell a refutation rests on it (RESULT_KEY)
+        String nm = callee.name + '$result$' + (hoistSeq++)
+        Object fresh = sort != null ? s.varOfSort(nm, sort) : s.intVar(nm)
+        if (guard != null) s.pushAssertGuard(guard)
+        try {
+            return assumeCalleeEnsures(s, enc, call, currentMethod, fresh, false) ? fresh : null
+        } finally {
+            if (guard != null) s.popAssertGuard()
+        }
     }
 
     /** Phase 377 — memoised {@link #inPlaceWritesOf}. */
@@ -2651,6 +2692,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String note = "no failing call: the failure rests on ${unmodelled.join(', ')}, a value the verifier doesn't model (an unmodelled call or expression), so no run is known to reach it".toString()
             if (!r.notes.contains(note)) r.notes.add(note)
         }
+        // Phase 401 — a contracted call's value inside a pure helper is only what its contract allows (and anything at
+        // all where its @Requires fails): a call built on it names no run
+        if (r.failingCall != null && r.counterexample != null) {
+            String callee = r.counterexample.keySet().findResult { String k ->
+                java.util.regex.Matcher m = RESULT_KEY.matcher(k); m.matches() ? m.group(1) : null }
+            if (callee != null) {
+                r.failingCall = null
+                String note = ("no failing call: the failure rests on what ${callee}(…) returns inside a helper, which the " +
+                    "verifier knows only from its @Ensures — strengthen the contract if the claim should follow from it").toString()
+                if (!r.notes.contains(note)) r.notes.add(note)
+            }
+        }
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
         // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
         String callNote = loopCallNote ?: closureCallNote ?: havocCallNote
@@ -2695,6 +2748,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (!base.contains('#') && !base.startsWith('$')) display.put(base + ' (unmodelled)', v)
                 return
             }
+            java.util.regex.Matcher rm = RESULT_KEY.matcher(k)   // Phase 401 — a contracted call's value in a helper
+            if (rm.matches()) { display.put(rm.group(1) + '(…) (inside a helper)', v); return }
             java.util.regex.Matcher cm = CALL_HAVOC_KEY.matcher(k)   // Phase 347 — a callee's framed location
             if (cm.matches()) {
                 String base = cm.group(1)
@@ -2767,6 +2822,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static final java.util.regex.Pattern HAVOC_KEY = java.util.regex.Pattern.compile('(.+)\\$havoc\\$(\\d+)')
     /** Phase 386 — the locals an obligation's value-flow replay left free (an assignment nothing modelled). */
     private final Set<String> replayUnmodelled = new HashSet<String>()
+
+    /** Phase 401 — a contracted call's value inside a pure helper's body: {@code <callee>$result$<n>}. */
+    private static final java.util.regex.Pattern RESULT_KEY = java.util.regex.Pattern.compile('([A-Za-z_][A-Za-z0-9_]*)\\$result\\$(\\d+)')
 
     /** Phase 346 — a value the encoder couldn't translate, havocked: {@code <name>$unmodelled$<n>}. */
     private static final java.util.regex.Pattern UNMODELLED_KEY = java.util.regex.Pattern.compile('(.+)\\$unmodelled\\$(\\d+)')

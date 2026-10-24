@@ -74,9 +74,10 @@ class G442_p400_assert_condition_calls {
                             }
                         }''')],
 
-        // isqrt(9) == 3 follows from r*r <= 9 < (r+1)*(r+1); viaLiteral has no @Ensures, so its claim stays open.
+        // isqrt(9) == 3 follows from r*r <= 9 < (r+1)*(r+1); Phase 401 — and viaLiteral() == 2 too, through the isqrt(5)
+        // in its body (it had no @Ensures, so its claim stayed open)
         [group: "P400 assert-condition calls", name: "… a nonlinear contract settles it too",
-         expect: ["Assertion may not hold: (G.viaLiteral() == 2)"], refute: "Assertion may not hold: (G.isqrt(9) == 3)",
+         ok: true,
          src: tc('''class G {
                             @Requires({ n >= 0 })
                             @Ensures({ result >= 0 && result * result <= n && n < (result + 1) * (result + 1) })

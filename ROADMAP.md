@@ -17500,6 +17500,32 @@ isn't hoisted: its claim stays "may not hold", with no call. An assert over a ca
 in a loop, before a postcondition. Undecided with no call: a weaker contract (`max`, `abs`), a contradicted claim. And
 the call's own precondition, still checked.
 
+## Phase 401 — a helper over a contracted call has the callee's contract  *(shipped — completeness)*
+
+Phase 400's boundary, and groovy6-functional's GoodCalls: `viaLiteral() { isqrt(5) }` has no contract, so it is a pure
+helper, evaluated as its body (Phase 8a's shared symbol `viaLiteral#()` with its defining equation). But the pure
+evaluator leaves a CONTRACTED method to the call-site machinery (`PureEvaluator.resolve`), so the body's `isqrt(5)`
+didn't translate, no defining equation was asserted, and `viaLiteral#()` was free: `assert viaLiteral() == 2` stayed
+open whatever `isqrt` promised.
+
+- **A contracted call inside a pure helper's body** (`Encoder.contractedValue`, consulted only while a helper's body is
+  translated — `pureBodyDepth`; `VerifyChecker.contractedCallValue`): a fresh symbol bound by the callee's `@Ensures`
+  (`assumeCalleeEnsures`), so the helper's defining equation is asserted over it. Only a callee that writes nothing
+  caller-visible (a pure helper can't call one that does) and isn't the method being verified (no inductive
+  hypothesis here). `viaLiteral() == 2` and `viaIfCondition(9) == 3` prove.
+- **Under the callee's `@Requires`** (an assert guard): unguarded, `h(n) { isqrt(n) }` at `h(-1)` would assume
+  `r*r <= -1` and make everything after it vacuous; with the guard, `h(-1)`'s value is free and the precondition's
+  failure is reported in `h`.
+- **A refutation resting on it names no run** (`RESULT_KEY`, `<callee>$result$<n>`): the value is only what the
+  contract allows (anything where its precondition fails), so the call is withheld with a note; the value shows as
+  `isqrt(…) (inside a helper)`.
+
+**Changed cases:** G442's "a nonlinear contract settles it too" now proves outright (its `viaLiteral() == 2` stayed open).
+
+**Shipped tests:** group `P401 helper over a contracted call`, 4 cases. Proved: a helper over a contracted call, and
+under a branch of the helper (GoodCalls' `viaIfCondition`). A wrong claim refutes with the call withheld; and no
+vacuity where the callee's precondition fails.
+
 ---
 
 ## Definition of done, per increment
