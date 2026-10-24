@@ -392,8 +392,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (forWrites != null) made.inPlaceWritesSupplier = { -> inPlaceWritesOf(forWrites) }
         made.reversedRanges = currentReversedRanges   // Phase 380
         made.contractedValue = { Expression call -> contractedCallValue(session, made, call) }   // Phase 401
+        made.mayShare = arraySharers(currentMethod)   // Phase 404
+        MethodNode apartIn = currentMethod
+        made.arraysApart = { String a, String b -> bothParameters(apartIn, a, b) }
         made
     }
+
+    /** Phase 404 — {@link Encoder#mayShare} for {@code m}: among the arrays it names by a bare name (its parameters,
+     *  its class's fields and statics), each one's possible others. Memoised per method. */
+    private static Map<String, Set<String>> arraySharers(MethodNode m) {
+        if (m == null) return Collections.<String, Set<String>> emptyMap()
+        Object memo = m.getNodeMetaData(SHARERS_KEY)
+        if (memo != null) return (Map<String, Set<String>>) memo
+        Map<String, ClassNode> arrays = namedArrays(m)
+        Map<String, Set<String>> out = new HashMap<String, Set<String>>()
+        for (Map.Entry<String, ClassNode> a : arrays.entrySet()) {
+            if (a.key.indexOf('$') >= 0) continue
+            for (Map.Entry<String, ClassNode> b : arrays.entrySet()) {
+                if (b.key == a.key || b.key.indexOf('$') >= 0 || bothParameters(m, a.key, b.key) || !sameArrayPossible(a.value, b.value)) continue
+                Set<String> s = out.get(a.key)
+                if (s == null) { s = new LinkedHashSet<String>(); out.put(a.key, s) }
+                s.add(b.key)
+            }
+        }
+        m.putNodeMetaData(SHARERS_KEY, out)
+        out
+    }
+    private static final String SHARERS_KEY = 'verify.p404.sharers'
 
     /**
      * Phase 401 — the value of a contracted call met inside a pure helper's body: a fresh symbol bound by the callee's
@@ -1523,7 +1548,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 374 — set while a witness is sought along an exact path from entry (every condition on it translated). */
     private boolean exactWitness = false
     static final String HAVOC_CALL_NOTE = 'no failing call: the failure rests on what a statement writes inside it ' +
-        '(a nested assignment, a callable\'s call, a catch or finally, a fall-through), which the check takes as ' +
+        '(a nested assignment, a callable\'s call, a call it can\'t frame, a catch or finally, a fall-through), which the check takes as ' +
         'unknown rather than following from entry'
     /** Phase 373 — the region discharge's havocs by number: each entry labels the havocs from it on. */
     private TreeMap<Integer, String> havocLabels = null
@@ -2706,7 +2731,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
         // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
-        String callNote = loopCallNote ?: closureCallNote ?: havocCallNote
+        String callNote = loopCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404
         if (r.failingCall != null && callNote != null) {
             r.failingCall = null
             if (!r.notes.contains(callNote)) r.notes.add(callNote)
@@ -4612,7 +4637,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 new HashSet<String>(), sites)
             for (VfObligation v : sites) dischargeVfObligation(node, v, reqAst)
             currentAssertsTrusted = true   // every assert was discharged here → safe to assume them in the postcondition
-        } catch (UnsupportedConstructException ignored) {
+        } catch (UnsupportedConstructException bail) {
             // Value-flow bailed (a re-assignment — including the `i = i + 1` an expression-position `a[i++]`
             // expands to — or an unsupported shape). Re-discharge through dischargeRegion, which threads the
             // preceding straight-line statements (SSA), so an `a[i]` bounds check sees the reaching binding /
@@ -4624,12 +4649,38 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             // The fallback passes don't discharge user `assert`s, so any in this body go unchecked here — say so
             // loudly rather than skip silently (and they are not assumed in the postcondition: trusted stays false).
+            // Phase 404 — naming what the pass bailed on (a re-assignment, a loop, a call it can't frame), not a guess
             for (AssertStatement as : collectAssertStatements(body)) {
                 if (as.getNodeMetaData(ASSUME_ONLY_KEY) != null) continue
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
-                    "the method body is outside the value-flow fragment (a re-assignment or loop)"), as)
+                    "the method body is outside the value-flow fragment (${bail.message ?: 'a re-assignment or loop'})".toString()), as)
             }
         }
+    }
+
+    /** Phase 404 — a statement expression that writes one target, as [the target, the value it gets]: `t = v`, `t op= v`
+     *  (`t op v`), `t++` / `++t` / `t--` / `--t` (`t ± 1`); null for anything else. */
+    private static Expression[] vfWrite(Expression e) {
+        if (e instanceof BinaryExpression && !(e instanceof DeclarationExpression)) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type == Types.ASSIGN) return [be.leftExpression, be.rightExpression] as Expression[]
+            int base = Encoder.compoundBaseOp(be.operation.type)
+            if (base >= 0) {
+                BinaryExpression v = new BinaryExpression(be.leftExpression, Token.newSymbol(base, -1, -1), be.rightExpression)
+                v.setSourcePosition(be)
+                return [be.leftExpression, v] as Expression[]
+            }
+            return null
+        }
+        Expression t = null
+        Token op = null
+        if (e instanceof PostfixExpression) { t = ((PostfixExpression) e).expression; op = ((PostfixExpression) e).operation }
+        else if (e instanceof PrefixExpression) { t = ((PrefixExpression) e).expression; op = ((PrefixExpression) e).operation }
+        if (t == null || !(op.type in [Types.PLUS_PLUS, Types.MINUS_MINUS])) return null
+        BinaryExpression v = new BinaryExpression(t, Token.newSymbol(op.type == Types.PLUS_PLUS ? Types.PLUS : Types.MINUS, -1, -1),
+            new ConstantExpression(1, true))
+        v.setSourcePosition(e)
+        [t, v] as Expression[]
     }
 
     /** True if {@code e} mentions any parameter of {@code m} by name — the "this assert is a precondition" smell. */
@@ -4881,12 +4932,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (de.rightExpression != null) steps.add(new Assign(name, de.rightExpression))
                     continue
                 }
-                if (e instanceof BinaryExpression &&
-                    ((BinaryExpression) e).operation.type == Types.ASSIGN) {
-                    BinaryExpression be = (BinaryExpression) e
-                    if (be.leftExpression instanceof VariableExpression) {
-                        String name = ((VariableExpression) be.leftExpression).name
-                        scanObligations(be.rightExpression, steps, out)
+                // Phase 404 — `=`, and `op=` / `++` / `--` as the `=` of their value (`x += 5` is `x = x + 5`): these
+                // used to fall through to the call handling below and be dropped, so `int x = 1; x += 5; assert x == 1`
+                // proved, and `a[0] = 0; 10 % a[0]` under `a[0] == 1`
+                Expression[] vw = vfWrite(e)
+                if (vw != null) {
+                    Expression lhs = vw[0], value = vw[1]
+                    if (lhs instanceof VariableExpression) {
+                        String name = ((VariableExpression) lhs).name
+                        scanObligations(value, steps, out)
                         // A bare write to a *field* or *parameter* (not a fresh local) reuses that name's entry
                         // symbol. As a plain `name == rhs` binding it would thread the self-contradictory
                         // `tail == tail + 1` onto the entry value (UNSAT → every downstream obligation discharges
@@ -4896,28 +4950,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // A non-Int field/param write (and a `this.`-qualified write, a PropertyExpression that
                         // throws below) still bails loudly to the "outside the value-flow fragment" skip. Field-delta
                         // *postconditions* are unaffected — they use the old-snapshot postcondition replay.
-                        Variable acc = ((VariableExpression) be.leftExpression).accessedVariable
+                        Variable acc = ((VariableExpression) lhs).accessedVariable
                         if (acc instanceof FieldNode || acc instanceof Parameter) {
                             ClassNode lt = (acc instanceof FieldNode) ? ((FieldNode) acc).type : ((Parameter) acc).type
                             if (isIntElement(lt)) {
-                                steps.add(new FieldAssign(name, be.rightExpression))
+                                steps.add(new FieldAssign(name, value))
                                 continue
                             }
                             throw new UnsupportedConstructException("assignment to a non-Int field/parameter '${name}'")
                         }
                         if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
-                        steps.add(new Assign(name, be.rightExpression))
+                        steps.add(new Assign(name, value))
                         continue
                     }
-                    // Array-element store `a[i] = v`: not a scalar binding. Its *contents* aren't tracked
-                    // by the value-flow pass (the implicit obligations — bounds/div/null — don't depend on
-                    // them), but the LHS index access and the rhs still carry their own obligations. Handle
-                    // it rather than throwing, so a body that stores stays on the value-flow path (which
-                    // understands short-circuit guards) instead of the value-flow-blind havoc fallback.
-                    if (be.leftExpression instanceof BinaryExpression &&
-                        ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
-                        scanObligations(be.leftExpression, steps, out)
-                        scanObligations(be.rightExpression, steps, out)
+                    // Array-element store `a[i] = v`: the LHS index access and the value carry their own obligations,
+                    // and (Phase 404) the store is a step — an obligation after it reads the new contents (they were
+                    // dropped: `a[0] = 5; a[a[0]]` on a two-element array proved in bounds)
+                    if (lhs instanceof BinaryExpression &&
+                        ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                        BinaryExpression sub = (BinaryExpression) lhs
+                        scanObligations(lhs, steps, out)
+                        scanObligations(value, steps, out)
+                        if (!(sub.leftExpression instanceof VariableExpression)) {
+                            throw new UnsupportedConstructException("an element store through '${clip(sub.leftExpression.text)}'")
+                        }
+                        steps.add(new ArrayStore(((VariableExpression) sub.leftExpression).name, sub.rightExpression, value))
                         continue
                     }
                     throw new UnsupportedConstructException("assignment to a non-variable target")
@@ -5101,6 +5158,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // Phase 386 — nothing modelled the value: the name stays free (sound), but a model's value for it
                     // is no run's, so shown() withholds the call (`List r = (4.5..6.5).toList()` read `fails on: f()`)
                     if (!modelled) replayUnmodelled.add(a.name)
+                } else if (step instanceof ArrayStore) {
+                    // Phase 404 — an element store: the contents after it are the stored ones (and an array that may be
+                    // this one has unknown contents); one that doesn't translate leaves them unknown
+                    ArrayStore st = (ArrayStore) step
+                    boolean isMap = currentMapTypes.containsKey(st.arr)
+                    Object idx = isMap ? enc.translateInSort(st.index, enc.mapKeySort(st.arr)) : enc.indexTerm(st.arr, st.index)
+                    Object val = enc.translateInSort(st.value, isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr))
+                    if (idx == null || val == null) { if (isMap) enc.havocMap(st.arr) else enc.havocArray(st.arr) }
+                    else if (isMap) doMapPut(s, enc, st.arr, idx, val)
+                    else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storedInto(st.arr) }
                 } else if (step instanceof FieldAssign) {
                     // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
                     // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
@@ -5569,6 +5636,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * nothing follows the calls from entry, and the closure's own parameters (`k` in `n.times { k -> … }`) are free.
      */
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+        // Phase 404 — an obligation reading an array made unknown only as a possible alias: its failing run needs the two
+        // to be one array, so the call isn't shown
+        String prevAlias = aliasCallNote
+        if (!enc.aliasHavocked.isEmpty() && site.hasProperty('node') && site['node'] instanceof ASTNode) {
+            Set<String> read = new HashSet<String>()
+            ASTNode n = (ASTNode) site['node']
+            if (n instanceof Expression) collectLocationNames((Expression) n, read)
+            else if (n instanceof AssertStatement) collectLocationNames(((AssertStatement) n).booleanExpression, read)
+            if (!Collections.disjoint(read, enc.aliasHavocked)) aliasCallNote = ALIAS_CALL_NOTE
+        }
+        try { dischargeObligationUnder0(s, enc, site) } finally { aliasCallNote = prevAlias }
+    }
+
+    static final String ALIAS_CALL_NOTE = 'no failing call: the failure needs two of the arrays this method names to be ' +
+        'one array, which the verifier takes as possible (a write into one is a write into the other) but no call here ' +
+        'is built to show'
+    /** Phase 404 — while set, {@link #shown} withholds the failing call, with this note. */
+    private String aliasCallNote = null
+
+    private void dischargeObligationUnder0(SmtSession s, Encoder enc, Object site) {
         Set<String> h = site.hasProperty('node') ? closureHavocFor((ASTNode) site['node']) : null
         if (h == null) { dischargeObligationAt(s, enc, site); return }
         // Phase 380 — a closure iterating a range runs with its parameter in it: `(0..<j.length).every { j[it] >= 0 }`
@@ -6690,7 +6777,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String label = st instanceof TryCatchStatement ? 'after the try' : st instanceof SwitchStatement ?
                     'after the switch' : st instanceof LoopingStatement ? 'after a loop' :
                     Encoder.containsCallableCall(st) ? 'after a callable\'s call' :
-                    !Encoder.nestedTargets(st).isEmpty() ? 'after a nested write' : 'after a loop'
+                    !Encoder.nestedTargets(st).isEmpty() ? 'after a nested write' :
+                    standaloneCallOf(st) != null ? 'after a call' : 'after a loop'   // Phase 404 — a call it can't frame
                 Set<String> havocked = null
                 labelHavoc(enc, label) { -> havocked = havocWritesOf(rest, enc) }
                 for (int k = 0; k < rest.size(); k++) {
@@ -6742,6 +6830,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (callable[0]) names.addAll(callableReach())
         for (String n : names) havocLocation(enc, n)
+        // Phase 404 — an array written through an object (`h.poke()`), or this one's under an implicit-this call, may be
+        // one the method names: its contents are unknown too (its length isn't — an alias's write doesn't resize)
+        for (String n : withAliasedArrays(names, thisCall[0])) if (!names.contains(n)) { enc.havocArray(n); enc.aliasHavocked.add(n) }
         names
     }
 
@@ -12339,10 +12430,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * name, exact store model); a same-type sibling that is never read is unaffected. Loud skip.
      */
     private static void guardArrayAliasHazard(MethodNode node, Path p, Expression postAst) {
-        Map<String, String> arrays = new LinkedHashMap<String, String>()   // array param -> element type
-        for (Parameter par : node.parameters) {
-            if (par.type != null && par.type.isArray()) arrays.put(par.name, par.type.componentType?.name)
-        }
+        Map<String, ClassNode> arrays = namedArrays(node)   // Phase 404 — fields and statics too, not just parameters
         if (arrays.size() < 2) return
         Set<String> stored = new LinkedHashSet<String>()
         for (Object st : p.steps) {
@@ -12350,25 +12438,190 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (stored.isEmpty()) return
         Set<String> mentioned = new HashSet<String>()
-        collectVarNames(postAst, mentioned)
-        collectVarNames(p.result, mentioned)
+        collectLocationNames(postAst, mentioned)
+        collectLocationNames(p.result, mentioned)
         for (Object st : p.steps) {
-            if (st instanceof Assign) collectVarNames(((Assign) st).rhs, mentioned)
-            else if (st instanceof Guard) collectVarNames(((Guard) st).cond, mentioned)
-            else if (st instanceof ArrayStore) { collectVarNames(((ArrayStore) st).index, mentioned); collectVarNames(((ArrayStore) st).value, mentioned) }
-            else if (st instanceof LemmaCall) collectVarNames(((LemmaCall) st).call, mentioned)
-            else if (st instanceof AssertAssume) collectVarNames(((AssertAssume) st).cond, mentioned)
+            if (st instanceof Assign) collectLocationNames(((Assign) st).rhs, mentioned)
+            else if (st instanceof Guard) collectLocationNames(((Guard) st).cond, mentioned)
+            else if (st instanceof ArrayStore) { collectLocationNames(((ArrayStore) st).index, mentioned); collectLocationNames(((ArrayStore) st).value, mentioned) }
+            else if (st instanceof LemmaCall) collectLocationNames(((LemmaCall) st).call, mentioned)
+            else if (st instanceof AssertAssume) collectLocationNames(((AssertAssume) st).cond, mentioned)
         }
         for (String pn : stored) {
-            for (Map.Entry<String, String> other : arrays.entrySet()) {
-                if (other.key != pn && other.value == arrays.get(pn) && mentioned.contains(other.key)) {
-                    throw new UnsupportedConstructException(
-                        "array parameters '${pn}' and '${other.key}' may alias — a store through '${pn}' " +
-                        "with '${other.key}' read on the path is modelled as independent (heap aliasing is a non-goal)")
+            String other = aliasableArray(arrays, pn, mentioned, node, true)
+            if (other == null) continue
+            boolean params = node.parameters.any { it.name == pn } && node.parameters.any { it.name == other }
+            throw new UnsupportedConstructException(params ?
+                "array parameters '${pn}' and '${other}' may alias — a store through '${pn}' " +
+                "with '${other}' read on the path is modelled as independent (heap aliasing is a non-goal)" :
+                "arrays '${shownLocation(pn)}' and '${shownLocation(other)}' may be one array — a store through " +
+                "'${shownLocation(pn)}' with '${shownLocation(other)}' read on the path is modelled as independent " +
+                "(heap aliasing is a non-goal)")
+        }
+    }
+
+    /** Phase 404 — the arrays {@code m} can name besides its locals, by the caller-side location the encoder uses: its
+     *  array parameters, its class's array fields (instance ones only in an instance method) and statics, and the array
+     *  fields of an object parameter ({@code h$arr}). A local is fresh or an alias Phase 366 already makes loud. */
+    static Map<String, ClassNode> namedArrays(MethodNode m) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        if (m == null) return out
+        for (Parameter par : m.parameters) {
+            ClassNode t = par.type
+            if (t == null) continue
+            if (t.isArray()) { out.put(par.name, t.componentType); continue }
+            if (t.isPrimaryClassNode() && !isImmutableType(t)) {
+                for (ClassNode c = t; c != null && c.isPrimaryClassNode(); c = c.superClass) {
+                    for (FieldNode f : c.fields) if (!f.isStatic() && f.type?.isArray()) out.put(par.name + '$' + f.name, f.type.componentType)
                 }
             }
         }
+        for (ClassNode c = m.declaringClass; c != null; c = c.superClass) {
+            for (FieldNode f : c.fields) {
+                if (f.type?.isArray() && (f.isStatic() || !m.isStatic()) && !out.containsKey(f.name)) out.put(f.name, f.type.componentType)
+            }
+        }
+        out
     }
+
+    /** Phase 404 — another array of {@code arrays}, mentioned, that may be the same object as {@code written}: one whose
+     *  element type could be the written one's (equal, or one a subtype of the other — Java arrays are covariant). */
+    private static String aliasableArray(Map<String, ClassNode> arrays, String written, Set<String> mentioned,
+                                         MethodNode m, boolean paramPairs) {
+        if (!arrays.containsKey(written)) return null
+        for (Map.Entry<String, ClassNode> e : arrays.entrySet()) {
+            if (e.key != written && mentioned.contains(e.key) &&
+                (paramPairs ? !(m != null && declaredApart(m, written, e.key)) : !bothParameters(m, written, e.key)) &&
+                sameArrayPossible(arrays.get(written), e.value)) return e.key
+        }
+        null
+    }
+
+    /** Phase 404 — two parameters: the documented no-aliasing assumption ("distinct parameter names denote distinct
+     *  objects") covers them, loud only where Phase 194 made it so. A field, a static or a receiver's field is no
+     *  parameter name, and nothing assumed it apart from the others. */
+    private static boolean bothParameters(MethodNode m, String a, String b) {
+        m != null && ((m.parameters.any { it.name == a } && m.parameters.any { it.name == b }) || declaredApart(m, a, b))
+    }
+
+    /** Phase 404 — {@code m}'s @Requires has a top-level conjunct `a !== b` or `!a.is(b)` (either order): the caller
+     *  vouches they are two arrays, and each call site is held to it. */
+    static boolean declaredApart(MethodNode m, String a, String b) {
+        Object memo = m.getNodeMetaData(APART_KEY)
+        Set<String> apart
+        if (memo != null) apart = (Set<String>) memo
+        else {
+            apart = new HashSet<String>()
+            Expression req = null
+            try { req = findRequires(m) != null ? contractAstFor(m, 'requires') : null } catch (Throwable ignored) { }
+            List<Expression> cs = new ArrayList<Expression>()
+            if (req != null) splitConjuncts(req, cs)
+            for (Expression c : cs) {
+                Expression l = null, r = null
+                if (c instanceof BinaryExpression && ((BinaryExpression) c).operation.text == '!==') {
+                    l = ((BinaryExpression) c).leftExpression; r = ((BinaryExpression) c).rightExpression
+                } else if (c instanceof NotExpression && ((NotExpression) c).expression instanceof MethodCallExpression) {
+                    MethodCallExpression mc = (MethodCallExpression) ((NotExpression) c).expression
+                    List<Expression> as = collectArgumentExpressions(mc)
+                    if (mc.methodAsString == 'is' && as?.size() == 1) { l = mc.objectExpression; r = as.get(0) }
+                }
+                String ln = apartName(l), rn = apartName(r)
+                if (ln != null && rn != null) { apart.add(ln + '|' + rn); apart.add(rn + '|' + ln) }
+            }
+            m.putNodeMetaData(APART_KEY, apart)
+        }
+        apart.contains(a + '|' + b)
+    }
+    private static final String APART_KEY = 'verify.p404.apart'
+
+    private static String apartName(Expression e) {
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name
+        if (e instanceof PropertyExpression && ((PropertyExpression) e).objectExpression instanceof VariableExpression) {
+            String o = ((VariableExpression) ((PropertyExpression) e).objectExpression).name
+            return o == 'this' ? ((PropertyExpression) e).propertyAsString : o + '$' + ((PropertyExpression) e).propertyAsString
+        }
+        null
+    }
+
+    /** Phase 404 — can arrays with these element types be one array? */
+    private static boolean sameArrayPossible(ClassNode wt, ClassNode ot) {
+        if (wt == null || ot == null || wt.name == ot.name) return true
+        !ClassHelper.isPrimitiveType(wt) && !ClassHelper.isPrimitiveType(ot) &&
+            (wt.isDerivedFrom(ot) || ot.isDerivedFrom(wt) || wt.implementsInterface(ot) || ot.implementsInterface(wt) ||
+             wt.isInterface() || ot.isInterface())
+    }
+
+    /** Phase 404 — {@code names}, what a stretch of code may write, plus each array of the current method that may be
+     *  one of the arrays written: written by name (a parameter, a field), as an array field of an object written
+     *  through (`h` in `h.poke()`), or as one of this object's under an implicit-this call. A summary that havocs only
+     *  the names written keeps the other name's contents, which the shared array changed. */
+    private Set<String> withAliasedArrays(Set<String> names, boolean thisCall) {
+        MethodNode m = currentMethod
+        if (m == null) return names
+        Map<String, ClassNode> arrays = namedArrays(m)
+        if (arrays.size() < 2) return names
+        Set<String> written = new LinkedHashSet<String>()
+        for (String k : arrays.keySet()) {
+            int q = k.indexOf('$')
+            if (names.contains(k) || (q > 0 && names.contains(k.substring(0, q))) ||
+                (thisCall && q < 0 && !m.parameters.any { it.name == k })) written.add(k)
+        }
+        if (written.isEmpty()) return names
+        Set<String> out = new LinkedHashSet<String>(names)
+        for (String w : written) {
+            for (Map.Entry<String, ClassNode> e : arrays.entrySet()) {
+                if (e.key != w && e.key.indexOf('$') < 0 && !bothParameters(m, w, e.key) && sameArrayPossible(arrays.get(w), e.value)) out.add(e.key)
+            }
+        }
+        out
+    }
+
+    /** Phase 404 — a location as the source spells it: `h$arr` is `h.arr`. */
+    private static String shownLocation(String loc) { loc.replace('$', '.') }
+
+    /** Phase 404 — {@link #collectVarNames} plus the locations a property read names: `this.arr` / `old.arr` as `arr`,
+     *  and `h.arr` as `h$arr`. */
+    private static void collectLocationNames(Expression e, Set<String> into) {
+        if (e == null) return
+        try {
+            e.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression v) { into.add(v.name) }
+                @Override void visitPropertyExpression(PropertyExpression pe) {
+                    if (pe.objectExpression instanceof VariableExpression && pe.propertyAsString != null) {
+                        String o = ((VariableExpression) pe.objectExpression).name
+                        into.add(o in ['this', 'old', 'super'] ? pe.propertyAsString : o + '$' + pe.propertyAsString)
+                    }
+                    super.visitPropertyExpression(pe)
+                }
+            })
+        } catch (Throwable ignored) { }
+    }
+
+    /** Phase 404 — every location {@code m} mentions: its body as written and its contracts. */
+    private static Set<String> mentionedLocations(MethodNode m) {
+        Object memo = m.getNodeMetaData(MENTIONED_KEY)
+        if (memo != null) return (Set<String>) memo
+        Set<String> out = new HashSet<String>()
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body != null) {
+            try {
+                body.visit(new ClassCodeVisitorSupport() {
+                    protected SourceUnit getSourceUnit() { null }
+                    @Override void visitVariableExpression(VariableExpression v) { out.add(v.name) }
+                    @Override void visitPropertyExpression(PropertyExpression pe) {
+                        collectLocationNames(pe, out)
+                        super.visitPropertyExpression(pe)
+                    }
+                })
+            } catch (Throwable ignored) { }
+        }
+        for (String k : ['requires', 'ensures']) {
+            try { collectLocationNames(contractAstFor(m, k), out) } catch (Throwable ignored) { }
+        }
+        m.putNodeMetaData(MENTIONED_KEY, out)
+        out
+    }
+    private static final String MENTIONED_KEY = 'verify.p404.mentioned'
 
     /** Phase 305 — the textbook associativity witness, taken in parameter order: {@code (a+b)+c} loses the
      *  {@code 1.0} that {@code a+(b+c)} keeps, because {@code 1e16 + 1.0} rounds back to {@code 1e16}. */
@@ -12411,8 +12664,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 387 — a catch witness's re-check decides nothing, only which call is shown
         if (auxPathCheck && session instanceof Z3Session) ((Z3Session) session).auxiliary(AUX_TIMEOUT_MS)
         try {
+            guardContainerAlias(node)   // Phase 366 — a known alias first, by name
             guardArrayAliasHazard(node, p, postAst)
-            guardContainerAlias(node)   // Phase 366
             Encoder enc = mkEncoder(session)
             int ssaVersion = 0   // mints fresh versions for re-assigned names (SSA, see the Assign step)
 
@@ -12734,6 +12987,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // a := (store a idx val): subsequent reads of a see the update.
                         Object oldA = enc.arrayFor(st.arr)
                         Object newA = session.store(oldA, idx, val)
+                        enc.storedInto(st.arr)   // Phase 404
                         // Per-store count law: count(newA, v) = count(oldA, v) - [oldA[idx]==v] + [val==v].
                         // Only applies for Int-valued arrays (the count theory is Int-keyed); skipped
                         // for non-Int element lists where countVals is irrelevant anyway (Phase 27).
@@ -18086,7 +18340,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object val = enc.translateInSort(st.value, valSort)
                     if (idx != null && val != null) {
                         if (isMap) doMapPut(s, enc, st.arr, idx, val)
-                        else enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val))
+                        else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storedInto(st.arr) }   // Phase 404
                     }
                 } else if (step instanceof LemmaCall) {
                     Expression lc = ((LemmaCall) step).call
@@ -18834,7 +19088,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object val = enc.translateInSort(be.rightExpression, valSort)
                 if (idx == null || val == null) { havocLocation(enc, name); return true }
                 if (isMap) doMapPut(s, enc, name, idx, val)
-                else enc.bindArray(name, s.store(enc.arrayFor(name), idx, val))
+                else { enc.bindArray(name, s.store(enc.arrayFor(name), idx, val)); enc.storedInto(name) }   // Phase 404
                 return true
             }
         }
@@ -19305,6 +19559,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     savedSet.put(oldKey, enc.peekSet(oldKey))
                     savedMapVals.put(oldKey, enc.peekMapVals(oldKey))
                     savedMapKeys.put(oldKey, enc.peekMapKeys(oldKey))
+                }
+                // Phase 404 — the callee writes into the array at callerLoc: another array the caller names may be that
+                // same array, which the per-name havoc below leaves as it was
+                if (caller != null) {
+                    Map<String, ClassNode> arrays = namedArrays(caller)
+                    String other = arrays.containsKey(callerLoc) ?
+                        aliasableArray(arrays, callerLoc, mentionedLocations(caller), caller, false) : null
+                    if (other != null) {
+                        throw new UnsupportedConstructException(
+                            "call '${name}(…)' writes into the array '${shownLocation(callerLoc)}', which may be the array " +
+                            "'${shownLocation(other)}' this method reads — the per-name model would miss the shared write " +
+                            "(heap aliasing is a non-goal)")
+                    }
                 }
                 enc.bind(oldKey, enc.varFor(callerLoc))            // old.X (scalar) = value at the call
                 enc.bindArray(oldKey, enc.arrayFor(callerLoc))     // old.X (array contents) at the call

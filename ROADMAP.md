@@ -2768,7 +2768,8 @@ Cannot prove precondition of incr at this call site
 — Z3 picked a Counter at-max state where the precondition can't hold.
 
 **Soundness boundary.** The encoding is sound *under the no-aliasing assumption*: distinct
-parameter names denote distinct objects. Heap aliasing is a [Non-goal](#non-goals), so this is
+parameter names denote distinct objects (parameters only — since Phase 404 a field, static or receiver's field
+array is taken as possibly any array of an element type it could share). Heap aliasing is a [Non-goal](#non-goals), so this is
 the assumption the rest of the project already lives under. With aliasing, `b$count` and
 `c$count` could refer to the same JVM heap cell — the verifier doesn't model that.
 
@@ -17586,6 +17587,67 @@ Found while probing, not fixed here (each is file-independent):
 another file frames the call (also with the base class beside the caller); a sealed class's permitted subclass in
 another file does too — all three proved before; an override in another file bounds the call's value (refused before
 too, kept as a guard); with no override in the compilation the body still frames and values the call.
+
+## Phase 404 — field-array aliasing, and the value-flow pass's dropped writes  *(shipped — soundness fixes)*
+
+Phase 194's residual (c), found again probing Phase 403. The documented assumption is about PARAMETERS — "distinct
+parameter names denote distinct objects" — but the model read any two array names as two arrays. Probed shape by
+shape, seven proved unsoundly: a call writing a receiver's array field (`h.poke()`, `h.arr[0] = 99`) with a parameter
+array read after; a store into the object's own array field or a static array; a store through a parameter with the
+field read; a same-class call writing the field; an assert, and a division, over a parameter array after any of those.
+`f(new Holder(arr: a), a)` returns 99 where `result == old.a[0]` proved.
+
+- **Which arrays may be one** (`namedArrays`, `sameArrayPossible`): the arrays a method names besides its locals — its
+  array parameters, its class's array fields (instance ones in an instance method) and statics, and an object
+  parameter's array fields (`h$arr`) — and of those, two whose element types could be one array's (equal, or reference
+  types one of which could hold the other: arrays are covariant). A fresh local array is no other array; a local alias
+  is Phase 366's, already loud. **Two parameters keep the documented reading** — closing over them too was measured:
+  14 gallery proofs lost (copy `dst`/`src`, merge, unique, invert, histogram, Phase 357's frame precision), every one
+  the documented posture, which Phase 194 makes loud only for a direct store with the sibling read in a postcondition.
+- **A postcondition skips, naming both** (`guardArrayAliasHazard`, now over every named array; and in
+  `assumeCalleeEnsures` where a frame havocs a caller array): `arrays 'arr' and 'a' may be one array — a store through
+  'arr' with 'a' read on the path …`; `call 'poke(…)' writes into the array 'h.arr', which may be the array 'a' this
+  method reads …`, when the other is mentioned in the method (its body or contracts). Phase 366's definite alias is
+  checked first, so its message wins where both apply.
+- **An obligation or assert reads it as unknown** (`Encoder.mayShare`, `storedInto`): an element store into one, or a
+  havoc of one as written, havocs the contents (never the length — an alias's write doesn't resize) of those that may
+  be it, in every engine that applies stores: the postcondition path, the value-flow and region replays, LoopEncoder.
+  A replay summary of a call it can't frame (`replaySafely` → `havocWritesOf`) havocs the arrays that may be one the
+  call writes through its receiver (`withAliasedArrays`), and is labelled `after a call`, withholding the call.
+- **A failure that needs the alias shows no call** (`aliasHavocked`, `ALIAS_CALL_NOTE`): the witness's arguments are
+  fresh, never one array, so an obligation reading an array havocked only as a possible alias says "no failing call:
+  the failure needs two of the arrays this method names to be one array …". A real failure beside it keeps its call.
+- **The way back is to say so** (`declaredApart`, `Encoder.arraysApart`): a top-level `@Requires` conjunct `a !== arr`
+  (or `!a.is(arr)`) — Phase 89's spelling for objects — takes the two as two arrays, and each call site is held to it.
+  `===`/`!==` between two array names translates: one name is one array; two are two where the method takes them so
+  (two parameters, or declared); otherwise it stays outside the fragment.
+
+Found on the way, both in the value-flow pass (`collectVfObligations`), both unsound with no aliasing at all:
+- **Element stores were dropped** ("its contents aren't tracked … the implicit obligations don't depend on them" — they
+  do: `a[0] = 5; a[a[0]]` on a two-element array proved in bounds, `a[0] = 0; 10 % a[0]` safe under `a[0] == 1`). The
+  store is an `ArrayStore` step now, replayed (an untranslatable one havocs the contents); a store through anything but
+  a name (`h.arr[0] = v`) leaves the pass, loudly.
+- **Compound assignments and increments were dropped** — they fell through to the call handling and were skipped:
+  `int x = 1; x += 5; assert x == 1` proved. `vfWrite` reads `t op= v` as `t = t op v` and `t++`/`--t` as `t = t ± 1`,
+  through the same rules as `=` (an Int field or parameter is SSA-versioned, a local written twice leaves the pass).
+- **A skipped assert names why** the pass bailed — `(re-assignment of 'x')`, `(statement ForStatement outside …)`, the
+  alias — instead of always guessing "(a re-assignment or loop)".
+
+**Changed cases:** P167's in-place reverse gained `orig !== a` in its `@Requires`. It proved by the model's reading of
+`orig` and the field `a` as two arrays; `c.reverse(c.a, v, n)` meets the rest of its precondition and fails its
+postcondition.
+
+Residuals: two parameters, as documented (the call form of Phase 194's store shape, `w(a); return c[0]`, included);
+the loop-summary false positive with a wrong witness found while probing (`for (…) b[i] = 99; return a[0]` "fails on
+`f([1] as int[], new int[0])`" — the loop runs no times, and the claim holds; pre-existing, not alias-related); the
+Phase 403 call-havoc witness.
+
+**Shipped tests:** group `P404 field-array aliasing`, 15 cases. Each unsound shape pinned — a call writing a receiver's
+array field, a store into the object's own array field and into a static (loud postcondition skips); an assert and a
+division after them (refuted, no call shown); P167's shape without the clause. Precision kept: a real failure beside a
+possible alias keeps its call, element types that can't be shared, a fresh local, two parameters, a declared
+`a !== arr`. The value-flow writes: an element store, a compound element assignment, an element increment (refuted
+with their calls), and a compound assignment to a local (skipped, naming it).
 
 ---
 

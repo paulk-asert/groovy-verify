@@ -2132,8 +2132,33 @@ class Encoder implements TheoryApi {
         v
     }
 
-    /** Array analogue of {@link #havoc}: re-bind {@code name}'s contents to a fresh, unconstrained array. */
+    /** Phase 404 — for each array the method can name (a parameter, a field, a static), the others that may be the same
+     *  array (an element type it could share). A write into one is a write into whichever of them it is. */
+    Map<String, Set<String>> mayShare = Collections.<String, Set<String>> emptyMap()
+
+    /** Phase 404 — pairs of array names the method takes as two arrays (two parameters, or declared `x !== y` in its
+     *  @Requires); `===` / `!==` between two other array names doesn't translate. */
+    Closure<Boolean> arraysApart = { String a, String b -> false }
+
+    /** Phase 404 — after an element store into {@code name}: an array that may be it has unknown contents now. */
+    void storedInto(String name) {
+        Set<String> others = mayShare.get(name)
+        if (others != null) for (String o : others) { havocContents(o); aliasHavocked.add(o) }
+    }
+
+    /** Phase 404 — the arrays whose contents were made unknown only because they may be an array written: a failure
+     *  reading one needs the two to be one array, which the witness's fresh arguments never are. */
+    final Set<String> aliasHavocked = new HashSet<String>()
+
+    /** Array analogue of {@link #havoc}: re-bind {@code name}'s contents to a fresh, unconstrained array — and, being
+     *  "{@code name} may have been written", those of any array that may be it (Phase 404). */
     Object havocArray(String name) {
+        Object v = havocContents(name)
+        storedInto(name)
+        v
+    }
+
+    private Object havocContents(String name) {
         String havocName = name + '$havoc$' + (havocCounter++)
         Object[] sorts = arraySortsFor(name)
         Object kSort = sorts[0], vSort = sorts[1]
@@ -5621,6 +5646,15 @@ class Encoder implements TheoryApi {
         if (be.operation.text == '===' || be.operation.text == '!==') {
             Object idEq = refIdentityEq(be.leftExpression, be.rightExpression)
             if (idEq != null) return be.operation.text == '===' ? idEq : session.not(idEq)
+            // Phase 404 — two array names: one name is one array; two are two only where the method takes them so
+            if (be.leftExpression instanceof VariableExpression && be.rightExpression instanceof VariableExpression) {
+                String ln = ((VariableExpression) be.leftExpression).name, rn = ((VariableExpression) be.rightExpression).name
+                if (isArrayTyped(ln) && isArrayTyped(rn)) {
+                    Boolean same = ln == rn ? Boolean.TRUE : arraysApart.call(ln, rn) ? Boolean.FALSE : null
+                    if (same == null) return null
+                    return session.boolLit(be.operation.text == '===' ? same : !same)
+                }
+            }
         }
 
         // Phase 238 — `x instanceof T` (and `x !instanceof T`). The type test itself stays outside
@@ -8027,7 +8061,7 @@ class Encoder implements TheoryApi {
     }
 
     /** A compound-assignment op type → its base binary op type, or -1 if not a modelled compound assignment. */
-    private static int compoundBaseOp(int t) {
+    static int compoundBaseOp(int t) {
         if (t == Types.PLUS_EQUAL)     return Types.PLUS
         if (t == Types.MINUS_EQUAL)    return Types.MINUS
         if (t == Types.MULTIPLY_EQUAL) return Types.MULTIPLY

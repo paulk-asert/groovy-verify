@@ -42,7 +42,7 @@ class G042_p167_reverse {
                                   a.count(w) == old.a.count(w) })
                        void swap(int i, int j, int w) { int t = a[i]; a[i] = a[j]; a[j] = t }
 
-                       @Requires({ orig.length == a.length && (0..<a.length).every { a[it] == orig[it] } && a.count(v) == c })
+                       @Requires({ orig !== a && orig.length == a.length && (0..<a.length).every { a[it] == orig[it] } && a.count(v) == c })
                        @Modifies({ this.a })
                        @Ensures({ (0..<a.length).every { a[it] == orig[a.length - 1 - it] } && a.count(v) == c })
                        int[] reverse(int[] orig, int v, int c) {

@@ -1017,6 +1017,7 @@ class LoopEncoder {
                     Object oldA = enc.arrayFor(arr)
                     Object newA = s.store(oldA, idx, val)
                     enc.bindArray(arr, newA)
+                    enc.storedInto(arr)   // Phase 404 — an array that may be this one changed too
                     // Maintain count(a, v) for the loop's tracked values, so a swap's two stores conserve every
                     // count and a permutation invariant is preserved across the body (shared with the method-body
                     // executor; the loop pass previously omitted this).

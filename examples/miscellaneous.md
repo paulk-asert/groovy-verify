@@ -251,11 +251,12 @@ void swap(int i, int j, int w) { int t = a[i]; a[i] = a[j]; a[j] = t }
 **In-place reverse** walks two indices inward, swapping at each step — and proves the full reversal **and** that the
 result is a permutation. The reversal is stated against a ghost `orig` capturing the entry array (`a == orig` at
 entry): the loop invariant can't reference `old.a` — `old` isn't bound in loop-invariant position — so a ghost
-parameter stands in, the same trick the `c` ghost plays for the count:
+parameter stands in, the same trick the `c` ghost plays for the count. `orig !== a` says the ghost is another array:
+`c.reverse(c.a, v, n)` would meet the rest of the precondition and leave `orig` reversed with `a` (Phase 404):
 
 <!-- doclint:case p167-reverse/in-place-reverse-reversal-and-permutation -->
 ```groovy
-@Requires({ orig.length == a.length && (0..<a.length).every { a[it] == orig[it] } && a.count(v) == c })
+@Requires({ orig !== a && orig.length == a.length && (0..<a.length).every { a[it] == orig[it] } && a.count(v) == c })
 @Modifies({ this.a })
 @Ensures({ (0..<a.length).every { a[it] == orig[a.length - 1 - it] } && a.count(v) == c })
 int[] reverse(int[] orig, int v, int c) {
