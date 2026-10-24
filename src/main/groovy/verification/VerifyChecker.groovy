@@ -6298,30 +6298,47 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
             // discharged in the INNER loop's own context (inner_inv ∧ inner_guard), where the inner index is
             // constrained — not under the outer invariant, where it isn't. dischargeRegion (step 3) skips them.
-            for (Statement innerLoop : annotatedInnerLoops(spec.body)) {
-                LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-                List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
-                innerAssumed.add(innerSpec.guard)
-                List<Statement> before = stmtsBefore(spec.body, innerLoop)
-                if (innerSpec.init != null) before.addAll(innerSpec.init)
-                innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
-                withEntryPaths(innerEntryPaths(bodyPaths, before, innerSpec), reqAst) {
-                    dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
-                }
+            dischargeNestedLoopObligations(site, bodyPaths, stableReq, reqAst)
+        }
+    }
+
+    /**
+     * Phase 91's step 5, at every depth (Phase 397): each loop nested in {@code outer}'s body (directly, Phase 335's in a
+     * branch with its path's stable conditions) has its body's obligations discharged under its own invariant and guard
+     * plus the facts it inherits from {@code outer} (Phase 336), along the entry paths through {@code outer}'s
+     * iterations; then the loops nested in it, against it.
+     */
+    private void dischargeNestedLoopObligations(LoopSite outer, List<List<Statement>> outerBodyPaths, Expression stableReq,
+                                                Expression reqAst) {
+        List<Object[]> inners = new ArrayList<Object[]>()
+        for (Statement innerLoop : annotatedInnerLoops(outer.spec.body)) {
+            inners.add([innerLoop, stmtsBefore(outer.spec.body, innerLoop), Boolean.FALSE] as Object[])
+        }
+        for (Object[] bl : branchInnerLoops(outer.spec.body)) inners.add([bl[0], bl[1], Boolean.TRUE] as Object[])
+        for (Object[] rec : inners) {
+            Statement innerLoop = (Statement) rec[0]
+            LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+            List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
+            innerAssumed.add(innerSpec.guard)
+            List<Expression> inherited = new ArrayList<Expression>()
+            if ((Boolean) rec[2]) inherited.addAll(assumedPathFacts((List<Statement>) rec[1], innerSpec))
+            List<Statement> before = new ArrayList<Statement>((List<Statement>) rec[1])
+            if (innerSpec.init != null) before.addAll(innerSpec.init)
+            inherited.addAll(outerFactsForInner(outer, before, innerSpec))   // Phase 336
+            innerAssumed.addAll(inherited)
+            List<List<Statement>> paths = innerEntryPaths(outerBodyPaths, before, innerSpec)
+            withEntryPaths(paths, reqAst) {
+                dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
             }
-            // Phase 335 — and those of a nested loop inside a branch of the body, with its path's stable conditions
-            for (Object[] bl : branchInnerLoops(spec.body)) {
-                LoopSpec innerSpec = (LoopSpec) ((Statement) bl[0]).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-                List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
-                innerAssumed.add(innerSpec.guard)
-                innerAssumed.addAll(assumedPathFacts((List<Statement>) bl[1], innerSpec))
-                List<Statement> before = new ArrayList<Statement>((List<Statement>) bl[1])
-                if (innerSpec.init != null) before.addAll(innerSpec.init)
-                innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
-                withEntryPaths(innerEntryPaths(bodyPaths, before, innerSpec), reqAst) {
-                    dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
-                }
-            }
+            if (annotatedInnerLoops(innerSpec.body).isEmpty() && branchInnerLoops(innerSpec.body).isEmpty()) continue
+            LoopSite inSite = new LoopSite()
+            inSite.loopStmt = innerLoop
+            inSite.spec = innerSpec
+            inSite.outer = outer
+            inSite.prefix = Collections.<Statement> emptyList()
+            inSite.originalPrefix = Collections.<Statement> emptyList()
+            inSite.frameFacts = inherited
+            dischargeNestedLoopObligations(inSite, paths, stableReq, reqAst)
         }
     }
 
@@ -7000,11 +7017,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * Phase 385 — exact paths from method entry to a point ('head' / 'body' / 'exit') of {@code site}'s loop: for a top
      * level loop, its prefix and first iterations; for a loop nested one level in another's body (directly or in a
      * branch), each path to an outer iteration's start, the outer body's statements before it (a branch's conditions as
-     * markers), its init, then its own iterations. Deeper nesting: none (a call is then withheld).
+     * markers), its init, then its own iterations. Phase 397 — at any depth, through each enclosing loop in turn.
      */
     private List<List<Statement>> entryPathsTo(LoopSite site, String at) {
         if (site.outer == null) return loopEntryPaths(site.originalPrefix, site.spec, at)
-        if (site.outer.outer != null) return Collections.<List<Statement>> emptyList()
         List<Statement> body = site.outer.spec.body
         List<Statement> before = null
         if (body.any { it.is(site.loopStmt) }) {
@@ -7017,7 +7033,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (before == null) return Collections.<List<Statement>> emptyList()
         if (site.spec.init != null) before.addAll(site.spec.init)
         List<List<Statement>> out = new ArrayList<List<Statement>>()
-        for (List<Statement> p : loopEntryPaths(site.outer.originalPrefix, site.outer.spec, 'body')) {
+        // Phase 397 — through every enclosing loop: the outer loop's own iteration starts, however deep it is
+        for (List<Statement> p : entryPathsTo(site.outer, 'body')) {
             List<Statement> b = new ArrayList<Statement>(p)
             b.addAll(before)
             out.addAll(loopEntryPaths(b, site.spec, at))
@@ -13935,12 +13952,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // (branchInnerLoops, which refuses a writing branch condition). One level only: a loop in a branch of a
             // NESTED loop's body would again be summarised by an invariant nothing checks.
             branchInnerLoops(site.spec.body)
-            for (Statement inner : annotatedInnerLoops(site.spec.body) + branchInnerLoops(site.spec.body).collect { (Statement) it[0] }) {
-                LoopSpec innerSpec = (LoopSpec) inner.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-                if (branchLoopInBody(innerSpec.body)) {
-                    throw new UnsupportedConstructException("loops nested 3+ deep — not yet supported")
-                }
-            }
+            // Phase 397 — deeper nesting is verified level by level (verifyNestedLoop recurses), so it isn't refused here
             // Phase 207 — sequential loops: the trimmed segments (between neighbouring loops) own the
             // region obligations; the full prefix (earlier loops included, summarised by the replay)
             // carries establishment. Phase 329 — early exits too: the last site checks every prefix exit (its prefix
@@ -14591,7 +14603,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private List<Expression> loopStableRequires(Expression reqAst, LoopSite site) {
         if (reqAst == null) return Collections.<Expression>emptyList()
-        LoopSite base = site.outer ?: site
+        // Phase 397 — judged by the OUTERMOST loop's writes: between its iterations anything any loop inside writes changes
+        LoopSite base = site
+        while (base.outer != null) base = base.outer
         Set<String> writes = loopWriteSet(base)   // null: some write (an unknown call) can't be bounded
         // A callee can mutate what a parameter refers to but never reassign the caller's parameter: a parameter the
         // method doesn't reassign keeps its nullness, an array's length, and a value type's (int, String, ...) every
@@ -16597,9 +16611,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void verifyNestedLoop(MethodNode node, LoopSite site, Statement innerLoop, Expression reqAst, Expression postAst,
                                   List<Statement> path = null) {
         LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-        // ≤ 2 levels for this slice: the inner body must not itself contain a loop we'd have to summarise.
-        if (!annotatedInnerLoops(innerSpec.body).isEmpty()) {
-            throw new UnsupportedConstructException("loops nested 3+ deep — not yet supported")
+        // Phase 397 — any depth: a loop inside this one is verified against it in turn (below). A do-while that holds
+        // loops is refused there: its first pass would be established from method entry, not from the outer iteration.
+        boolean holdsLoops = !annotatedInnerLoops(innerSpec.body).isEmpty() || !branchInnerLoops(innerSpec.body).isEmpty()
+        if (holdsLoops && innerSpec.isDoWhile) {
+            throw new UnsupportedConstructException("a nested do-while that holds loops itself — not yet supported")
         }
         // Phase 324 — an inner `break` continues into the rest of the OUTER body: the inner summary
         // (LoopEncoder.summarizeInner) carries each break's exit state alongside inner_inv ∧ ¬inner_guard, and the
@@ -16635,6 +16651,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // a break leaves only the inner loop, so it has no @Ensures of its own (Phase 324)
             for (EarlyExit ex : innerSite.earlyExits) if (!ex.isBreak) checkEarlyExit(node, innerSite, ex, reqAst, postAst)
         }
+        // Phase 397 — and the loops inside it, against it (their establishment under its invariant and guard)
+        if (holdsLoops) verifyNestedLoops(node, innerSite, reqAst, postAst)
     }
 
     /** Top-level statements of {@code body} that are loops carrying a captured {@link LoopSpec}. */
@@ -16706,7 +16724,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             entry(s, enc)
             assumeRangeForward(innerSite, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, innerSite.spec.invariants)))
-            CheckResult r = shown(s.check())
+            CheckResult r = s.check()
+            // Phase 397 — the state is any the outer invariant allows at an iteration, which no run need reach (`f(1)`
+            // for a call whose inner entry has s == 1): the call is sought along the exact runs to the inner loop's
+            // entry, through every enclosing loop, and withheld when none breaks the inner invariant there
+            if (r.status == CheckResult.Status.REFUTED && !doWhileFirstPass && !currentChannelDesugared && currentChannelNames.isEmpty()) {
+                CheckResult w = exactNestedEntryWitness(node, outer, innerSite, before)
+                if (w != null) {
+                    addStaticTypeError(Reporter.formatLoopEstablishment(node.name, invText(innerSite), w, false), innerSite.loopStmt)
+                    return
+                }
+                String prev = havocCallNote
+                havocCallNote = NESTED_ENTRY_CALL_NOTE
+                try { r = shown(r) } finally { havocCallNote = prev }
+            } else {
+                r = shown(r)
+            }
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopEstablishment(node.name, invText(innerSite), r, false), innerSite.loopStmt)
@@ -16805,6 +16838,46 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    static final String NESTED_ENTRY_CALL_NOTE = 'no failing call: the inner loop\'s entry is checked in a state the outer ' +
+        'loop\'s invariant allows, not one reached from entry, and no run of the first iterations breaks the inner ' +
+        'invariant there (the outer invariant may be too weak to establish it)'
+
+    /** Phase 397 — {@link #exactPreservationWitness} for a nested loop's establishment: each exact path to an outer
+     *  iteration's start ({@link #entryPathsTo}, through every enclosing loop), the outer body up to the inner loop and
+     *  its init, then the inner invariant's negation. Null when none refutes. */
+    private CheckResult exactNestedEntryWitness(MethodNode node, LoopSite outer, LoopSite innerSite, List<Statement> before) {
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+        int tries = 0
+        for (List<Statement> path : entryPathsTo(outer, 'body')) {
+            for (List<Statement> full : expansions(path + before)) {
+                if (tries++ >= 2 * ENTRY_PATHS) return null
+                SmtSession s = backend.session()
+                if (s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
+                try {
+                    Encoder enc = mkEncoder(s)
+                    if (reqAst != null) {
+                        Object pre = enc.translate(reqAst)
+                        if (pre != null) s.assertExpr(pre)
+                    }
+                    assumeIntJvmBounds(s, enc)
+                    assumeClassInvariants(s, enc)
+                    if (!replayExact(full, enc, s)) continue
+                    s.assertExpr(s.not(LoopEncoder.conj(enc, s, innerSite.spec.invariants)))
+                    CheckResult r = s.check()
+                    if (r.status != CheckResult.Status.REFUTED) continue
+                    boolean prev = exactWitness
+                    exactWitness = true
+                    try { r = shown(r) } finally { exactWitness = prev }
+                    if (r.failingCall != null) return r
+                } catch (Throwable ignored) {
+                } finally {
+                    try { s.close() } catch (Throwable ignored) {}
+                }
+            }
+        }
+        null
     }
 
     static final String PRESERVE_CALL_NOTE = 'no failing call: the invariant is broken from a state it allows at an ' +

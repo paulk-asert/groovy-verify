@@ -335,7 +335,8 @@ class G388_p344_exit_before_nested_loop {
                             return s
                         }
                     }''')],
-        [group: 'P344 break or continue before a nested loop', name: 'a continue before a loop nested three deep still skips loudly', expect: 'loops nested 3+ deep',
+        // Phase 397 — verified at any depth (it skipped loudly): s only grows
+        [group: 'P344 break or continue before a nested loop', name: 'a continue before a loop nested three deep verifies', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 && m >= 0 })
                         @Ensures({ result >= 0 })

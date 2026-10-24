@@ -359,8 +359,9 @@ of what it writes + `inv ∧ ¬guard` wherever later code sees it.
   writes, and the outer loop's frame facts (Phase 336). A loop may sit in a branch of a top-level `if` — the method
   is verified once per branch, with its condition assumed (Phase 334) — or in a branch of a loop body, where it
   gets the nested-loop checks along its path (Phase 335); what a branch assumes, a nested loop's summary or an
-  `assert`, holds only on that branch's path (Phase 344). *Loud skips:* nesting three deep (a loop in a branch
-  of a nested loop's body included), an unannotated nested loop, and a branch condition that writes (`x++`).
+  `assert`, holds only on that branch's path (Phase 344). Nesting goes to any depth, each loop checked against
+  the one around it (Phase 397). *Loud skips:* a nested do-while that itself holds loops, an unannotated nested
+  loop, and a branch condition that writes (`x++`).
 - **Leaving early.** A loop may leave by `return` (Phases 49/49b/49c; from a nested loop, Phase 109; in any of
   several sequential loops or between them, Phase 329) or by an unlabelled **`break`** under any nesting of `if`s
   and blocks, in a top-level or nested loop (Phases 312/324/326/339). The code after the loop is checked from

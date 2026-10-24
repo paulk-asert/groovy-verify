@@ -229,9 +229,8 @@ class G107_p91_nested {
                             count
                         }
                     }''')],
-        // BOUNDARY — 3-level nesting is out of this slice; skips loudly (the 2nd-level summary's frame
-        // can't be bounded once its body holds a 3rd loop).
-        [group: 'P91 nested', name: '3-level nesting skips loudly', expect: 'Skipped loop verification',
+        // Phase 397 — 3-level nesting is verified level by level (it skipped loudly): each loop against the one around it
+        [group: 'P91 nested', name: '3-level nesting verifies', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result == 0 })

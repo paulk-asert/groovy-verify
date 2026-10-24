@@ -17394,6 +17394,42 @@ positive (`iterator` on an array, say). A null map's `collect` answers too, but 
 `find`/`inject`, an array's `collect`, and a statically compiled `toString`. Kept: a list's `size` and `join`, a map's
 `findAll`, a user class's `collect`, and a statically compiled `collect`.
 
+## Phase 397 — loops nested to any depth, and a nested entry's call is a run  *(shipped — completeness, repro quality)*
+
+Planned as "deeper-nesting witnesses" (Phases 385/392 find a call at most one loop down), it began one step earlier:
+the loop engine refused loops nested three or more deep outright (`loops nested 3+ deep — not yet supported`, in
+`findLoopSites` and `verifyNestedLoop`), so no witness ever needed to look further.
+
+- **Level by level** (`verifyNestedLoop` recursing through `verifyNestedLoops`): each nested loop is verified against
+  the one around it — its establishment under that loop's invariant and guard and the body before it, its preservation,
+  progress and returns on their own — then the loops inside it, against it. The outer loops' VCs already summarised a
+  loop that holds loops (Phase 338's `innerFrame`).
+- **Its obligations at every depth** (`dischargeNestedLoopObligations`, Phase 91's step 5 made recursive): a nested
+  loop's body is discharged under its invariant and guard plus what it inherits (Phase 336's facts, a branch path's
+  conditions), along entry paths through each enclosing loop; then its own nested loops. `dischargeRegion` skips a
+  nested loop, so a third level's `a[k]` had no other check.
+- **The stable `@Requires`** (`loopStableRequires`): judged by the OUTERMOST loop's writes — between its iterations,
+  anything any loop inside writes changes.
+- **Witnesses through every enclosing loop** (`entryPathsTo`, recursive): an exit, a preservation or an entry
+  refutation at any depth seeks its run through each loop around it, capped as before (`ENTRY_PATHS`, shortest first).
+- **A nested entry's call is a run** (`exactNestedEntryWitness`) — also at two levels, where the establishment of a
+  nested loop showed the outer-iteration model's call: `fails on: f(1)` for `s <= 3` whose inner entry has `s <= 1` on
+  every run. The call now comes from an exact run to the inner loop's entry (`f(4)`), else is withheld
+  (`NESTED_ENTRY_CALL_NOTE`).
+- **Refused:** a nested do-while that itself holds loops — its first pass would be established from method entry
+  (Phase 336's treatment), not from the outer iteration it runs in.
+
+**Changed cases:** three pinned the refusal and now verify — G107's 3-level count (proves), G379's loop in a branch of
+a nested loop (its `i <= 0` refutes at `f(1, true)`, genuine), G388's continue before a 3-deep loop (proves).
+
+**Boundary:** a run that reaches its failure only after many outer iterations can fall outside the entry-path cap, so
+its call is withheld (a return three loops down at `i == j == k == 1`).
+
+**Shipped tests:** group `P397 deep nesting`, 7 cases. An obligation three loops down, proved and refuted
+(`f(new int[0], 1)`); an innermost entry broken by a real run (`f(4)`) and one no run breaks (no call); a return three
+loops down; two levels, a nested entry no run breaks (no call, it showed `f(1)`); a nested do-while holding loops,
+refused.
+
 ---
 
 ## Definition of done, per increment

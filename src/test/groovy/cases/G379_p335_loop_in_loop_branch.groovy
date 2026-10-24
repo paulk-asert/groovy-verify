@@ -250,7 +250,9 @@ class G379_p335_loop_in_loop_branch {
                             }
                         }
                     }''')],
-        [group: 'P335 loop in a branch of a loop body', name: 'a loop in a branch of a nested loop skips loudly', expect: 'loops nested 3+ deep',
+        // Phase 397 — verified at any depth (it skipped loudly): the innermost `i <= 0` breaks once i reaches 1, f(1, true)
+        [group: 'P335 loop in a branch of a loop body', name: 'a loop in a branch of a nested loop is verified',
+         expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1, true)'],
          src: tc('''class C {
                         static void f(int n, boolean b) {
                             int k = 0
