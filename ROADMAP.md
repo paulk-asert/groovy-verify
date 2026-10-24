@@ -17723,6 +17723,41 @@ only its frame. Modelling a simple contract-free callee's effect exactly (a stra
 array a helper writes) shows no call; a value the callee's @Ensures fixes, and a failure not resting on the call, keep
 theirs.
 
+## Phase 407 — exact effects of simple contract-free callees  *(shipped — completeness, honesty)*
+
+Phase 406's other half. A contract-free callee was known by its frame only — what it may write, not what it writes —
+so `c.bump(); return c.count` didn't follow from `count = count + 1`, and a refutation over it showed no call.
+
+- **A simple body is read as the @Ensures it implies** (`bodyEffect`, `EffectReader`, memoised): straight-line code
+  and if/else; `=`, `op=`, `++`/`--` to its own fields and to locals; at most one element store per array; a final
+  return (or a value method's last expression). It is run symbolically. A field read is its current value (`old.f`
+  before the callee writes it), and an `if` is a ternary. A store under a guard is `!(guard) || b[i] == v` with every
+  other element `old.b[it]`, and nothing is claimed for a negative index (Groovy counts that from the end). What is
+  returned gives `result == E`. Out of reach, and so left to the frame as before: any call in the body; `/` (a
+  BigDecimal division in Groovy), `%`, shifts, bit operators and casts; a second store to an array; a read of an array
+  after its store; a closure; a non-numeric constant.
+- **Only for a callee whose body is what runs, and that has no contract** (`assumeCalleeEnsures`): not a spec, not
+  overridable (Phase 360), with no override in the unit (Phase 359/403), not the method itself — and with no @Ensures,
+  since a contracted callee is used by its contract (Phase 7's modular reasoning: its body may change without its
+  callers' proofs changing). Each conjunct is translated with the call's bindings, like its @Ensures would be, and
+  asserted, but only for a location the call's frame havocs, since one about a location the frame keeps would pin the
+  pre-call value. A conjunct that translates pins its location: no witness taint (Phase 406), so a refutation over it
+  is a real failing call. One that doesn't is dropped (one fact fewer) and its taint stays.
+- **A written array formal's @Ensures reaches the actual**: an array formal the callee writes was aliased to nothing (a
+  collection formal was, Phase 229), so `@Ensures({ b[0] == 5 }) w(int[] b)` gave its caller nothing about `a`. It
+  reads the actual's post-call array, length and nullity now (`old.b` the pre-call one), restored after the call.
+
+**Changed cases:** 14 of Phase 406's withheld witnesses are back, real now (P347's contract-free writers and array
+stores, in loop bodies too; P405's static helper and shadowing setter). P347's contracted `bump()` keeps the note (4
+cases): it is used by its contract. Three expectations became proofs: P347's static writer in a loop body (`bump()`
+returns 1, so `s >= 0` holds) and P350's two "opaque" contract-free callees (`bump()` returns `count + 1`, `reset()`
+sets 0). P406's withholding cases now call a library method (`Math.abs`), which no effect is read through.
+
+**Shipped tests:** group `P407 exact effects`, 10 cases. Proved: an increment, two writes, a branch read as a ternary (a
+shadowing setter's), a guarded store and the elements it leaves, a writer's returned value, a written array formal's
+@Ensures. A wrong claim refutes with a real call. The boundary: a body that calls out, or divides, is known by its frame
+only (no call shown); an overridable callee's body isn't read.
+
 ---
 
 ## Definition of done, per increment

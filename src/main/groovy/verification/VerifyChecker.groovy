@@ -12654,6 +12654,265 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         hit[0]
     }
 
+    // ── Phase 407 — a simple contract-free callee's effect, exactly: its body's writes as the @Ensures they imply ────
+
+    /** Phase 407 — per written location (a field by its frame name's bare spelling, an array by its name), the conjunct
+     *  its body implies; and `result == E` for what it returns. */
+    private static final class BodyEffect {
+        final Map<String, Expression> conj = new LinkedHashMap<String, Expression>()
+        Expression result
+    }
+    private static final Object NO_EFFECT = new Object()
+    private static final Set<Integer> EXACT_OPS = [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.COMPARE_EQUAL,
+        Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN, Types.COMPARE_LESS_THAN_EQUAL, Types.COMPARE_GREATER_THAN,
+        Types.COMPARE_GREATER_THAN_EQUAL, Types.LOGICAL_AND, Types.LOGICAL_OR] as Set
+    private static final String EFFECT_KEY = 'verify.p407.effect'
+
+    /** Phase 407 — {@link BodyEffect} of {@code m}'s body, or null when it isn't simple enough to read exactly:
+     *  straight-line code and if/else; `=`, `op=`, `++`/`--` to its own fields and to locals; at most one element store
+     *  per array; a final return. Field reads are their current value (`old.f` before a write), an `if` a ternary; any
+     *  call, or a read of an array after it is written, is too much. Memoised. */
+    private static BodyEffect bodyEffect(MethodNode m) {
+        Object memo = m.getNodeMetaData(EFFECT_KEY)
+        if (memo != null) return memo.is(NO_EFFECT) ? null : (BodyEffect) memo
+        BodyEffect be = null
+        try { be = new EffectReader(m).read() } catch (Throwable ignored) { be = null }
+        m.putNodeMetaData(EFFECT_KEY, be != null ? be : NO_EFFECT)
+        be
+    }
+
+    /** Phase 407 — the symbolic run behind {@link #bodyEffect}. */
+    private static final class EffectReader {
+        final MethodNode m
+        final Set<String> params = new HashSet<String>()
+        final Map<String, FieldNode> fields = new LinkedHashMap<String, FieldNode>()
+        final Set<String> writtenFields = new HashSet<String>()
+        final Set<String> writtenArrays = new HashSet<String>()
+        Expression ret
+        static final class St {
+            Map<String, Expression> fv = new LinkedHashMap<String, Expression>()   // a written field's value
+            Map<String, Expression> lv = new LinkedHashMap<String, Expression>()   // a local's (or written parameter's)
+            Map<String, Expression[]> stores = new LinkedHashMap<String, Expression[]>()   // array → [cond, index, value]
+            St copy() {
+                St c = new St()
+                c.fv.putAll(fv); c.lv.putAll(lv); c.stores.putAll(stores)
+                c
+            }
+        }
+        EffectReader(MethodNode m) {
+            this.m = m
+            for (Parameter p : m.parameters) params.add(p.name)
+            for (ClassNode c = m.declaringClass; c != null; c = c.superClass) {
+                for (FieldNode f : c.fields) if (!fields.containsKey(f.name) && (f.isStatic() || !m.isStatic())) fields.put(f.name, f)
+            }
+        }
+
+        BodyEffect read() {
+            Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+            if (body == null) return null
+            List<Statement> stmts = topStatements(body)
+            if (!prescan(stmts)) return null
+            St st = new St()
+            boolean valued = m.returnType != ClassHelper.VOID_TYPE && m.returnType != ClassHelper.void_WRAPPER_TYPE
+            for (int i = 0; i < stmts.size(); i++) {
+                Statement s = stmts.get(i)
+                boolean last = i == stmts.size() - 1
+                if (s instanceof ReturnStatement) {
+                    if (!last) return null
+                    Expression e = ((ReturnStatement) s).expression
+                    if (e != null && !(e instanceof ConstantExpression && ((ConstantExpression) e).isNullExpression() && !valued)) {
+                        ret = rd(e, st); if (ret == null) return null
+                    }
+                    continue
+                }
+                // a value method's last expression is its value (unless it writes)
+                if (last && valued && s instanceof ExpressionStatement && vfWrite(((ExpressionStatement) s).expression) == null &&
+                        !(((ExpressionStatement) s).expression instanceof DeclarationExpression)) {
+                    ret = rd(((ExpressionStatement) s).expression, st); if (ret == null) return null
+                    continue
+                }
+                if (!exec(s, st, null)) return null
+            }
+            BodyEffect be = new BodyEffect()
+            for (Map.Entry<String, Expression> e : st.fv.entrySet()) {
+                be.conj.put(e.key, parsed("${fieldFrameName(e.key, m)} == (${e.value.text})"))
+            }
+            for (Map.Entry<String, Expression[]> e : st.stores.entrySet()) {
+                String x = e.key, c = e.value[0] != null ? e.value[0].text : null
+                String idx = e.value[1].text, val = e.value[2].text
+                String at = c != null ? "!(${c}) || ${x}[${idx}] == (${val})" : "${x}[${idx}] == (${val})"
+                String rest = "(0..<${x}.length).every { " + (c != null ? "((${c}) && it == (${idx}))" : "it == (${idx})") +
+                    " || ${x}[it] == old.${x}[it] }"
+                // a negative index counts from the end in Groovy (`b[-1] = v`): then nothing is claimed
+                be.conj.put(x, parsed("(${idx}) < 0 || ((${at}) && ${rest})"))
+            }
+            be.conj.values().removeAll(Collections.singleton(null))
+            if (ret != null) be.result = parsed("result == (${ret.text})")
+            be.conj.isEmpty() && be.result == null ? null : be
+        }
+
+        private Expression parsed(String text) {
+            Expression e = parseContract(text)
+            e != null ? ContractNormalizer.normalize(e, m) : null
+        }
+
+        /** the fields and arrays written anywhere, so a read before the write is `old.x` */
+        private boolean prescan(List<Statement> stmts) {
+            boolean[] ok = [true]
+            for (Statement s : stmts) s.visit(new CodeVisitorSupport() {
+                void tgt(Expression t) {
+                    if (t instanceof VariableExpression && fields.containsKey(((VariableExpression) t).name) &&
+                            !params.contains(((VariableExpression) t).name)) writtenFields.add(((VariableExpression) t).name)
+                    else if (t instanceof PropertyExpression && isThis(((PropertyExpression) t).objectExpression)) writtenFields.add(((PropertyExpression) t).propertyAsString)
+                    else if (t instanceof BinaryExpression && ((BinaryExpression) t).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                             ((BinaryExpression) t).leftExpression instanceof VariableExpression) writtenArrays.add(((VariableExpression) ((BinaryExpression) t).leftExpression).name)
+                }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && !(be instanceof DeclarationExpression)) tgt(be.leftExpression)
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitPostfixExpression(PostfixExpression pe) { tgt(pe.expression); super.visitPostfixExpression(pe) }
+                @Override void visitPrefixExpression(PrefixExpression pe) { tgt(pe.expression); super.visitPrefixExpression(pe) }
+                @Override void visitClosureExpression(ClosureExpression ce) { ok[0] = false }
+            })
+            ok[0]
+        }
+
+        private static boolean isThis(Expression e) { e instanceof VariableExpression && ((VariableExpression) e).name in ['this', 'super'] }
+
+        private boolean exec(Statement s, St st, Expression cond) {
+            if (s instanceof EmptyStatement) return true
+            if (s instanceof BlockStatement) {
+                for (Statement x : ((BlockStatement) s).statements) if (!exec(x, st, cond)) return false
+                return true
+            }
+            if (s instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) s
+                Expression c = rd(ifs.booleanExpression.expression, st)
+                if (c == null) return false
+                St a = st.copy(), b = st.copy()
+                if (!exec(ifs.ifBlock, a, and(cond, c))) return false
+                if (ifs.elseBlock != null && !exec(ifs.elseBlock, b, and(cond, not(c)))) return false
+                for (String f : (a.fv.keySet() + b.fv.keySet()) as Set<String>) st.fv.put(f, pick(c, cur(a, f), cur(b, f)))
+                for (String l : new ArrayList<String>(st.lv.keySet())) st.lv.put(l, pick(c, a.lv.get(l), b.lv.get(l)))
+                for (String x : (a.stores.keySet() + b.stores.keySet()) as Set<String>) {
+                    boolean inA = a.stores.get(x) != st.stores.get(x), inB = b.stores.get(x) != st.stores.get(x)
+                    if (inA && inB) return false   // a store in each branch: more than one
+                    st.stores.put(x, inA ? a.stores.get(x) : b.stores.get(x))
+                }
+                return true
+            }
+            if (!(s instanceof ExpressionStatement)) return false
+            Expression e = ((ExpressionStatement) s).expression
+            if (printCall(e)) return true
+            if (e instanceof DeclarationExpression) {
+                DeclarationExpression de = (DeclarationExpression) e
+                if (!(de.leftExpression instanceof VariableExpression) || de.rightExpression == null ||
+                        de.rightExpression instanceof EmptyExpression) return false
+                Expression v = rd(de.rightExpression, st)
+                if (v == null) return false
+                st.lv.put(((VariableExpression) de.leftExpression).name, v)
+                return true
+            }
+            Expression[] w = vfWrite(e)
+            if (w == null) return false
+            Expression t = w[0], v = rd(w[1], st)
+            if (v == null) return false
+            if (t instanceof VariableExpression) {
+                String n = ((VariableExpression) t).name
+                if (st.lv.containsKey(n) || params.contains(n)) { st.lv.put(n, v); return true }
+                if (fields.containsKey(n)) { st.fv.put(n, v); return true }
+                return false
+            }
+            if (t instanceof PropertyExpression && isThis(((PropertyExpression) t).objectExpression) &&
+                    fields.containsKey(((PropertyExpression) t).propertyAsString)) {
+                st.fv.put(((PropertyExpression) t).propertyAsString, v)
+                return true
+            }
+            if (t instanceof BinaryExpression && ((BinaryExpression) t).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                    ((BinaryExpression) t).leftExpression instanceof VariableExpression) {
+                String x = ((VariableExpression) ((BinaryExpression) t).leftExpression).name
+                boolean array = (params.contains(x) && m.parameters.find { it.name == x }.type.isArray()) ||
+                    (!params.contains(x) && fields.get(x)?.type?.isArray())
+                if (!array || st.stores.containsKey(x) || st.lv.containsKey(x)) return false
+                Expression i = rd(((BinaryExpression) t).rightExpression, st)
+                if (i == null) return false
+                st.stores.put(x, [cond, i, v] as Expression[])
+                return true
+            }
+            false
+        }
+
+        private Expression cur(St s, String f) {
+            Expression v = s.fv.get(f)
+            v != null ? v : fieldRead(f, s)
+        }
+        private Expression fieldRead(String f, St st) {
+            Expression v = st.fv.get(f)
+            if (v != null) return v
+            writtenFields.contains(f) ? new PropertyExpression(new VariableExpression('old'), f) : new VariableExpression(f)
+        }
+        private static Expression pick(Expression c, Expression a, Expression b) {
+            if (a == null || b == null) return a ?: b
+            a.is(b) || a.text == b.text ? a : new TernaryExpression(new BooleanExpression(c), a, b)
+        }
+        private static Expression and(Expression a, Expression b) {
+            a == null ? b : new BinaryExpression(a, Token.newSymbol(Types.LOGICAL_AND, -1, -1), b)
+        }
+        private static Expression not(Expression c) { new NotExpression(c) }
+
+        /** {@code e} read in state {@code st}, or null when it is outside what this reads */
+        private Expression rd(Expression e, St st) {
+            boolean[] bad = [false]
+            ExpressionTransformer tx = new ExpressionTransformer() {
+                @Override Expression transform(Expression x) {
+                    if (x == null || bad[0]) return x
+                    if (x instanceof ConstantExpression) {
+                        Object v = ((ConstantExpression) x).value
+                        if (!(v == null || v instanceof Number || v instanceof Boolean)) bad[0] = true
+                        return x
+                    }
+                    if (x instanceof VariableExpression) {
+                        String n = ((VariableExpression) x).name
+                        if (st.lv.containsKey(n)) return st.lv.get(n)
+                        if (params.contains(n)) return x
+                        if (fields.containsKey(n)) return fieldRead(n, st)
+                        bad[0] = true; return x
+                    }
+                    if (x instanceof PropertyExpression) {
+                        PropertyExpression pe = (PropertyExpression) x
+                        if (isThis(pe.objectExpression) && fields.containsKey(pe.propertyAsString)) return fieldRead(pe.propertyAsString, st)
+                        if (pe.propertyAsString == 'length' && pe.objectExpression instanceof VariableExpression) {
+                            Expression o = transform(pe.objectExpression)
+                            return new PropertyExpression(o, 'length')
+                        }
+                        bad[0] = true; return x
+                    }
+                    if (x instanceof BinaryExpression && ((BinaryExpression) x).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                        BinaryExpression be = (BinaryExpression) x
+                        if (!(be.leftExpression instanceof VariableExpression)) { bad[0] = true; return x }
+                        String a = ((VariableExpression) be.leftExpression).name
+                        if (st.stores.containsKey(a) || st.lv.containsKey(a)) { bad[0] = true; return x }   // read after the write
+                        Expression arr = writtenArrays.contains(a) ? new PropertyExpression(new VariableExpression('old'), a) :
+                            (fields.containsKey(a) && !params.contains(a) ? fieldRead(a, st) : be.leftExpression)
+                        return new BinaryExpression(arr, be.operation, transform(be.rightExpression))
+                    }
+                    // only operators the contract language reads as Groovy runs them: `/` is a BigDecimal division, `%`,
+                    // shifts, bit operators and casts are left to a written @Ensures
+                    if (x instanceof BinaryExpression && !(((BinaryExpression) x).operation.type in EXACT_OPS)) { bad[0] = true; return x }
+                    if (x instanceof BinaryExpression || x instanceof NotExpression || x instanceof BooleanExpression ||
+                            x instanceof UnaryMinusExpression || x instanceof TernaryExpression) {
+                        return x.transformExpression(this)
+                    }
+                    bad[0] = true
+                    x
+                }
+            }
+            Expression out = tx.transform(e)
+            bad[0] ? null : out
+        }
+    }
+
     static final String TAINT_CALL_NOTE = 'no failing call: the failure rests on what a call leaves in %s, which the ' +
         'verifier knows only from its frame and @Ensures, not from its body — an @Ensures that states it would let the ' +
         'call be shown'
@@ -19664,6 +19923,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object> savedMapVals = new LinkedHashMap<String, Object>()
         Map<String, Object> savedMapKeys = new LinkedHashMap<String, Object>()
         Map<String, Object> savedSize = new LinkedHashMap<String, Object>()   // Phase 349
+        // Phase 407 — a simple contract-free body's effect, exactly: what it writes and returns, as the @Ensures it implies
+        // — only a contract-free one: a contracted callee is used by its contract, not its body (modular, as Phase 7 and
+        // Phase 401 have it), so its body may change without its callers' proofs changing
+        BodyEffect effect = callee.code != null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null && !callee.is(caller) &&
+            ensuresAst == null && !foreignStatic && !openToOverride(callee) && overriders(callee).isEmpty() ? bodyEffect(callee) : null
+        Map<String, List<String>> deferredTaints = new LinkedHashMap<String, List<String>>()
         if (modSet != null) {
             for (String loc0 : modSet) {
                 // Phase 405 — `this.f` is the callee's field f, though a formal shares its name
@@ -19746,8 +20011,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 enc.bindArray(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
                 // Phase 406 — the model's value here is one the frame allows, no run's, unless the @Ensures pins it
                 if (!pinnedByEnsures(ensuresAst, loc)) {
-                    s.witnessTaints().add('var:' + hv)
-                    if (enc.isArrayTyped(callerLoc) || enc.isListTyped(callerLoc)) s.witnessTaints().add('base:' + callerLoc)
+                    List<String> ts = new ArrayList<String>()
+                    ts.add('var:' + hv)
+                    if (enc.isArrayTyped(callerLoc) || enc.isListTyped(callerLoc)) ts.add('base:' + callerLoc)
+                    // Phase 407 — the body's effect pins it, if its conjunct translates (below)
+                    if (effect?.conj?.containsKey(loc)) deferredTaints.put(loc, ts) else s.witnessTaints().addAll(ts)
                 }
                 // A modified set field is havoced (and snapshotted) too, so a caller can't assume a
                 // set the callee may mutate is unchanged, and the callee's `old.s` reframes from the call.
@@ -19791,6 +20059,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.bindNullity(loc, enc.nullityOf(callerLoc))
                         enc.registerListName(loc)
                     }
+                    // Phase 407 — a written ARRAY formal too: its @Ensures (`b[0] == 5`) is about the actual's new contents,
+                    // which nothing tied it to (only a collection formal was); restored after, like Phase 323's
+                    if (isFormal && formals[fi].name == loc && formals[fi].type.isArray() && enc.isArrayTyped(callerLoc) && loc != callerLoc) {
+                        if (!savedListOracles.containsKey(loc)) savedListOracles.put(loc, enc.saveListOracles(loc))
+                        enc.bindArray(loc, enc.arrayFor(callerLoc))
+                        enc.bindSize(loc, enc.sizeOf(callerLoc))
+                        enc.bindNullity(loc, enc.nullityOf(callerLoc))
+                    }
                 }
             }
             // Phase 350 — the callee maintained its class's invariants on exit (Phase 15a/b, when its class was
@@ -19822,13 +20098,34 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             renameVariable(ensuresAst, 'result', resultTupleName) : ensuresAst
         Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
         Object post
+        List<Object> effectTerms = new ArrayList<Object>()
         try {
             post = effEnsures == null ? null :
                 crossRecv != null ? enc.translateWithUnderReceiver(effEnsures, bindings, crossRecv, crossFields) :   // Phase 350
                 enc.translateWith(effEnsures, bindings)
+            // Phase 407 — each conjunct of the body's effect, as its @Ensures would be; one that doesn't translate is
+            // dropped (sound: one fact fewer), and its location stays a witness taint
+            if (effect != null) {
+                // only what the call's frame havocs: a conjunct about a location it leaves would pin the pre-call value
+                Set<String> framed = new HashSet<String>()
+                for (String l : (modSet ?: Collections.<String> emptySet())) framed.add(shadowedField(l) ?: l)
+                Map<String, Expression> cs = new LinkedHashMap<String, Expression>()
+                for (Map.Entry<String, Expression> c0 : effect.conj.entrySet()) if (framed.contains(c0.key)) cs.put(c0.key, c0.value)
+                if (effect.result != null && bindings.containsKey('result') && resultTupleName == null) cs.put('result', effect.result)
+                for (Map.Entry<String, Expression> c : cs.entrySet()) {
+                    Object t = null
+                    try {
+                        t = crossRecv != null ? enc.translateWithUnderReceiver(c.value, bindings, crossRecv, crossFields) :
+                            enc.translateWith(c.value, bindings)
+                    } catch (Throwable ignored) { t = null }
+                    if (t != null) { effectTerms.add(t); deferredTaints.remove(c.key) }
+                }
+            }
         } finally {
             enc.popScalarTypes(savedTypes)
         }
+        for (List<String> ts : deferredTaints.values()) s.witnessTaints().addAll(ts)
+        for (Object t : effectTerms) s.assertExpr(t)
 
         // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
         savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }   // Phase 323

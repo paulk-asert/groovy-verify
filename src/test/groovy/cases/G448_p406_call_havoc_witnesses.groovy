@@ -23,7 +23,8 @@ import static cases.CaseDsl.*
  * whatever the callee does — `fails on: f(new Counter(other: 5))` though `bump()` sets `other` to 5 and the claim
  * holds. A value nothing pins is a witness taint now (on the session, copied onto its verdict): a refutation resting on
  * one shows no call, saying why. One the callee's @Ensures fixes (`count == old.count + 1`) keeps its call, and so does
- * a failure that doesn't rest on the call.
+ * a failure that doesn't rest on the call. (Phase 407 reads a simple body's effect exactly, so the callees below call a
+ * library method, which it doesn't follow.)
  */
 class G448_p406_call_havoc_witnesses {
 
@@ -47,7 +48,7 @@ class G448_p406_call_havoc_witnesses {
                     final class Counter {
                         int count
                         int other
-                        void bump() { other = 5 }
+                        void bump() { other = Math.abs(5) }
                     }''')],
 
         // … an array a helper writes, too
@@ -55,7 +56,7 @@ class G448_p406_call_havoc_witnesses {
          expect: ["Cannot prove postcondition of f", "no failing call: the failure rests on what a call leaves in 'a'"],
          refute: "fails on",
          src: tc('''class A {
-                        static void w(int[] b) { if (b != null && b.length > 0) b[0] = 1 }
+                        static void w(int[] b) { if (b != null && b.length > 0) b[0] = Math.abs(1) }
                         @Requires({ a != null && a.length > 0 && a[0] == 1 })
                         @Ensures({ result == 1 })
                         static int f(int[] a) {

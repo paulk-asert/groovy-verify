@@ -82,7 +82,7 @@ class G447_p405_silent_skips {
 
         // Unsound before: a static helper called from a static method is a StaticMethodCallExpression, and was dropped
         [group: "P405 silent skips", name: "a static helper's write through its argument",
-         expect: ["Assertion may not hold: (a[0] == 1)", "no failing call: the failure rests on what a call leaves in"],
+         expect: ["Assertion may not hold: (a[0] == 1)", "fails on: f([1] as int[])"],
          src: tc('''class A {
                         static void w(int[] b) { if (b != null && b.length > 0) b[0] = 5 }
                         @Requires({ a != null && a.length > 0 && a[0] == 1 })
@@ -140,7 +140,7 @@ class G447_p405_silent_skips {
 
         // Unsound before: `this.v = v` was recorded as `v`, read as the int parameter, and dropped from the frame
         [group: "P405 silent skips", name: "a setter whose parameter shadows the field writes the field",
-         expect: ["Cannot prove postcondition of f", "no failing call: the failure rests on what a call leaves in"],
+         expect: ["Cannot prove postcondition of f", "fails on: f(new C(v: 1))"],
          src: tc('''class A {
                         @Requires({ c != null && c.v == 1 })
                         @Ensures({ result == 1 })

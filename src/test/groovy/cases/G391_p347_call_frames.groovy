@@ -131,7 +131,7 @@ class G391_p347_call_frames {
                             int s = 2 + bump()
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'a reassignment whose right-hand side calls the writer', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
+        [group: 'P347 a call is framed by its writes', name: 'a reassignment whose right-hand side calls the writer', expect: ['Cannot prove postcondition', 'fails on: f()'],
          src: tc('''final class C {
                         int count = 0
                         int bump() { count = 99; return 1 }
@@ -156,7 +156,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // Unsound before: clobber(a) was a pure function to the encoder, so a[0] == 0 survived a[0] = -1.
-        [group: 'P347 a call is framed by its writes', name: 'a contract-free call that stores into an array parameter', expect: ['Cannot prove postcondition', 'no failing call: the failure rests on what a call leaves in'],
+        [group: 'P347 a call is framed by its writes', name: 'a contract-free call that stores into an array parameter', expect: ['Cannot prove postcondition', 'fails on: f(new int[1])'],
          src: tc('''class C {
                         static int clobber(int[] a) { if (a.length > 0) a[0] = -1; return 0 }
                         @Requires({ a != null && a.length > 0 && a[0] == 0 })
@@ -196,7 +196,7 @@ class G391_p347_call_frames {
                         int bump() { count = 99; return 1 }
                     }''')],
         // Unsound before: `s = s + bump()` havocked s and nothing else, so count == 0 was preserved.
-        [group: 'P347 a call is framed by its writes', name: 'a writer called as a value in a loop body', expect: ['Cannot prove loop invariant is preserved', 'no failing call: the invariant is broken from a state it allows'],
+        [group: 'P347 a call is framed by its writes', name: 'a writer called as a value in a loop body', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1)'],
          src: tc('''final class C {
                         int count = 0
                         int bump() { count = 99; return 1 }
@@ -213,7 +213,8 @@ class G391_p347_call_frames {
                             }
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'a static writer in a loop body', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1, new int[0])'],
+        // Phase 407 — bump() returns 1, read from its body: `s = s + bump()` keeps `s >= 0` (it refuted on an unknown value)
+        [group: 'P347 a call is framed by its writes', name: 'a static writer in a loop body', ok: true,
          src: tc('''class C {
                         static int count = 0
                         static int bump() { count = 99; return 1 }
@@ -231,7 +232,7 @@ class G391_p347_call_frames {
                             return s
                         }
                     }''')],
-        [group: 'P347 a call is framed by its writes', name: 'an array parameter written by a call in a loop body', expect: ['Cannot prove loop invariant is preserved', 'no failing call: the invariant is broken from a state it allows'],
+        [group: 'P347 a call is framed by its writes', name: 'an array parameter written by a call in a loop body', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1, new int[1])'],
          src: tc('''class C {
                         static int clobber(int[] a) { if (a.length > 0) a[0] = -1; return 0 }
                         @Requires({ a != null && a.length > 0 && a[0] == 0 && n >= 0 })
@@ -248,7 +249,7 @@ class G391_p347_call_frames {
                         }
                     }''')],
         // A same-class static call statement is a StaticMethodCallExpression after STC; the loop engine took only the instance form.
-        [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove loop invariant is preserved', 'no failing call: the invariant is broken from a state it allows'],
+        [group: 'P347 a call is framed by its writes', name: 'the same as a statement', expect: ['Cannot prove loop invariant is preserved', 'fails on: f(1, new int[1])'],
          src: tc('''class C {
                         static int clobber(int[] a) { if (a.length > 0) a[0] = -1; return 0 }
                         @Requires({ a != null && a.length > 0 && a[0] == 0 && n >= 0 })

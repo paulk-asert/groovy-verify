@@ -111,7 +111,8 @@ class G394_p350_cross_class {
                         @Ensures({ result == count })
                         int get() { count }
                     }''')],
-        [group: 'P350 a cross-class call is framed by its writes', name: 'a callee without @Ensures gives an opaque result', expect: "Cannot prove postcondition of f",
+        // Phase 407 — no longer opaque: a contract-free callee's simple body is read (bump() returns count + 1)
+        [group: 'P350 a cross-class call is framed by its writes', name: 'a callee without @Ensures gives an opaque result', ok: true,
          src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 4 })
@@ -130,7 +131,8 @@ class G394_p350_cross_class {
                         int count = 0
                         void reset() { count = 0 }
                     }''')],
-        [group: 'P350 a cross-class call is framed by its writes', name: '… without the invariant the claim refutes', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = -1"],
+        // Phase 407 — reset()'s body sets count = 0, read exactly: the claim follows without the invariant too
+        [group: 'P350 a cross-class call is framed by its writes', name: '… without the invariant the claim refutes', ok: true,
          src: tc('''final class A {
                         @Requires({ c != null })
                         @Ensures({ result >= 0 })
