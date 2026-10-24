@@ -17649,6 +17649,53 @@ possible alias keeps its call, element types that can't be shared, a fresh local
 `a !== arr`. The value-flow writes: an element store, a compound element assignment, an element increment (refuted
 with their calls), and a compound assignment to a local (skipped, naming it).
 
+## Phase 405 — the silent-skip sweep  *(shipped — soundness fixes)*
+
+Phase 404 found the value-flow pass dropping two kinds of write. Both came from one pattern: a statement kind a walker
+doesn't match falls through to "continue". This phase swept the walkers (the value-flow collector and replay,
+BodyEncoder's postcondition paths, the region and loop replays, the frame-write collectors) with batteries of probes:
+each makes one write, then states what the write made false, and each must not compile cleanly. About 180 shapes, by
+write form (compound and `++`, `this.`/static/element targets, library mutators, accessors, constructors, `<<`,
+closures, `synchronized`, labels) and by checking engine (assert, implicit obligation, postcondition, call-site
+precondition; straight-line, in a loop body, before and after a loop, in try/switch). The postcondition paths, the
+region replay and the loop bodies were already sound for every shape. Five holes were not:
+
+- **An unframed call was a no-op in the value-flow pass** ("unrecognised calls are silently ignored"):
+  `xs.remove(0)`, `xs.set`, `xs.addAll`, `xs.sort()`, `m.remove`, `Arrays.fill`, `Collections.swap`,
+  `System.arraycopy`, a generated setter `setCount(5)` — each followed by an assert of the old state, proved. Now
+  `havocUnframedCall` (also in `replayPrefix`, a call-site precondition's prefix) havocs what the frame inference says
+  the call may write (`writesOf`): nothing for a read (`println`/`print`/`printf`, a pure static, a read-list name), the
+  receiver or arguments for a mutator, every instance field for an unresolved call on this object. An array's length,
+  and a size-keeping list mutator's size, stay. The names go into `replayUnmodelled`, so a failure on them shows no
+  call.
+- **Only MethodCallExpression statements were steps.** A static helper called from a static method (a
+  StaticMethodCallExpression), a constructor, and `xs << v` were dropped: `w(a); assert a[0] == 1` proved with `w`
+  writing `a[0]`. Any `MethodCall`, and any statement the write inference says writes, is a step now.
+- **The frame inference read a constructor as writing only what its argument expressions do**
+  (`collectConstructorWrites`): `h(int[] b) { new B(b) }` had the frame {} though `B(int[] x)` sets `x[0]`. A
+  constructor of a class compiled here is framed by its body: a written parameter is its argument, a static field the
+  class's (`B$n`), an instance field the new object's (invisible). A class with no declared constructor writes only its
+  own fields. A library constructor keeps the old reading. The fallback (`writeTargetsOf`) counts a constructor's
+  reference arguments as written, as a method call's.
+- **A field a parameter shadows was read as the parameter** (`fieldFrameName`, `shadowedField`): a setter
+  `setIt(int v) { this.v = v }` recorded the write as `v`, the int parameter, which no caller sees, so it was dropped
+  (`c.setIt(5); return c.v` "kept" `c.v == 1`); a same-class call too. Such a write is named `this.v` in a frame, as
+  `@Modifies({ this.v })` declares it, and every consumer reads `this.f` as the field, never the formal.
+- **No assert before or after an annotated loop was checked, and nothing said so** (`verifyLoopObligations`): the
+  regions before the first loop and after each loop (and from each break) were discharged without asserts — only the
+  body's were. `assert n == 12345` beside an annotated loop compiled cleanly. They are discharged now. No case in the
+  corpus had a false one.
+
+Not changed: the last-resort havoc pass (`dischargeObligationsHavoc`, when the region pass itself throws) assumes the
+whole `@Requires` at every site whatever was written before it; no probe reached it (every shape the region pass
+can't follow it summarises soundly). A field rebound to a parameter array (`this.arr = arr`) reads, under Phase 404, as a
+write into that array (a frame can't tell the two), so it is loud where it needn't be.
+
+**Shipped tests:** group `P405 silent skips`, 13 cases. One per hole: a library mutator, a static library call writing
+its argument, a generated setter, `xs << v` (value flow); a static helper writing its argument; a constructor writing
+its argument, directly and through a helper; a shadowing setter; an assert before and after an annotated loop. And
+precision kept: a constructor setting its own fields, a print and pure reads, a true assert after a loop.
+
 ---
 
 ## Definition of done, per increment

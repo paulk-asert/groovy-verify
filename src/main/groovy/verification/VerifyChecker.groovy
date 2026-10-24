@@ -3306,9 +3306,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e == null) return null
         Set<String> out = new HashSet<String>()
-        addModifiedLocation(e, out)
+        addModifiedLocation(e, out, node)
         out
     }
+
+    /** Phase 405 — a frame's name for the field {@code f} written in {@code m}: `this.f` when a parameter of {@code m}
+     *  has that name (`setIt(int v) { this.v = v }` — the bare `v` read as the parameter, which a value can't be
+     *  written through, so the field's write was dropped), else the bare `f`. */
+    static String fieldFrameName(String f, MethodNode m) {
+        m != null && m.parameters.any { it.name == f } ? 'this.' + f : f
+    }
+
+    /** Phase 405 — a frame name that is a field by {@link #fieldFrameName}'s spelling: its field, else null. */
+    static String shadowedField(String w) { w != null && w.startsWith('this.') ? w.substring(5) : null }
 
     /**
      * Phase 347 — the caller-visible locations a callee may write. A declared {@code @Modifies} wins (it is
@@ -3822,6 +3832,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (String w0 : ws) {
                 boolean rebound = w0.startsWith(REBIND)
                 String w = rebound ? w0.substring(REBIND.length()) : w0
+                if (shadowedField(w) != null) { out.add(w); continue }   // Phase 405 — a field a parameter shadows
                 if (valueParams.contains(w)) continue
                 if (visible.contains(w)) out.add(w)
                 else if (rebound) continue   // a local rebound — no write through it
@@ -3889,6 +3900,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         collectCallWritesAmong(candidates, name, actuals, ws, recv != null ? recv : sib.name + '$')
     }
 
+    /** Phase 405 — a constructor call's writes. Of a class compiled here with constructors: the matching ones' frames —
+     *  a written parameter is its argument, a static field the class's (`B$n`), an instance field the fresh object's,
+     *  invisible to the caller (`h(b) { new B(b) }` read as writing nothing, though `B(int[] x)` sets `x[0]`). Of one
+     *  with none (the default or map constructor), its own fields only. A library constructor writes what its
+     *  arguments do, as before. */
+    private static boolean collectConstructorWrites(ConstructorCallExpression cce, Set<String> ws) {
+        ClassNode t = cce.type?.redirect()
+        List<ConstructorNode> ctors = t != null && t.isPrimaryClassNode() ? t.declaredConstructors.findAll { it.code != null } :
+            Collections.<ConstructorNode> emptyList()
+        if (ctors.isEmpty()) return collectWritesArgs(cce.arguments, ws)
+        List<Expression> as = cce.arguments instanceof TupleExpression ? ((TupleExpression) cce.arguments).expressions : null
+        if (as == null) return unbounded("constructor call '${clip(cce.text)}' with unusual arguments")
+        Set<String> got = new LinkedHashSet<String>()
+        String prefix = t.name + '$'
+        if (!collectCallWritesAmong(new ArrayList<MethodNode>(ctors), "new ${t.nameWithoutPackage}", as, got, prefix)) return false
+        for (String w : got) {
+            if (w.startsWith(prefix)) {
+                FieldNode f = t.getField(w.substring(prefix.length()))
+                if (f == null || !f.isStatic()) continue   // the new object's own field
+            }
+            ws.add(w)
+        }
+        collectWritesArgs(cce.arguments, ws)
+    }
+
     /** The shared tail of {@link #collectCallWrites} / {@link #collectSiblingCallWrites}: {@code fieldAs} is null for a
      *  same-class field (recorded under its own name), a receiver name (recorded as that), or a {@code Sib$} prefix. */
     private static boolean collectCallWritesAmong(List<MethodNode> candidates, String name, List<Expression> actuals,
@@ -3909,7 +3945,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 int fi = -1
                 for (int i = 0; i < m.parameters.length; i++) if (m.parameters[i].name == w) { fi = i; break }
                 if (fi < 0) {                                             // a field (same class, same name)
-                    String rec = fieldAs == null ? w : fieldAs.endsWith('$') ? fieldAs + w : fieldAs
+                    // Phase 405 — `this.f` (a field the callee's parameter shadows) is the field f, named for the caller
+                    if (shadowedField(w) != null) w = shadowedField(w)
+                    String rec = fieldAs == null ? fieldFrameName(w, WRITE_METHOD.get()) : fieldAs.endsWith('$') ? fieldAs + w : fieldAs
                     // Phase 365 — a static of the writer's own class (or a superclass) is its own location, whichever
                     // class's method wrote it: `C.s()` calling `A.setN(…)`, or `c.w()` writing the static it inherits
                     String own = callerOwnStatic(w, m.declaringClass, WRITE_OWNER.get())
@@ -3933,15 +3971,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         any || unbounded("call '${name}(…)' matches no ${actuals.size()}-parameter overload")
     }
 
-    private static void addModifiedLocation(Expression e, Set<String> out) {
+    private static void addModifiedLocation(Expression e, Set<String> out, MethodNode m = null) {
         if (e instanceof ListExpression) {
-            for (Expression x : ((ListExpression) e).expressions) addModifiedLocation(x, out)
+            for (Expression x : ((ListExpression) e).expressions) addModifiedLocation(x, out, m)
         } else if (e instanceof VariableExpression) {
             out.add(((VariableExpression) e).name)
         } else if (e instanceof PropertyExpression) {
             Expression obj = ((PropertyExpression) e).objectExpression
             if (obj instanceof VariableExpression && ((VariableExpression) obj).name == 'this') {
-                out.add(((PropertyExpression) e).propertyAsString)
+                out.add(fieldFrameName(((PropertyExpression) e).propertyAsString, m))   // Phase 405
             }
         }
     }
@@ -4993,7 +5031,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // a deref BEFORE it still refutes.
                 Expression nnt = nonNullAssertedTarget(e)
                 if (nnt != null) steps.add(new Guard(nonNullFact(nnt), true))
-                if (e instanceof MethodCallExpression) {
+                // Phase 405 — any call (a static helper `w(a)` in a static method and a constructor are no
+                // MethodCallExpression, and were dropped), and any other statement that writes (`xs << v`)
+                if (e instanceof MethodCall || leftShiftTarget(e) != null ||
+                        !writesOf([st] as List<Statement>, currentMethod?.declaringClass).isEmpty()) {
                     steps.add(new LemmaCall(e))
                 }
                 continue
@@ -5203,9 +5244,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // frame and assume its @Ensures — exactly as the postcondition path (`assumeCalleeEnsures`)
                     // does — so a downstream obligation can't assume a field the call modified is unchanged.
                     // Without this the call was a silent no-op, so an in-segment obligation could be proven over a
-                    // field a @Modifies call actually changed (the call-framing gap). An uncontracted call (no
-                    // @Modifies/@Ensures) still no-ops here — assumeCalleeEnsures returns false, nothing to model.
-                    assumeCalleeEnsures(s, enc, call, node, null, hasDecreases(node))
+                    // field a @Modifies call actually changed (the call-framing gap). Phase 405 — a call it doesn't frame
+                    // (a library mutator, a generated accessor) was a no-op here: `xs.remove(0); assert xs.size() == 1`
+                    // proved. What it may write is havocked now
+                    if (!assumeCalleeEnsures(s, enc, call, node, null, hasDecreases(node))) havocUnframedCall(enc, call)
                 }
             }
             dischargeObligationUnder(s, enc, v.site)
@@ -6426,7 +6468,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void verifyLoopObligations(MethodNode node, List<LoopSite> sites) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
         // 1. The region before the FIRST loop: @Requires + the straight-line store; no invariant yet.
-        dischargeRegion(sites.get(0).segmentBefore, reqAst, Collections.<Expression>emptyList(), null)
+        // Phase 405 — its asserts too (handleAsserts): before, and after a loop (4, 4b), they were never checked, and
+        // nothing said so — `assert n == 12345` beside an annotated loop compiled cleanly
+        dischargeRegion(sites.get(0).segmentBefore, reqAst, Collections.<Expression>emptyList(), null,
+            Collections.<Statement>emptyList(), true)
         for (int si = 0; si < sites.size(); si++) {
             LoopSite site = sites.get(si)
             LoopSpec spec = site.spec
@@ -6456,7 +6501,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             // 4. The region after this loop up to the next one (or the method end): inv ∧ ¬guard.
             withEntryPaths(loopEntryPaths(site.originalPrefix, spec, 'exit'), reqAst) {
-                dischargeRegion(site.segmentAfter, stableReq, framed, spec.guard)
+                dischargeRegion(site.segmentAfter, stableReq, framed, spec.guard, Collections.<Statement>emptyList(), true)
             }
             // 4b. Phase 312 — and from each `break`: an arbitrary iteration (inv ∧ guard), the body up to the break
             // with earlier exits not taken, the break's condition, its lead. The after-loop code must be safe from
@@ -6474,7 +6519,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 atBreak = withAssume(atBreak, ex.guard)
                 atBreak.addAll(ex.lead)
                 withEntryPaths(bodyPaths, reqAst) {   // the iteration that breaks starts like any other
-                    dischargeRegion(site.segmentAfter, stableReq, iterEntry, null, atBreak)
+                    dischargeRegion(site.segmentAfter, stableReq, iterEntry, null, atBreak, true)
                 }
             }
             // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
@@ -6858,6 +6903,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     super.visitDeclarationExpression(de)
                 }
                 @Override void visitPrefixExpression(PrefixExpression pe) { target(pe.expression); super.visitPrefixExpression(pe) }
+                // Phase 405 — a constructor may write what it is handed, as a method may
+                @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {
+                    Expression args = cce.arguments
+                    if (args instanceof TupleExpression) for (Expression a : ((TupleExpression) args).expressions) {
+                        if (a instanceof VariableExpression && !isValueType(((VariableExpression) a).originType ?: a.type)) target(a)
+                    }
+                    super.visitConstructorCallExpression(cce)
+                }
                 @Override void visitPostfixExpression(PostfixExpression pe) { target(pe.expression); super.visitPostfixExpression(pe) }
                 @Override void visitMethodCallExpression(MethodCallExpression mce) {
                     if (mce.implicitThis) thisCall[0] = true
@@ -12551,6 +12604,54 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
              wt.isInterface() || ot.isInterface())
     }
 
+    /** Phase 405 — the effect of a standalone call no handler frames: what the frame inference says it may write (a
+     *  known read writes nothing; a library mutator its receiver or arguments; an unresolved call on this object — a
+     *  generated accessor — every instance field), each havocked and marked so a failure resting on it shows no call. */
+    private void havocUnframedCall(Encoder enc, Expression call) {
+        if (printCall(call)) return
+        ClassNode cls = currentMethod?.declaringClass
+        Set<String> ws = new LinkedHashSet<String>(writesOf([new ExpressionStatement(call)] as List<Statement>, cls))
+        String shifted = leftShiftTarget(call)
+        if (shifted != null) ws.add(shifted)
+        if (ws.remove('this') | ws.remove('super')) {
+            for (ClassNode c = cls; c != null; c = c.superClass) for (FieldNode f : c.fields) if (!f.isStatic()) ws.add(f.name)
+        }
+        if (ws.isEmpty()) return
+        String m = call instanceof MethodCall ? ((MethodCall) call).methodAsString : null
+        for (String n : ws) {
+            replayUnmodelled.add(n)
+            // an array's length is fixed, and a size-keeping mutator (`set`, `sort`, `Collections.swap`) keeps a list's
+            if ((enc.isArrayTyped(n) && !enc.isListTyped(n)) || (enc.isListTyped(n) && m in SIZE_KEEPING)) { enc.havocArray(n); continue }
+            havocLocation(enc, n)
+        }
+        for (String n : withAliasedArrays(ws, false)) if (!ws.contains(n)) { enc.havocArray(n); enc.aliasHavocked.add(n) }
+    }
+
+    /** Phase 405 — `xs << v` as a statement: the collection it appends to, by name (a shift of a number is no write). */
+    private String leftShiftTarget(Expression e) {
+        if (!(e instanceof BinaryExpression) || ((BinaryExpression) e).operation.type != Types.LEFT_SHIFT) return null
+        Expression l = ((BinaryExpression) e).leftExpression
+        if (!(l instanceof VariableExpression)) return null
+        ClassNode t = ((VariableExpression) l).accessedVariable?.originType ?: l.type
+        t != null && !isImmutableType(t) ? ((VariableExpression) l).name : null
+    }
+
+    /** Phase 405 — list mutators that keep its size. */
+    private static final Set<String> SIZE_KEEPING = ['set', 'putAt', 'sort', 'swap', 'shuffle', 'reverse', 'fill', 'replaceAll'] as Set
+
+    /** Phase 405 — `println`/`print`/`printf`, on this script or object or on `System.out`/`System.err`: a write to the
+     *  console, none to the program's state (a GString argument's interpolation only reads). */
+    private static boolean printCall(Expression call) {
+        if (!(call instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) call
+        if (!(mce.methodAsString in ['println', 'print', 'printf'])) return false
+        Expression r = mce.objectExpression
+        mce.implicitThis || (r instanceof VariableExpression && ((VariableExpression) r).name == 'this') ||
+            (r instanceof PropertyExpression && ((PropertyExpression) r).objectExpression instanceof ClassExpression &&
+             ((ClassExpression) ((PropertyExpression) r).objectExpression).type?.name == 'java.lang.System' &&
+             ((PropertyExpression) r).propertyAsString in ['out', 'err'])
+    }
+
     /** Phase 404 — {@code names}, what a stretch of code may write, plus each array of the current method that may be
      *  one of the arrays written: written by name (a parameter, a field), as an array field of an object written
      *  through (`h` in `h.poke()`), or as one of this object's under an implicit-this call. A summary that havocs only
@@ -15644,8 +15745,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Expression x : ((TupleExpression) e).expressions) if (!collectWritesExpr(x, ws)) return false
             return true
         }
-        // a constructor builds a fresh object: it can write only what its arguments do
-        if (e instanceof ConstructorCallExpression) return collectWritesArgs(((ConstructorCallExpression) e).arguments, ws)
+        // a constructor builds a fresh object: it writes its own fields, which are the new object's — and (Phase 405) what
+        // its body writes through its parameters, which are the caller's arguments
+        if (e instanceof ConstructorCallExpression) return collectConstructorWrites((ConstructorCallExpression) e, ws)
         // a closure passed to an iterator (`xs.every { … }`) runs now: its body's writes count, its params are locals
         if (e instanceof ClosureExpression) return collectWritesStmt(((ClosureExpression) e).code, ws)
         if (e instanceof StaticMethodCallExpression) {
@@ -16630,7 +16732,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (why != null) return unbounded("the write '${clip(lhs.text)} = …': ${why}")
                 return recordTarget(obj, ws)
             }
-            ws.add(((PropertyExpression) lhs).propertyAsString); return true
+            // Phase 405 — `this.v = v`: the field, by a name no parameter has
+            String pn = ((PropertyExpression) lhs).propertyAsString
+            boolean self = obj instanceof VariableExpression && ((VariableExpression) obj).name in ['this', 'super']
+            ws.add(self ? fieldFrameName(pn, WRITE_METHOD.get()) : pn); return true
         }
         if (lhs instanceof BinaryExpression &&
                 ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET) {
@@ -18974,7 +19079,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Sound now that intervening mutations are threaded above — so this generalises the old
                 // immediate-predecessor-only rule to ANY preceding call, which is what lets a lemma proved
                 // before a mutation (e.g. a monotone-bound lemma before the sort's swap) reach a later call.
-                assumeCalleeEnsures(s, enc, call, currentMethod, null, hasDecreases(currentMethod))
+                if (!assumeCalleeEnsures(s, enc, call, currentMethod, null, hasDecreases(currentMethod))) havocUnframedCall(enc, call)   // Phase 405
                 continue
             }
             for (String loc : modifiedLocations(st)) havocLocation(enc, loc)
@@ -19504,13 +19609,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object> savedMapKeys = new LinkedHashMap<String, Object>()
         Map<String, Object> savedSize = new LinkedHashMap<String, Object>()   // Phase 349
         if (modSet != null) {
-            for (String loc : modSet) {
-                boolean isFormal = formals.any { Parameter fp -> fp.name == loc }
+            for (String loc0 : modSet) {
+                // Phase 405 — `this.f` is the callee's field f, though a formal shares its name
+                String fieldOf = shadowedField(loc0)
+                String loc = fieldOf ?: loc0
+                boolean isFormal = fieldOf == null && formals.any { Parameter fp -> fp.name == loc }
                 // Phase 365 — a static of the caller's own class (or a superclass), though another class wrote it
                 String ownStatic = isFormal ? null : callerOwnStatic(loc, callee.declaringClass, caller?.declaringClass)
                 // Phase 351 — another class's static field: not a location of the caller's (see foreignStatic above)
                 if (foreignStatic && !isFormal && ownStatic == null) continue
-                String callerLoc = ownStatic ?: callerSideLocation(loc, formals, actuals)
+                String callerLoc = ownStatic ?: (fieldOf != null ? loc : callerSideLocation(loc, formals, actuals))
                 if (crossRecv != null && ownStatic == null && callerLoc == loc && !isFormal) {
                     callerLoc = crossRecv + '$' + loc   // Phase 350 — the receiver's field
                 }
@@ -19611,7 +19719,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Size is deliberately NOT havoced: the shipped mutators are size-preserving, and the
                 // implicit size stability is a true, load-bearing fact.
                 for (int fi = 0; fi < formals.length; fi++) {
-                    if (formals[fi].name == loc && specSimple(formals[fi].type.name) in ['Collection', 'List']) {
+                    if (isFormal && formals[fi].name == loc && specSimple(formals[fi].type.name) in ['Collection', 'List']) {
                         enc.bindArray(loc, enc.arrayFor(callerLoc))
                         enc.bindSize(loc, enc.sizeOf(callerLoc))
                         enc.bindNullity(loc, enc.nullityOf(callerLoc))
