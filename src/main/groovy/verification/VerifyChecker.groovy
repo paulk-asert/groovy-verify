@@ -7156,8 +7156,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // (balancedEntryPaths), so a call needing a later outer iteration is still sought — without displacing any
         List<List<Statement>> first = shortestEntryPaths(site, at)
         List<List<Statement>> out = new ArrayList<List<Statement>>(first)
-        for (Object[] t : taggedEntryPaths(site, at)) if (!first.contains(t[0])) out.add((List<Statement>) t[0])
+        // Phase 399 — by content: each pass builds its own assume markers, so a path the first pass already tried
+        // compared unequal and was tried again (most of Phase 398's extra checks)
+        Set<String> seen = new HashSet<String>(first.collect { List<Statement> p -> pathKey(p) })
+        for (Object[] t : taggedEntryPaths(site, at)) {
+            if (seen.add(pathKey((List<Statement>) t[0]))) out.add((List<Statement>) t[0])
+        }
         out
+    }
+
+    /** Phase 399 — a path's content: an assume marker by its condition's text, any other statement by identity. */
+    private static String pathKey(List<Statement> path) {
+        StringBuilder sb = new StringBuilder()
+        for (Statement st : path) {
+            if (st instanceof AssertStatement && (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null ||
+                                                 st.getNodeMetaData(ASSUME_ONLY_KEY) != null)) {
+                sb.append('A:').append(((AssertStatement) st).booleanExpression.text)
+            } else {
+                sb.append('S:').append(System.identityHashCode(st))
+            }
+            sb.append(';')
+        }
+        sb.toString()
     }
 
     /** Phase 397's {@link #entryPathsTo}: shortest first, through every enclosing loop. */

@@ -17458,6 +17458,24 @@ can fall outside it (the call is withheld, as before).
 **Shipped tests:** group `P398 entry-path selection`, 3 cases, each without a call before: a return at a later outer
 iteration (`f(2)`), a nested entry broken on the third outer pass (`f(4)`), a return three loops down (`f(2)`).
 
+## Phase 399 — the perf budget re-based, and a second pass that re-tried the first  *(shipped — perf)*
+
+Phases 385–398's witness searches had taken the deterministic counters to 13,192 solver checks / 8,518 distinct VCs
+in `verify` (13,588 / 8,573 in `test`), against `PerfBudget`'s 15,000 / 9,500 ceilings. Measured per phase from each
+gates run: Phase 392's preservation witness +461 checks / +374 distinct, Phase 397's nested-entry witness and depth
++285 / +234, Phase 398's second pass +731 / +370; every other phase since 384 added 60 or fewer.
+
+- **The second pass re-tried the first's paths** (`pathKey`): it skipped a path the first pass had tried by list
+  equality, but each pass builds its own assume markers (`withAssume`), so equal paths compared unequal and were
+  checked again — most hitting the VC cache. Keyed by content now (a marker by its condition's text, any other
+  statement by identity): `verify` 12,832 checks / 8,462 distinct, `test` 13,189 / 8,516, the second pass's calls
+  unchanged.
+- **Re-based:** `MAX_CHECK_CALLS` 16,500 and `MAX_DISTINCT_VCS` 11,000 (25% / 29% headroom over `test`, where the
+  budget is asserted), with the per-phase history in the comment. UNKNOWN stays at 55 (measured 26–28).
+
+**Shipped tests:** none new — the budget is asserted by the `test` run, and the second pass's three cases (G441) keep
+their calls.
+
 ---
 
 ## Definition of done, per increment

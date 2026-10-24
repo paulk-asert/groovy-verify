@@ -40,10 +40,17 @@ import verification.Z3Backend
 class PerfBudget {
 
     /** Total solver {@code check()} calls (cache hits + real solves). Deterministic. */
-    static final long MAX_CHECK_CALLS = 15_000   // re-based 2026-10-23: Phases 373–385 (their cases, and the exact-witness searches of 374 and 385) took `verify` to 11,379 (2026-10-22: 13,000 at 10,413)
+    // Re-based 2026-10-24 (Phase 399): the witness searches of Phases 386–398 took `verify` from 11,423 checks / 7,369
+    // distinct to 12,832 / 8,462 (the `test` run measured 13,588 / 8,573 before Phase 399's path de-duplication). The
+    // growth, by phase: 392's preservation witness +461 / +374, 397's nested-entry witness and depth +285 / +234, 398's
+    // second pass +731 / +370 — of which Phase 399's de-duplication won back 360 / 56 (the second pass re-tried the
+    // first's paths: their assume markers are rebuilt, so equal paths compared unequal); the other phases +60 each or less.
+    // After it, `test` measured 13,189 / 8,516.
+    // (2026-10-23: 15,000 at 11,379; 2026-10-22: 13,000 at 10,413.)
+    static final long MAX_CHECK_CALLS = 16_500
 
     /** Distinct VCs actually solved (the cache-miss population). Deterministic. */
-    static final long MAX_DISTINCT_VCS = 9_500   // re-based with it (7,367 distinct VCs; 2026-10-22: 8,000 at 6,417)
+    static final long MAX_DISTINCT_VCS = 11_000   // re-based with it (8,462 distinct VCs; 2026-10-23: 9,500 at 7,367)
 
     /** UNKNOWN results (solver gave up / timed out). The corpus carries a handful of hard VCs plus the
      *  Phase 203/204 inconsistency canaries (recurrence-axiom refutes that intentionally time MBQI out —
