@@ -17758,6 +17758,34 @@ shadowing setter's), a guarded store and the elements it leaves, a writer's retu
 @Ensures. A wrong claim refutes with a real call. The boundary: a body that calls out, or divides, is known by its frame
 only (no call shown); an overridable callee's body isn't read.
 
+## Phase 408 — partial preconditions  *(shipped — completeness, soundness, honesty)*
+
+A @Requires was assumed whole or not at all. One conjunct outside the model — an open getter's read, a receiver's
+array field's length — lost every other, so `c != null && c.count == 5` assumed neither and `c.bump()` "failed on"
+`f(null)`.
+
+- **Assumed conjunct by conjunct** (`assumeRequiresParts`): the whole when it translates (as before), else each
+  top-level conjunct that does — the whole holds at entry, so each part does. Used wherever the method's own @Requires
+  is assumed: the implicit-obligation context, the value-flow pass, pre-and-invariants, termination and the seeded
+  loop pass.
+- **A dropped conjunct is a witness taint** (`pre:`, Phase 406's machinery): a refutation still stands, since it
+  assumes less, but a call the model builds may not meet the part it dropped, so none is shown, and the note names
+  the conjuncts (`no failing call: the precondition's '(h.arr.length > 0)', '(h.arr != null)' is outside what the
+  verifier models, …`).
+- **Found on the way, a silent skip** (soundness): the collector made an index obligation only for an array that is a
+  variable. `this.arr[i]` is the field `arr`'s index now; any other array-typed receiver — a receiver's field
+  (`h.arr[0]`), an inner array (`g[0][0]`), a call's result — skips loudly, naming the array (`Skipped array index
+  safety check ('h.arr[0]' indexes the array 'h.arr', which isn't a variable or field the verifier models)`). Each
+  site is reported once.
+
+**Changed cases:** none — the full suite passed unchanged; no shipped case indexed such an array or lost a
+precondition this way.
+
+**Shipped tests:** group `P408 partial preconditions`, 8 cases. Proved: an open getter's conjunct keeps `c != null`;
+a guarded `this.arr[0]`. A receiver array's length keeps a parameter array's (its own store skips). A real failure
+under a partial precondition refutes with no call, naming what was dropped. The receiver-field store and read and
+the inner array skip loudly; an unguarded `this.arr[0]` refutes with `fails on: f()`.
+
 ---
 
 ## Definition of done, per increment

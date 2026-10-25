@@ -1654,7 +1654,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ObligationCollector col = new ObligationCollector()
         col.overflowChecking = currentOverflowChecking
         col.specSite = { Expression call -> specThrowSiteFor(call) }
+        col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
         col
+    }
+
+    /** Phase 408 — the index sites reported as unchecked, once each (not while a witness search holds diagnostics). */
+    private final Set<ASTNode> reportedIndexSkips = Collections.newSetFromMap(new IdentityHashMap<ASTNode, Boolean>())
+
+    /** Phase 408 — an array index whose array isn't a name the verifier models (`h.arr[0]`, `grid[i][j]`'s outer
+     *  subscript, a call's result): no obligation was made for it, and nothing said so. Loud now. */
+    private void reportUnmodelledIndex(BinaryExpression be) {
+        if (reportedIndexSkips.contains(be)) return
+        if (heldErrors == null) reportedIndexSkips.add(be)
+        addStaticTypeError(Reporter.formatImplicitSkipped('array index',
+            "'${clip(be.text)}' indexes the array '${clip(be.leftExpression.text)}', which isn't a variable or field the " +
+            "verifier models"), be)
     }
 
     /**
@@ -2732,6 +2746,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
         // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
         String callNote = loopCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404
+        // Phase 408 — a precondition part assumed nowhere: the call the model builds may break it
+        if (r.failingCall != null && callNote == null && r.taints) {
+            List<String> pre = r.taints.findAll { it.startsWith('pre:') }.collect { "'" + it.substring(4) + "'" }
+            if (!pre.isEmpty()) {
+                r.failingCall = null
+                String note = String.format(PRE_TAINT_NOTE, pre.join(', '))
+                if (!r.notes.contains(note)) r.notes.add(note)
+            }
+        }
         // Phase 406 — a value a call's frame left unknown: the model picked one; a run may never get it
         if (r.failingCall != null && callNote == null && r.taints && r.counterexample != null) {
             List<String> on = new ArrayList<String>()
@@ -5145,8 +5168,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) {
-                Object pre = enc.translateBool(reqAst)
-                if (pre != null) { s.assertExpr(pre); captureExplain(s, enc, reqAst, pre) }
+                assumeRequiresParts(s, enc, reqAst)   // Phase 408
                 assumePreconditionNonNullFacts(s, enc, reqAst)
             }
             // Phase 15a — class invariants are method-entry facts, assumed before any
@@ -5271,14 +5293,34 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 408 — assume {@code req}: whole when it translates, else each top-level conjunct that does (the whole holds
+     *  at entry, so each part does). A part that doesn't translate was the whole precondition's loss — `c != null &&
+     *  c.count == 5`, with `c.count` an open getter's read, assumed neither, so `c.bump()` "failed on" `f(null)`. Each part
+     *  dropped is a witness taint: a call the model builds may not meet it. */
+    private void assumeRequiresParts(SmtSession s, Encoder enc, Expression req) {
+        Object whole = enc.translateBool(req)
+        if (whole != null) {
+            s.assertExpr(whole)
+            captureExplain(s, enc, req, whole)
+            return
+        }
+        List<Expression> parts = new ArrayList<Expression>()
+        splitConjuncts(req, parts)
+        for (Expression c : parts) {
+            Object t = null
+            try { t = enc.translateBool(c) } catch (Throwable ignored) { t = null }
+            if (t != null) s.assertExpr(t)
+            else s.witnessTaints().add('pre:' + clip(c.text))
+        }
+    }
+
+    static final String PRE_TAINT_NOTE = 'no failing call: the precondition\'s %s is outside what the verifier models, so a ' +
+        'call built from the counterexample may not meet it'
+
     /** Assume the method's own @Requires (if encodable), the class invariants, plus the path facts at a site. */
     private void assumeContext(SmtSession s, Encoder enc, Expression reqAst, ASTNode site, PathFacts pf) {
         if (reqAst != null) {
-            Object pre = enc.translateBool(reqAst)
-            if (pre != null) {
-                s.assertExpr(pre)
-                captureExplain(s, enc, reqAst, pre)
-            }
+            assumeRequiresParts(s, enc, reqAst)   // Phase 408
             assumePreconditionNonNullFacts(s, enc, reqAst)
         }
         // Phase 44c — every Int-typed parameter and field is JVM-bounded to
@@ -7062,8 +7104,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // drops is re-checked against the call it renders, Phase 337)
             Expression req = entryPath != null ? (entryReq ?: loopEntryReq) : reqAst
             if (req != null) {
-                Object p = enc.translate(stripQ ? dropQuantifierConjuncts(req) : req)
-                if (p != null) s.assertExpr(p)
+                Expression r0 = stripQ ? dropQuantifierConjuncts(req) : req
+                if (r0 != null) assumeRequiresParts(s, enc, r0)   // Phase 408
             }
             // Phase 15a — class invariants are method-entry facts, in scope across the loop's
             // prefix/guard/body/suffix regions just like @Requires.
@@ -11123,6 +11165,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         /** Phase 370 — the spec'd calls with @ThrowsIf arms, as {@link #specSite} resolves them (null: none collected). */
         final List<SpecThrowSite> specThrowSites = []
         Closure<SpecThrowSite> specSite = null
+        /** Phase 408 — told of an array index the collector makes no obligation for (null: not told). */
+        Closure<Object> unmodelledIndex = null
         /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
         final List<OverflowSite> overflowSites = []
         /** Phase 46e — collected at every {@code charAt(i)} call shape (string-typing checked at discharge). */
@@ -11150,6 +11194,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 indexSites.add(new IndexSite(node: be,
                     receiver: ((VariableExpression) be.leftExpression).name,
                     index: be.rightExpression))
+            } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof PropertyExpression &&
+                       ((PropertyExpression) be.leftExpression).objectExpression instanceof VariableExpression &&
+                       ((VariableExpression) ((PropertyExpression) be.leftExpression).objectExpression).name == 'this' &&
+                       ((PropertyExpression) be.leftExpression).propertyAsString != null) {
+                // Phase 408 — `this.arr[i]` is the field `arr`'s index, which had no obligation
+                indexSites.add(new IndexSite(node: be,
+                    receiver: ((PropertyExpression) be.leftExpression).propertyAsString,
+                    index: be.rightExpression))
+            } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && unmodelledIndex != null) {
+                // Phase 408 — any other array (`h.arr[0]`, `grid[i][j]`, `f()[0]`) had none either, and said nothing
+                ClassNode t = (ClassNode) be.leftExpression.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+                if (t == null) t = be.leftExpression.type
+                if (t != null && t.isArray()) unmodelledIndex.call(be)
             } else if (sym == '/' || sym == '%') {
                 // Phase 152 — a JSR 385 `quantity / quantity` dispatches to Quantity.divide, NOT numeric division, so
                 // the divisor is a quantity (not a number that could be 0): no divide-by-zero obligation. The exact-
@@ -11894,7 +11951,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  resolvable under them — `head <= tail` is what makes the boundary slot {@code Low}. Best-effort. */
     private void assumePreAndInvariants(SmtSession session, Encoder enc, MethodNode node) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
-        if (reqAst != null) { Object pre = enc.translateBool(reqAst); if (pre != null) { session.assertExpr(pre); captureExplain(session, enc, reqAst, pre) } }
+        if (reqAst != null) assumeRequiresParts(session, enc, reqAst)   // Phase 408
         assumeClassInvariants(session, enc)
     }
 
@@ -18726,10 +18783,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
-            if (reqAst != null) {
-                Object pre = enc.translateBool(reqAst)
-                if (pre != null) { s.assertExpr(pre); captureExplain(s, enc, reqAst, pre) }
-            }
+            if (reqAst != null) assumeRequiresParts(s, enc, reqAst)   // Phase 408
             // Measure on entry — translated BEFORE the body effects below are replayed, so a measure over
             // *mutated* state (a set's cardinality, `n - s.size()`) reads the entry value, not the
             // post-body one. For the usual param-only measure this is identical: the replay never rebinds a
