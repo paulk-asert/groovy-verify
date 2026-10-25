@@ -36,7 +36,7 @@ class G364_p319_majority {
         [group: 'P319 majority', name: 'majority.ts, verbatim: Boyer-Moore majority vote', ok: true,
          src: tc('''class C {
                         /** Returns the value occurring in more than half of arr, or -1 when there is none. */
-                        @Requires({ arr.every { int k -> k >= 0 } })
+                        @Requires({ arr != null && arr.every { int k -> k >= 0 } })
                         @Ensures({ result == -1 || (result >= 0 && 2 * arr[0..<arr.length].count(result) > arr.length) })
                         @Ensures({ arr.any { int x -> 2 * arr[0..<arr.length].count(x) > arr.length } ==> result != -1 })
                         static int majority(int[] arr) {
@@ -78,6 +78,7 @@ class G364_p319_majority {
         // Pass 1 on its own: the candidate and the others invariants preserve each other. Neither alone is inductive.
         [group: 'P319 majority', name: 'pass 1 alone: the counting invariants are inductive', ok: true,
          src: tc('''class C {
+                        @Requires({ arr != null })
                         static int pick(int[] arr) {
                             int cand = 0
                             int cnt = 0
@@ -103,6 +104,7 @@ class G364_p319_majority {
         // Pass 2 on its own: the prefix count steps with the loop (Phase 208's range-count axioms).
         [group: 'P319 majority', name: 'pass 2 alone: occOf as a prefix count', ok: true,
          src: tc('''class C {
+                        @Requires({ a != null })
                         @Ensures({ result == a[0..<a.length].count(v) })
                         static int occ(int[] a, int v) {
                             int c = 0

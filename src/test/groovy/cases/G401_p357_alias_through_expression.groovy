@@ -43,7 +43,7 @@ class G401_p357_alias_through_expression {
                     }''')],
         [group: "P357 an alias through an expression", name: "… and an array outside both branches stays framed", ok: true,
          src: tc('''class A {
-                        static void put0(int[] a, int[] c, int[] d, boolean f) { int[] b = f ? a : c; if (b.length > 0) b[0] = 5 }
+                        static void put0(int[] a, int[] c, int[] d, boolean f) { int[] b = f ? a : c; if (b != null && b.length > 0) b[0] = 5 }
                         @Requires({ d.length > 0 && d[0] == 0 })
                         @Ensures({ d[0] == 0 })
                         static void g(int[] a, int[] c, int[] d) { put0(a, c, d, true) }
@@ -102,7 +102,7 @@ class G401_p357_alias_through_expression {
                     }''')],
         [group: "P357 an alias through an expression", name: "a local of value type copies", ok: true,
          src: tc('''class A {
-                        static int pick(int[] a, int x, int y, boolean f) { int n = f ? x : y; n++; int m = a.length > 0 ? a[0] : 0; m++; return n + m }
+                        static int pick(int[] a, int x, int y, boolean f) { int n = f ? x : y; n++; int m = a != null && a.length > 0 ? a[0] : 0; m++; return n + m }
                         @Requires({ a.length > 0 && a[0] == 0 })
                         @Ensures({ a[0] == 0 })
                         static void g(int[] a) { pick(a, 1, 2, true) }

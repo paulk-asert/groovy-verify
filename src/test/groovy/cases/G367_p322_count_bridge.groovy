@@ -80,7 +80,7 @@ class G367_p322_count_bridge {
         [group: 'P322 count bridge', name: 'majority vote with whole-array counts', ok: true,
          src: tc('''class C {
                         /** Returns the value occurring in more than half of arr, or -1 when there is none. */
-                        @Requires({ arr.every { int k -> k >= 0 } })
+                        @Requires({ arr != null && arr.every { int k -> k >= 0 } })
                         @Ensures({ result == -1 || (result >= 0 && 2 * arr.count(result) > arr.length) })
                         @Ensures({ arr.any { int x -> 2 * arr.count(x) > arr.length } ==> result != -1 })
                         static int majority(int[] arr) {

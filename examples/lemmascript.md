@@ -288,6 +288,7 @@ returns:
 <!-- doclint:case lemmascript-port/linearsearch -->
 ```groovy
 /** Returns the first index of target, or -1 when it is absent. */
+@Requires({ arr != null })
 @Ensures({ result >= -1 && result < arr.length })
 @Ensures({ result >= 0 ==> arr[result] == target })
 @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
@@ -454,6 +455,7 @@ everything checked so far:
 <!-- doclint:case lemmascript-port/containsduplicate -->
 ```groovy
 /** Reports whether any value occurs twice. */
+@Requires({ nums != null })
 @Ensures({ !result ==> (0..<nums.length).every { int a -> (a + 1..<nums.length).every { int b -> nums[a] != nums[b] } } })
 static boolean containsDuplicate(int[] nums) {
     int i = 0
@@ -538,7 +540,7 @@ never occurs has count 0, so it adds nothing to the `exists`, and for the `foral
 <!-- doclint:case p319-majority/majority-ts-verbatim-boyer-moore-majority-vote -->
 ```groovy
 /** Returns the value occurring in more than half of arr, or -1 when there is none. */
-@Requires({ arr.every { int k -> k >= 0 } })
+@Requires({ arr != null && arr.every { int k -> k >= 0 } })
 @Ensures({ result == -1 || (result >= 0 && 2 * arr[0..<arr.length].count(result) > arr.length) })
 @Ensures({ arr.any { int x -> 2 * arr[0..<arr.length].count(x) > arr.length } ==> result != -1 })
 static int majority(int[] arr) {

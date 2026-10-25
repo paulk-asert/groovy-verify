@@ -29,10 +29,10 @@ class G048_p5a_short_circuit {
         // ---------- Phase 5a: short-circuit guard path conditions (&& / ||) ----------
         // The `&&` left operands (`i > 0 && i <= a.length`) protect `a[i-1]` in the right operand.
         [group: 'P5a short-circuit', name: 'and-guard protects right operand', ok: true,
-         src: tc('class C { static int g(int[] a, int i) { (i > 0 && i <= a.length && a[i - 1] > 0) ? 1 : 0 } }')],
+         src: tc('class C { @Requires({ a != null }) static int g(int[] a, int i) { (i > 0 && i <= a.length && a[i - 1] > 0) ? 1 : 0 } }')],
         // `||`: entering the right operand means the left disjuncts are false → `0 < i <= a.length`.
         [group: 'P5a short-circuit', name: 'or-guard protects right operand', ok: true,
-         src: tc('class C { static int g(int[] a, int i) { (i <= 0 || i > a.length || a[i - 1] > 0) ? 1 : 0 } }')],
+         src: tc('class C { @Requires({ a != null }) static int g(int[] a, int i) { (i <= 0 || i > a.length || a[i - 1] > 0) ? 1 : 0 } }')],
         // Still sound: with the guard removed, the access is genuinely unprotected → refuted.
         [group: 'P5a short-circuit', name: 'unguarded access still refuted', expect: 'IndexOutOfBoundsException',
          src: tc('class C { static int g(int[] a, int i) { (a[i - 1] > 0) ? 1 : 0 } }')],

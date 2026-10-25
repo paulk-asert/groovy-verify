@@ -118,7 +118,7 @@ class G410_p366_contract_layer_sweep {
                         static int[] mk() { new int[1] }
                         @Requires({ a != null && a.length > 0 && a[0] == 7 })
                         @Ensures({ a[0] == 7 })
-                        static void g(int[] a) { int[] b = mk(); if (b.length > 0) b[0] = 1 }
+                        static void g(int[] a) { int[] b = mk(); if (b != null && b.length > 0) b[0] = 1 }
                     }''')],
 
         // Before: verified — a helper's write through its pattern variable was a write to a local.

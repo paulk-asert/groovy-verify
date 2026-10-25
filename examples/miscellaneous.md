@@ -595,6 +595,7 @@ the engine can infer it. You opt in through the **parameterised extension syntax
 ```groovy
 @TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')
 class C {
+    @Requires({ a != null })
     static int sum(int[] a) {
         int s = 0
         for (int i = 0; i < a.length; i++) { s = s + a[i] }   // array bounds PROVEN — no @Invariant written

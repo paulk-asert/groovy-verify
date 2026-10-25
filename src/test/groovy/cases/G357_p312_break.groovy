@@ -29,6 +29,7 @@ class G357_p312_break {
         // LemmaScript's linear search, verbatim: the result is set in the break's lead.
         [group: 'P312 break', name: 'linear search with result and break', ok: true,
          src: tc('''class C {
+                        @Requires({ arr != null })
                         @Ensures({ result >= -1 && result < arr.length })
                         @Ensures({ result >= 0 ==> arr[result] == target })
                         @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
@@ -95,6 +96,7 @@ class G357_p312_break {
         // A classic for loop: break skips the update, so the result is the index of the hit.
         [group: 'P312 break', name: 'for loop break skips the update', ok: true,
          src: tc('''class C {
+                        @Requires({ a != null })
                         @Ensures({ 0 <= result && result <= a.length })
                         @Ensures({ result < a.length ==> a[result] < 0 })
                         static int firstNegative(int[] a) {
@@ -127,6 +129,7 @@ class G357_p312_break {
         // invariant's range) and the code after the loop is still checked from that state, where the divisor is 1.
         [group: 'P312 break', name: 'break lead may leave the invariant behind', ok: true,
          src: tc('''class C {
+                        @Requires({ a != null })
                         static int f(int[] a) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length })
@@ -211,6 +214,7 @@ class G357_p312_break {
         // A break buried in a nested if is rewritten to a flag and `if (brk) break` (Phase 339).
         [group: 'P312 break', name: 'buried break verifies (Phase 339)', ok: true,
          src: tc('''class C {
+                        @Requires({ a != null })
                         @Ensures({ result >= 0 })
                         static int f(int[] a) {
                             int i = 0

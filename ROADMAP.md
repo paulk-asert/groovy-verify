@@ -17927,6 +17927,51 @@ elements shown), a failure whose call must meet a quantified precondition, a fai
 before. Still skipped loudly: a store into it, a call that may write an array, two holders of one class, a holder a
 subclass may override; a write into a parameter array it may be is Phase 404's loud skip.
 
+## Phase 414 — a subscript's receiver may be null  *(shipped — soundness)*
+
+Phase 413 noted it: a subscript had a bounds obligation and no null one, so `a[i]` with `a` possibly null verified and
+threw "Cannot invoke method getAt() on null object" (measured on Groovy 6, dynamic and static: `putAt()` for a store,
+the same for a list, a map or a string). A call on the same `a` always carried the obligation.
+
+- **A subscript on a parameter or local is a dereference** (`ObligationCollector`): a `DerefSite` for `getAt`, or
+  `putAt` when an assignment stores through it (marked on the method's body, `SUBSCRIPT_STORE_KEY`, since a collector
+  may see the subscript without its assignment). Its bounds obligation is now the bounds of a receiver that isn't null
+  (`IndexSite.nullChecked`, the method-form `xs.get(i)` too), so its failing call is an array, not `f(null)`; when both
+  fail at one node the bounds error is the one reported, as before.
+- **A precondition that dereferences admits no null** (`assumePreconditionNonNullFacts`, `trueDerefs`): it is
+  checked before the body runs, and throws on a null it dereferences, so the body never sees one. What counts is
+  what's evaluated whenever the conjunct is true: a subscript's, a property read's or a throwing call's receiver
+  (`size`, `isEmpty`, `get`, `contains`, … — measured), both sides of an `&&`, what an `||`'s left gives when true and
+  also gives with its right — not a ternary's arms, a closure's body, or a call null answers (`a.every { … }` is true
+  on null, dispatched dynamically). It holds in each place the precondition is assumed: the value-flow and loop-entry
+  paths, a postcondition's check, and a loop's stable precondition for a parameter the method doesn't reassign (a
+  content write leaves its nullness alone). The same rule fixes a call's false positive: `@Requires({ xs.size() > 0 })`
+  no longer "fails on" `f(null)` at `xs.get(0)`.
+- **An array creation is never null**: `new int[n]` and an array's `clone()` (`Encoder.nullityOfExpr`, and the
+  never-null locals).
+- **A null array shows no length**: a counterexample whose array is null drops its `.length` and elements.
+
+**Not changed:** a field's subscript (`arr[i]`, `this.arr[i]`, Phase 413's `h.arr[i]`) still has no null obligation, as
+a call on a field has none (Phase 43: the suite's field mutators declare no `!= null`); a property read (`a.length`)
+has none either, so `if (i < a.length) return a[i]` reports the null at `a[i]` rather than at `a.length` — the call is
+right (`g(null, 0)` throws), the line is the subscript's. Found on the way: a string subscript's bounds don't read
+the string's length, so `@Requires({ s.size() > 0 })` doesn't prove `s[0]` (and "fails on" a string that has one).
+
+**Changed cases (34):** every method that subscripts a reference parameter its precondition doesn't dereference now
+states `!= null` — P1's guarded index, P5a's short-circuit pair, the jakarta `@Size(min = 1)` array (now `@NotNull` too:
+Bean Validation passes a null through `@Size`), P57's monotonic, the Dafny `Find` and else-if binary search, PL-infer's
+counter loop, the LemmaScript `linearSearch` and `containsDuplicate`, P312's four break loops, the majority votes (an
+`every` over a null array is true, so `arr.every { … }` admits one); the ticket-lock `valid` helpers (13 cases in P170–
+P172) begin `cs != null && t != null`, as the any-N one already did; P357/P366's helpers guard their locals (`b` from
+a ternary or a call may be null). The docs' copies (miscellaneous, dafny, lemmascript) follow.
+
+**Shipped tests:** group `P414 subscript nullity`, 14 cases. Refuted, `fails on: f(null)`: a read and a store through a
+possibly-null array (no length shown), a list's and a map's subscripts, a precondition whose `a.length` is on the right
+of an `||`, one whose only use is `a.every { … }`, a local from a call. An index out of bounds fails on an array, not a
+null. Proved: `a != null`, a guard, a precondition that reads `a.length`, calls `xs.size()` or subscripts a map under an
+`&&`, the entry's non-null through a loop that writes the contents, a postcondition's helper, a local `new int[n]` and
+`clone()`.
+
 ---
 
 ## Definition of done, per increment

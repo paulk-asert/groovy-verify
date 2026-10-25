@@ -77,6 +77,7 @@ class G201_dafny_port {
         // instantiation (no transitivity).
         [group: 'Dafny port', name: 'Find (linear search): index<0 => no element equals key', ok: true,
          src: tc('''class C {
+                       @Requires({ a != null })
                        @Ensures({ result >= 0 ==> result < a.length && a[result] == key })
                        @Ensures({ result < 0 ==> (0..<a.length).every { a[it] != key } })
                        static int find(int[] a, int key) {
@@ -180,6 +181,7 @@ class G201_dafny_port {
         // a spurious IndexOutOfBounds (mid havoced → mid=-1).
         [group: 'Dafny port', name: 'nested else-if index obligation sees prior mid (no false IOOBE)', ok: true,
          src: tc('''class C {
+                       @Requires({ a != null })
                        static int f(int[] a, int value) {
                            int low = 0, high = a.length
                            @Invariant({ 0 <= low && low <= high && high <= a.length })

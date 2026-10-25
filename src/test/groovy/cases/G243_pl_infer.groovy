@@ -33,6 +33,7 @@ class G243_pl_infer {
         // `0 <= i` (sound by construction); the upper bound `i < a.length` comes from the guard.
         [group: 'PL-infer', name: 'counter loop over array bounds — inferred, no @Invariant', ok: true,
          src: tci('''class C {
+                       @Requires({ a != null })
                        static int sum(int[] a) {
                            int s = 0
                            for (int i = 0; i < a.length; i++) { s = s + a[i] }   // array bounds PROVEN — no @Invariant written

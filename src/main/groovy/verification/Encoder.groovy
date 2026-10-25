@@ -4467,6 +4467,8 @@ class Encoder implements TheoryApi {
         if (e instanceof ConstructorCallExpression || e instanceof ListExpression ||
             e instanceof MapExpression || e instanceof GStringExpression ||
             e instanceof ClosureExpression) return session.boolLit(false)   // Phase 390 — a closure literal too
+        // Phase 414 — nor is an array creation, or an array's clone (on a null one it throws)
+        if (e instanceof ArrayExpression || isArrayClone(e)) return session.boolLit(false)
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
             isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
         null
@@ -8210,6 +8212,16 @@ class Encoder implements TheoryApi {
                                                              'java.util.Comparator'] as Set
 
     /** The static type of {@code e} as STC inferred it, else its declared type (a parameter or local's). */
+    /** Phase 414 — {@code a.clone()} on an array: a new array, never null. */
+    static boolean isArrayClone(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.safe || mce.methodAsString != 'clone' || !(mce.arguments instanceof TupleExpression) ||
+            !((TupleExpression) mce.arguments).expressions.isEmpty()) return false
+        ClassNode t = staticTypeOf(mce.objectExpression)
+        t != null && t.isArray()
+    }
+
     static ClassNode staticTypeOf(Expression e) {
         ClassNode t = (ClassNode) e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
         if (t != null) return t

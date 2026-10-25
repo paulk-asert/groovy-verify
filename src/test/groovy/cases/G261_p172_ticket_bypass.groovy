@@ -41,7 +41,7 @@ class G261_p172_ticket_bypass {
                         enum Phil { A, B }
                         enum CS { Thinking, Hungry, Eating }
                         static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t) {
-                            serving <= ticket &&
+                            cs != null && t != null && serving <= ticket &&
                             (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
                             (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
                             ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&
@@ -64,7 +64,7 @@ class G261_p172_ticket_bypass {
                         enum Phil { A, B }
                         enum CS { Thinking, Hungry, Eating }
                         static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t) {
-                            serving <= ticket &&
+                            cs != null && t != null && serving <= ticket &&
                             (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
                             (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
                             ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&
@@ -88,7 +88,7 @@ class G261_p172_ticket_bypass {
                         enum Phil { A, B }
                         enum CS { Thinking, Hungry, Eating }
                         static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t) {
-                            serving <= ticket &&
+                            cs != null && t != null && serving <= ticket &&
                             (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
                             (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
                             ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&
@@ -112,7 +112,7 @@ class G261_p172_ticket_bypass {
                         enum Phil { A, B }
                         enum CS { Thinking, Hungry, Eating }
                         static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t) {
-                            serving <= ticket &&
+                            cs != null && t != null && serving <= ticket &&
                             (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
                             (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
                             ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&
@@ -131,7 +131,7 @@ class G261_p172_ticket_bypass {
                         enum Phil { A, B }
                         enum CS { Thinking, Hungry, Eating }
                         static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t) {
-                            serving <= ticket &&
+                            cs != null && t != null && serving <= ticket &&
                             (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
                             (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
                             ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&

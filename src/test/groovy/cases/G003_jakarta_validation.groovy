@@ -38,7 +38,7 @@ class G003_jakarta_validation {
         [group: 'jakarta validation', name: 'contradictory constraints are vacuous', expect: 'Vacuous precondition',
          src: tc('class C { static int f(@Positive @Negative int x) { x } }')],
         [group: 'jakarta validation', name: '@Size(min=1) array index verifies', ok: true,
-         src: tc('class C { static int g(@Size(min = 1) int[] a) { a[0] } }')],
+         src: tc('class C { static int g(@NotNull @Size(min = 1) int[] a) { a[0] } }')],
         // Out-of-grid jakarta bounds: the fixed input grid (ints ≤ 10, arrays ≤ length 3) can't satisfy these by
         // filtering, so the runtime rung *seeds* a witness from the constraint (jakarta → synthetic @Requires →
         // seedForParam) — the unification of the filter and seed paths. They verify trivially and lock that path.

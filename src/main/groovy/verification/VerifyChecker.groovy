@@ -1651,7 +1651,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** An obligation collector for the current method: its overflow mode, and its spec'd throwing calls (Phase 370). */
+    /** Phase 414 — marks a subscript an assignment stores through (a collector may visit it without its assignment). */
+    static final String SUBSCRIPT_STORE_KEY = 'verify.subscriptStore'
+
+    private static void markSubscriptStores(MethodNode m) {
+        if (m == null || m.getNodeMetaData(SUBSCRIPT_STORE_KEY) != null) return
+        m.putNodeMetaData(SUBSCRIPT_STORE_KEY, Boolean.TRUE)
+        CodeVisitorSupport v = new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof BinaryExpression &&
+                    ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                    be.leftExpression.putNodeMetaData(SUBSCRIPT_STORE_KEY, Boolean.TRUE)
+                }
+                super.visitBinaryExpression(be)
+            }
+        }
+        try {
+            m.code?.visit(v)
+            ((Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY))?.visit(v)
+        } catch (Throwable ignored) { }
+    }
+
     private ObligationCollector newCollector() {
+        markSubscriptStores(currentMethod)
         ObligationCollector col = new ObligationCollector()
         col.overflowChecking = currentOverflowChecking
         col.specSite = { Expression call -> specThrowSiteFor(call) }
@@ -2891,6 +2913,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         r.counterexample.each { String k, Long v ->
+            // Phase 414 — a null array or list has no length or elements to show
+            String held = k.endsWith('.size') ? k.substring(0, k.length() - 5) :
+                k.endsWith(']') && k.indexOf('[') > 0 ? k.substring(0, k.indexOf('[')) : null
+            if (held != null && r.counterexample.get(held + '?null') == 1L) return
             if (UNMODELLED_KEY.matcher(k).matches()) {
                 String base = unmodelledBase(k)
                 if (!base.contains('#') && !base.startsWith('$')) display.put(base + ' (unmodelled)', v)
@@ -5551,16 +5577,117 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * </ul>
      * Sound only for top-level {@code &&} conjuncts: under an {@code ||} branch or a negation the implication
      * doesn't hold, so the walk descends through {@code &&} only.
+     * <p>Phase 414 — and a reference a conjunct dereferences wherever it's evaluated ({@code a.length > 0},
+     * {@code xs[0] == 1}, {@code s.isEmpty()}): the precondition is checked before the body runs, and on a null it
+     * throws there, so the body never sees one.
      */
     private void assumePreconditionNonNullFacts(SmtSession s, Encoder enc, Expression reqAst) {
         if (reqAst == null) return
         List<Expression> conjuncts = new ArrayList<Expression>()
         collectAndConjuncts(reqAst, conjuncts)
+        Set<String> derefed = new LinkedHashSet<String>()
         for (Expression c : conjuncts) {
             String recv = safeNavReceiverName(c)
             if (recv == null) recv = rangeMembershipValueName(c)
             if (recv != null) s.assertExpr(s.not(enc.nullityOf(recv)))
+            derefed.addAll(trueDerefs(c))
         }
+        Set<String> known = entryReferenceNames(currentMethod)
+        for (String n : derefed) if (known.contains(n)) s.assertExpr(s.not(enc.nullityOf(n)))
+    }
+
+    /** Phase 414 — the calls that throw on a null receiver however dispatched (measured, Groovy 6); `every`/`any`/
+     *  `collect` and the like answer on null when dynamic, so they aren't here. */
+    private static final Set<String> NULL_THROWING_CALLS = ['size', 'isEmpty', 'get', 'contains', 'containsKey',
+        'containsValue', 'first', 'last', 'head', 'isSorted', 'count', 'sum', 'max', 'min', 'indexOf', 'length',
+        'charAt', 'startsWith', 'endsWith', 'substring', 'getAt'] as Set<String>
+
+    /** Phase 414 — the names {@code e} dereferences whenever it's evaluated and true: both sides of an {@code &&};
+     *  for an {@code ||}, what its left does when true and also does when false and the right true. */
+    private static Set<String> trueDerefs(Expression e) {
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
+            BinaryExpression be = (BinaryExpression) e
+            Set<String> l = trueDerefs(be.leftExpression), r = trueDerefs(be.rightExpression)
+            if (be.operation.type == Types.LOGICAL_AND) { l.addAll(r); return l }
+            Set<String> other = new LinkedHashSet<String>()
+            evaluatedDerefs(be.leftExpression, other)
+            other.addAll(r)
+            l.retainAll(other)
+            return l
+        }
+        Set<String> out = new LinkedHashSet<String>()
+        evaluatedDerefs(e, out)
+        out
+    }
+
+    /** Phase 414 — the names {@code e} dereferences whenever it's evaluated: a subscript's, a property read's
+     *  (`h.arr` read through is `h$arr`) or a {@link #NULL_THROWING_CALLS} call's receiver, through the operands
+     *  always evaluated — not an {@code &&}/{@code ||}'s right, a ternary's arms or a closure's body. */
+    private static void evaluatedDerefs(Expression e, Set<String> out) {
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            int op = be.operation.type
+            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) { evaluatedDerefs(be.leftExpression, out); return }
+            if (op == Types.LEFT_SQUARE_BRACKET) {
+                String n = derefName(be.leftExpression)
+                if (n != null) out.add(n)
+            } else if (!(op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN,
+                                Types.COMPARE_LESS_THAN_EQUAL, Types.COMPARE_GREATER_THAN, Types.COMPARE_GREATER_THAN_EQUAL,
+                                Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD])) {
+                return
+            }
+            evaluatedDerefs(be.leftExpression, out)
+            evaluatedDerefs(be.rightExpression, out)
+        } else if (e instanceof NotExpression) {
+            evaluatedDerefs(((NotExpression) e).expression, out)
+        } else if (e instanceof UnaryMinusExpression) {
+            evaluatedDerefs(((UnaryMinusExpression) e).expression, out)
+        } else if (e instanceof CastExpression) {
+            evaluatedDerefs(((CastExpression) e).expression, out)
+        } else if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            if (pe.safe || pe.propertyAsString in [null, 'class', 'metaClass']) return
+            String n = derefName(pe.objectExpression)
+            if (n != null) out.add(n)
+            evaluatedDerefs(pe.objectExpression, out)
+        } else if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (mce.safe || mce.implicitThis || !(mce.methodAsString in NULL_THROWING_CALLS)) return
+            String n = derefName(mce.objectExpression)
+            if (n != null) out.add(n)
+            evaluatedDerefs(mce.objectExpression, out)
+            if (mce.arguments instanceof TupleExpression) {
+                for (Expression a : ((TupleExpression) mce.arguments).expressions) evaluatedDerefs(a, out)
+            }
+        }
+    }
+
+    /** The nullity name of a dereferenced reference: a variable's, or a receiver's field as its flat name. */
+    private static String derefName(Expression e) {
+        if (e instanceof VariableExpression) {
+            String n = ((VariableExpression) e).name
+            return n in ['this', 'super', 'null'] ? null : n
+        }
+        if (e instanceof PropertyExpression && !((PropertyExpression) e).safe &&
+            ((PropertyExpression) e).objectExpression instanceof VariableExpression &&
+            ((PropertyExpression) e).propertyAsString != null) {
+            String o = ((VariableExpression) ((PropertyExpression) e).objectExpression).name
+            return o == 'this' ? ((PropertyExpression) e).propertyAsString : o + '$' + ((PropertyExpression) e).propertyAsString
+        }
+        null
+    }
+
+    /** Phase 414 — the references a precondition can name: the parameters, the class's fields, and the receiver
+     *  arrays the model reads as named arrays (Phase 413). */
+    private static Set<String> entryReferenceNames(MethodNode m) {
+        Set<String> r = new HashSet<String>()
+        if (m == null) return r
+        for (Parameter p : m.parameters) if (!ClassHelper.isPrimitiveType(p.type)) r.add(p.name)
+        for (FieldNode f : m.declaringClass?.fields ?: Collections.<FieldNode>emptyList()) {
+            if (!ClassHelper.isPrimitiveType(f.type)) r.add(f.name)
+        }
+        r.addAll(receiverArraysOf(m))
+        r
     }
 
     /** The value name of a *range*-membership conjunct {@code v in lo..hi} whose value is a simple variable,
@@ -6379,6 +6506,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
             Object size = enc.sizeOf(ix.receiver)
+            // Phase 414 — a null receiver throws before any index, and that is its DerefSite's to report
+            if (ix.nullChecked) s.assertExpr(s.not(enc.nullityOf(ix.receiver)))
             Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
             s.assertExpr(s.not(inBounds))
             CheckResult r = shown(s.check())
@@ -7246,7 +7375,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression req = entryPath != null ? (entryReq ?: loopEntryReq) : reqAst
             if (req != null) {
                 Expression r0 = stripQ ? dropQuantifierConjuncts(req) : req
-                if (r0 != null) assumeRequiresParts(s, enc, r0)   // Phase 408
+                if (r0 != null) {
+                    assumeRequiresParts(s, enc, r0)   // Phase 408
+                    assumePreconditionNonNullFacts(s, enc, r0)   // Phase 414 — what its evaluation dereferences
+                }
             }
             // Phase 15a — class invariants are method-entry facts, in scope across the loop's
             // prefix/guard/body/suffix regions just like @Requires.
@@ -10149,6 +10281,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     (stripCasts(de.rightExpression) instanceof ConstructorCallExpression ||
                      stripCasts(de.rightExpression) instanceof ClosureExpression ||      // Phase 372 — a literal
                      stripCasts(de.rightExpression) instanceof GStringExpression ||      // Phase 373 — so is a GString
+                     stripCasts(de.rightExpression) instanceof ArrayExpression ||        // Phase 414 — `new int[n]`
+                     Encoder.isArrayClone(stripCasts(de.rightExpression)) ||             // … and an array's clone
                      ActorMailbox.isActorFactory(stripCasts(de.rightExpression)) ||    // Phase 289
                      (fresh && isFreshCollectionCall(stripCasts(de.rightExpression))))) {   // Phase 386
                     news.add(((VariableExpression) de.leftExpression).name)
@@ -11220,7 +11354,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         return r
     }
 
-    @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
+    @CompileStatic private static class IndexSite  {
+        ASTNode node; String receiver; Expression index
+        /** Phase 414 — the receiver's nullity is its own obligation at the same node (a {@link DerefSite}): this
+         *  one's is the bounds of a receiver that isn't null. */
+        boolean nullChecked
+    }
     /** A user {@code assert P} — its own obligation is the predicate {@code cond} itself. */
     @CompileStatic private static class AssertSite { ASTNode node; Expression cond }
     // requirePositive: Groovy's a.mod(b) (BigInteger.mod) throws unless b > 0; the `%`/`/`/intdiv/
@@ -11364,6 +11503,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         @Override
         protected SourceUnit getSourceUnit() { null }
 
+        /** Phase 414 — the subscripts an assignment stores through (`a[i] = v` calls putAt; `a[i]++` reads first). */
+        private final Set<Expression> subscriptStores = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+
+        private String subscriptMethod(BinaryExpression be) {
+            subscriptStores.contains(be) || be.getNodeMetaData(SUBSCRIPT_STORE_KEY) != null ? 'putAt' : 'getAt'
+        }
+
         @Override
         void visitBinaryExpression(BinaryExpression be) {
             // Match by operator text rather than token id: the parser assigns `%`
@@ -11378,11 +11524,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                                                      : (Expression) new NotExpression(be.leftExpression))
                 return
             }
+            if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof BinaryExpression &&
+                ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                subscriptStores.add(be.leftExpression)
+            }
             if (be.operation.type == Types.LEFT_SQUARE_BRACKET &&
                 be.leftExpression instanceof VariableExpression) {
-                indexSites.add(new IndexSite(node: be,
-                    receiver: ((VariableExpression) be.leftExpression).name,
-                    index: be.rightExpression))
+                VariableExpression v = (VariableExpression) be.leftExpression
+                IndexSite ix = new IndexSite(node: be, receiver: v.name, index: be.rightExpression)
+                indexSites.add(ix)
+                // Phase 414 — a subscript on a null array, list, map or string throws as a call on one does
+                // ("Cannot invoke method getAt() on null object", measured): the receiver's nullity obligation
+                Variable accessed = v.accessedVariable
+                ClassNode vt = accessed != null ? accessed.getType() : null
+                if ((accessed instanceof Parameter || accessed instanceof VariableExpression) &&
+                    !(vt != null && ClassHelper.isPrimitiveType(vt)) && v.name != 'this' && v.name != 'super') {
+                    derefSites.add(new DerefSite(node: be, receiver: v.name, method: subscriptMethod(be)))
+                    ix.nullChecked = true
+                }
             } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof PropertyExpression &&
                        ((PropertyExpression) be.leftExpression).objectExpression instanceof VariableExpression &&
                        ((VariableExpression) ((PropertyExpression) be.leftExpression).objectExpression).name == 'this' &&
@@ -11523,7 +11682,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // Phase 40 — same trick for removeLast()/pop(): the implicit precondition
                     // {@code xs.size() > 0} maps to IndexSite(xs, 0), so pop-on-empty refutes with
                     // the standard bounds-check diagnostic.
+                    int before = indexSites.size()
                     synthIndexSiteFor(mce, v.name, recvType)
+                    for (int k = before; k < indexSites.size(); k++) indexSites.get(k).nullChecked = true   // Phase 414
                 } else if (accessed instanceof FieldNode && v.name != 'this' && v.name != 'super') {
                     // Phase 43 — instance field receiver: synthesise the IndexSite for the
                     // runtime-throwing shapes only ({@code get(i)}, {@code first()}, {@code head()},
@@ -13344,6 +13505,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 session.assertExpr(pre)
                 captureExplain(session, enc, reqAst, pre)
+                assumePreconditionNonNullFacts(session, enc, reqAst)   // Phase 414 — what its evaluation dereferences
             }
 
             // Phase 15a — class invariants are assumed at method entry (and re-proved at exit
@@ -15855,6 +16017,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 onlyShapeUses(c, x, pt.isArray() || (writes != null && sizeKept.contains(x)))
             }
             if (ok) stable.add(c)
+        }
+        // Phase 414 — a parameter the precondition dereferences is non-null at entry, and one the method doesn't
+        // reassign stays so whatever the conjunct's other facts do
+        Set<String> derefed = new LinkedHashSet<String>()
+        for (Expression c : conjuncts) derefed.addAll(trueDerefs(c))
+        for (String x : derefed) {
+            ClassNode pt = params.get(x)
+            if (pt != null && !ClassHelper.isPrimitiveType(pt) && !reassigned.contains(x)) {
+                stable.add(bin(new VariableExpression(x), Types.COMPARE_NOT_EQUAL, ConstantExpression.NULL))
+            }
         }
         stable
     }

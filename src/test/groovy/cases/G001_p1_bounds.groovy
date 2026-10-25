@@ -31,6 +31,6 @@ class G001_p1_bounds {
          src: tc('''class C { static int g(int[] a, int i) { a[i] }   // index never checked
                    }''')],
         [group: 'P1 bounds', name: 'guarded index verified', ok: true,
-         src: tc('class C { static int g(int[] a, int i) { if (i >= 0 && i < a.length) return a[i]; return -1 } }')],
+         src: tc('class C { @Requires({ a != null }) static int g(int[] a, int i) { if (i >= 0 && i < a.length) return a[i]; return -1 } }')],
     ]
 }

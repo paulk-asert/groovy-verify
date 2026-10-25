@@ -94,6 +94,7 @@ class G354_lemmascript_port {
         [group: 'LemmaScript port', name: 'linearSearch', ok: true,
          src: tc('''class C {
                         /** Returns the first index of target, or -1 when it is absent. */
+                        @Requires({ arr != null })
                         @Ensures({ result >= -1 && result < arr.length })
                         @Ensures({ result >= 0 ==> arr[result] == target })
                         @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
@@ -207,6 +208,7 @@ class G354_lemmascript_port {
         [group: 'LemmaScript port', name: 'containsDuplicate', ok: true,
          src: tc('''class C {
                         /** Reports whether any value occurs twice. */
+                        @Requires({ nums != null })
                         @Ensures({ !result ==> (0..<nums.length).every { int a -> (a + 1..<nums.length).every { int b -> nums[a] != nums[b] } } })
                         static boolean containsDuplicate(int[] nums) {
                             int i = 0

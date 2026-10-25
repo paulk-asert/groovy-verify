@@ -34,6 +34,7 @@ class G149_p57_monotonic {
          src: tc('''class C {
                         @Ensures({ result == (l.indices.every { it == 0 || l[it - 1] <= l[it] } ||
                                               l.indices.every { it == 0 || l[it - 1] >= l[it] }) })
+                        @Requires({ l != null })
                         static boolean monotonic(int[] l) {
                             if (l.length <= 1) return true
                             boolean increasing = false
