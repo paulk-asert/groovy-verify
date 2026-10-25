@@ -1027,8 +1027,15 @@ tightness is what lets the order argument go through), and `v` is an arbitrary v
 a permutation). The `every`/`count`/`old` are all plain GDK Groovy, so the same contract is checked
 at runtime.
 
-<!-- doclint:ignore README illustration: recursive insertion sort (sorted+permutation+frame) -->
+<!-- doclint:case p409-comments-in-contracts/the-insertion-sort-with-comments-in-its-contracts -->
 ```groovy
+// lemma: every element of an adjacent-sorted prefix [0,k] is <= a[k], by induction on k.
+@Requires({ 0 <= k && k < a.length && (0..<k).every { a[it] <= a[it + 1] } })
+@Ensures({ (0..<k + 1).every { a[it] <= a[k] } })
+@Decreases({ k })
+void maxBound(int k) {
+    if (k > 0) maxBound(k - 1)
+}
 @Requires({ 0 <= m && m < a.length &&
             (0..<m - 1).every { a[it] <= a[it + 1] } &&   // prefix sorted
             (0..<m + 1).every { a[it] <= hi } })           // active region bounded by hi
@@ -1040,14 +1047,14 @@ at runtime.
 @Decreases({ m })
 void insert(int m, int hi, int v) {
     if (m > 0 && a[m] < a[m - 1]) {
+        maxBound(m - 1)                                     // the new pivot bounds the prefix
         int t = a[m]; a[m] = a[m - 1]; a[m - 1] = t
         insert(m - 1, a[m], v)                              // recurse with the pivot as the bound
     }
 }
-
 @Requires({ 0 <= n && n <= a.length && (0..<n).every { a[it] <= hi } })
 @Modifies({ this.a })
-@Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } &&
+@Ensures({ (n == 0 || (0..<n - 1).every { a[it] <= a[it + 1] }) &&
            (0..<n).every { a[it] <= hi } &&
            (n..<a.length).every { a[it] == old.a[it] } &&
            a.count(v) == old.a.count(v) })

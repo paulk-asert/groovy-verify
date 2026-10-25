@@ -2002,13 +2002,22 @@ class ContractExpansionTransform implements ASTTransformation {
 
         Janitor janitor = new Janitor()
         String sliced
+        boolean multiLine = expr.lastLineNumber > expr.lineNumber
         try {
             sliced = new SourceText(assertStmt, source, janitor).normalizedText
+            // Phase 409 — SourceText joins a multi-line slice into one line, so a `//` comment inside it swallowed
+            // the rest: `result == x // why` / `&& result > x` came back as `result == x`, a weaker contract
+            // verified silently (or, after a trailing `&&`, text that no longer parsed — a @Requires or class
+            // @Invariant then dropped without a word). Slice it again with the line comments left out.
+            if (sliced != null && multiLine) sliced = sliceWithoutLineComments(expr, source, janitor)
         } catch (Throwable t) {
             sliced = null
         } finally {
             janitor.cleanup()
         }
+        // Phase 409 — and hold a multi-line capture to its round trip: re-parsed, it must be the expression written
+        // (this runs at CONVERSION, so both sides are the parser's own, unresolved shapes)
+        if (sliced != null && multiLine && !roundTrips(sliced, expr)) sliced = null
         if (sliced == null || sliced.trim().isEmpty()) {
             source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
                 "could not capture the verbatim source of this contract expression; verification would otherwise " +
@@ -2016,5 +2025,62 @@ class ContractExpansionTransform implements ASTTransformation {
             return null
         }
         return sliced
+    }
+
+    /** Phase 409 — {@link SourceText}'s slicing (the same cut, trim and one-space join), with each `//` comment
+     *  outside a string literal or block comment dropped first. The scan carries its state across lines, for a
+     *  triple-quoted or dollar-slashy string or a block comment that spans them; a slashy string needs none, since
+     *  an unescaped `//` can't occur in one. */
+    private static String sliceWithoutLineComments(Expression expr, SourceUnit source, Janitor janitor) {
+        StringBuilder out = new StringBuilder()
+        String state = ''   // '', a quote that is open (', ", ''', """, $/), or /* for a block comment
+        for (int line = expr.lineNumber; line <= expr.lastLineNumber; line++) {
+            String text = source.getSample(line, 0, janitor)
+            if (text == null) return null
+            if (line == expr.lastLineNumber) text = text.substring(0, codePointIndex(text, expr.lastColumnNumber - 1))
+            if (line == expr.lineNumber) text = text.substring(codePointIndex(text, expr.columnNumber - 1))
+            int i = 0
+            int cut = text.length()
+            while (i < text.length()) {
+                if (state == '') {
+                    if (text.startsWith('//', i)) { cut = i; break }
+                    String open = ["'''", '"""', '/*', '$/', "'", '"'].find { text.startsWith(it, i) }
+                    if (open != null) { state = open; i += open.length() } else i++
+                } else if (state == '/*') {
+                    if (text.startsWith('*/', i)) { state = ''; i += 2 } else i++
+                } else if (state == '$/') {
+                    if (text.startsWith('$$', i) || text.startsWith('$/', i)) i += 2
+                    else if (text.startsWith('/$', i)) { state = ''; i += 2 } else i++
+                } else if (text.charAt(i) == '\\' as char) {
+                    i += 2
+                } else if (text.startsWith(state, i)) {
+                    i += state.length(); state = ''
+                } else i++
+            }
+            if (state == "'" || state == '"') state = ''   // a one-line string can't span lines
+            text = text.substring(0, cut).trim()
+            if (line != expr.lastLineNumber && !text.isEmpty()) text += ' '
+            out.append(text)
+        }
+        out.toString()
+    }
+
+    private static int codePointIndex(String text, int codePointOffset) {
+        if (codePointOffset <= 0) return 0
+        if (codePointOffset >= text.codePointCount(0, text.length())) return text.length()
+        text.offsetByCodePoints(0, codePointOffset)
+    }
+
+    /** Phase 409 — true when {@code text}, parsed as an expression, is {@code expr} again (compared by its text). */
+    private static boolean roundTrips(String text, Expression expr) {
+        try {
+            List<ASTNode> parsed = new AstBuilder().buildFromString(CompilePhase.CONVERSION, true, text)
+            if (parsed.size() != 1 || !(parsed[0] instanceof BlockStatement)) return false
+            List<Statement> stmts = ((BlockStatement) parsed[0]).statements
+            if (stmts.size() != 1 || !(stmts[0] instanceof ExpressionStatement)) return false
+            return ((ExpressionStatement) stmts[0]).expression.text == expr.text
+        } catch (Throwable ignored) {
+            return false
+        }
     }
 }

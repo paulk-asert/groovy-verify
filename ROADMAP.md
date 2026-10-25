@@ -17786,6 +17786,42 @@ a guarded `this.arr[0]`. A receiver array's length keeps a parameter array's (it
 under a partial precondition refutes with no call, naming what was dropped. The receiver-field store and read and
 the inner array skip loudly; an unguarded `this.arr[0]` refutes with `fails on: f()`.
 
+## Phase 409 — comments in contracts  *(shipped — soundness)*
+
+Found re-checking the blog post's examples against Phase 408. A contract's text is captured verbatim (power-assert's
+`SourceText`, Phase 2) and re-parsed for the encoder, and `SourceText` joins a multi-line slice into one line. A `//`
+comment inside the slice then swallowed everything after it:
+
+```groovy
+@Ensures({ result == x       // the identity
+           && result > x })
+static int f(int x) { x }    // compiled cleanly: only `result == x` was checked
+```
+
+A wrong @Ensures, class @Invariant or @Requires was checked only up to the comment, silently. After a trailing `&&`
+(the README's, the tour's and the blog's spelling) the text no longer parsed: an @Ensures skipped loudly, but a
+@Requires was dropped without a word (false positives) and so was a class @Invariant (unsound). Block comments, and
+loop invariants, were unaffected.
+
+- **The slice leaves line comments out** (`sliceWithoutLineComments`): `SourceText`'s cut, trim and one-space join,
+  with each `//` outside a string literal or block comment dropped first. The scan carries its state across lines (a
+  triple-quoted or dollar-slashy string, a block comment); a slashy string needs none, since an unescaped `//` can't
+  occur in one.
+- **A multi-line capture must round-trip** (`roundTrips`): re-parsed, it must be the expression written (compared by
+  text; the transform runs at CONVERSION, so both sides are the parser's own shapes). If not, it is the existing loud
+  capture error, never a contract quietly different from the source. It fires on no shipped case.
+- **The docs' insertion sort is a checked case now**: README's and the tour's were `doclint:ignore` illustrations and
+  had drifted from P14's proof (no `maxBound` lemma, so `insert`'s recursive precondition times out; no `n == 0`
+  guard, and `0..<-1` is Groovy's reversed range, not an empty one). Both now reproduce the new case, comments and
+  all, under `doclint:case`. The tour's set, map and DFS snippets, also commented, verify as written.
+
+**Changed cases:** none — the full suite passed unchanged.
+
+**Shipped tests:** group `P409 comments in contracts`, 10 cases. A comment after a conjunct no longer hides the next,
+in an @Ensures, a class @Invariant and a @Requires at a call site (each unsound before); after a trailing `&&` the
+invariant is checked, the precondition assumed and the postcondition checked; a `//` in a string literal, or in a
+block comment, is kept; the insertion sort, commented, proves.
+
 ---
 
 ## Definition of done, per increment
