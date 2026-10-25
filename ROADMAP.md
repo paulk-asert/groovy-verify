@@ -17844,7 +17844,31 @@ sum as written, a call as one operand, and divisors that are a name, an expressi
 
 **Seen on the way, not fixed here:** a ternary's guard doesn't reach its arm when the ternary is nested in a larger
 expression — `1 + (a != null && a.length > 0 ? a[0] : 0)` gets an index obligation that `fails on: f(new int[0])`,
-which returns 1. A false positive with a false witness (the ternary alone proves).
+which returns 1. A false positive with a false witness (the ternary alone proves). Fixed by Phase 411.
+
+## Phase 411 — nested guards  *(shipped — precision, honesty of the witness)*
+
+Phase 410's finding. An obligation is discharged under the guards the operators before it imply — `&&`'s left
+operand for its right, `||`'s negated, a ternary's condition for its arm (Phase 46d in the region pass, the
+value-flow pass's own `scanObligations`). But only a top-level `&&`, `||` or ternary was split: nested in anything
+else (`1 + (…)`, a call's argument, a declaration's value, an assert) the expression was one leaf, every obligation in
+it was checked unguarded, and the witness was no failing run — `1 + (a != null && a.length > 0 ? a[0] : 0)` "failed
+on" `f(new int[0])`, which returns 1.
+
+- **Each site carries its guards** (`ObligationCollector.siteGuards`): while the collector visits a ternary arm, or
+  the right operand of `&&`/`||`, every site it adds is tagged with that condition (negated for the else arm and for
+  `||`). An Elvis's arms aren't split (no guard, as before).
+- **Both passes assume them**: the value-flow pass as `Guard` steps after the statement's snapshot, the region pass
+  (`dischargeExpression`'s leaf) as assume markers after `preceding` — the same placement as a top-level guard.
+- **Not where the expression writes** (`writesWithin`): a guard is read at the statement's state, so in
+  `(j = j - 1) + (… ? a[j] : 0)` it would read `j` before the write. Such an expression keeps its sites unguarded.
+
+**Changed cases:** none — the full suite passed unchanged.
+
+**Shipped tests:** group `P411 nested guards`, 8 cases. Proved: a ternary inside a sum; nested `&&` and `||`; a
+call's argument, a declaration and an assert; the region pass (a re-assignment takes the body out of value flow);
+a loop body. Refuted with a real call: the arm the condition doesn't guard, and a guarded arm's own division by
+zero (`fails on: f(new int[1])`). Kept unguarded: an expression that writes.
 
 ---
 

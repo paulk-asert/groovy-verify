@@ -5139,14 +5139,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             col.stringCharAtSites.isEmpty() && col.stringSubstringSites.isEmpty() &&
             col.parseSites.isEmpty() && col.specThrowSites.isEmpty()) return
         List<Object> snap = new ArrayList<Object>(steps)
-        for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
-        for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
-        for (DerefSite s : col.derefSites)  out.add(mkVf(s, snap))
-        for (OverflowSite s : col.overflowSites) out.add(mkVf(s, snap))
-        for (StringCharAtSite s : col.stringCharAtSites) out.add(mkVf(s, snap))
-        for (StringSubstringSite s : col.stringSubstringSites) out.add(mkVf(s, snap))
-        for (ParseSite s : col.parseSites) out.add(mkVf(s, snap))
-        for (SpecThrowSite s : col.specThrowSites) out.add(mkVf(s, snap))
+        // Phase 411 — a site under a ternary or short-circuit operand nested inside this leaf runs under its guards
+        // too (not where the leaf itself writes, as dischargeExpression)
+        boolean guarded = !writesWithin(e)
+        for (Object s : combineSites(col)) {
+            List<Expression> gs = guarded ? col.siteGuards[s] : null
+            List<Object> at = snap
+            if (gs) { at = new ArrayList<Object>(snap); for (Expression g : gs) at.add(new Guard(g, true)) }
+            out.add(mkVf(s, at))
+        }
     }
 
     /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
@@ -6779,10 +6780,35 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return
         }
         // Leaf: collect any obligations syntactically present, discharge each under the
-        // accumulated assumptions.
-        for (Object site : sitesInExpression(e)) {
-            dischargeSeeded(site, reqAst, assumePos, assumeNeg, preceding)
+        // accumulated assumptions — and (Phase 411) under the guards it runs under inside the leaf: a ternary or a
+        // short-circuit operand nested in a larger expression (`1 + (a.length > 0 ? a[0] : 0)`) was a leaf whole,
+        // so its arm's index was checked unguarded and "failed on" a call that doesn't fail.
+        // A guard is read at the statement's state, so not where the leaf itself writes (`i++ + (i > 0 ? a[i] : 0)`
+        // reads `i` after the increment): its sites stay unguarded, as before.
+        ObligationCollector col = newCollector()
+        try { e.visit(col) } catch (Throwable ignored) {}
+        boolean guarded = !writesWithin(e)
+        for (Object site : combineSites(col)) {
+            List<Statement> p = preceding
+            if (guarded) for (Expression g : (col.siteGuards[site] ?: Collections.<Expression>emptyList())) p = withAssume(p, g)
+            dischargeSeeded(site, reqAst, assumePos, assumeNeg, p)
         }
+    }
+
+    /** Phase 411 — true when {@code e} assigns or increments anything within itself. */
+    private static boolean writesWithin(Expression e) {
+        boolean[] w = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) w[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) { w[0] = true }
+            @Override void visitPrefixExpression(PrefixExpression pe) { w[0] = true }
+            @Override void visitDeclarationExpression(DeclarationExpression de) { w[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        w[0]
     }
 
     /**
@@ -11181,6 +11207,43 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
          */
         boolean overflowChecking = false
 
+        /** Phase 411 — per site (by identity), the guards it runs under inside the visited expression: a ternary
+         *  arm's condition or its negation, the left operand of {@code &&}, or its negation for {@code ||}. */
+        final Map<Object, List<Expression>> siteGuards = new IdentityHashMap<Object, List<Expression>>()
+
+        private List<List> siteLists() {
+            [indexSites, divideSites, parseSites, derefSites, specThrowSites, overflowSites, stringCharAtSites,
+             stringSubstringSites] as List<List>
+        }
+
+        private int[] marks() { siteLists().collect { it.size() } as int[] }
+
+        /** every site collected since {@code m} runs under {@code guard} */
+        private void guardSince(int[] m, Expression guard) {
+            List<List> ls = siteLists()
+            for (int i = 0; i < ls.size(); i++) {
+                for (int j = m[i]; j < ls[i].size(); j++) {
+                    Object site = ls[i][j]
+                    List<Expression> gs = siteGuards[site]
+                    if (gs == null) siteGuards[site] = gs = new ArrayList<Expression>()
+                    gs.add(guard)
+                }
+            }
+        }
+
+        @Override
+        void visitTernaryExpression(TernaryExpression t) {
+            // Phase 411 — an arm runs only under its condition (an Elvis's arms aren't split: no guard, as before)
+            if (t instanceof ElvisOperatorExpression) { super.visitTernaryExpression(t); return }
+            t.booleanExpression.visit(this)
+            int[] m = marks()
+            t.trueExpression.visit(this)
+            guardSince(m, t.booleanExpression)
+            m = marks()
+            t.falseExpression.visit(this)
+            guardSince(m, new NotExpression(t.booleanExpression))
+        }
+
         @Override
         protected SourceUnit getSourceUnit() { null }
 
@@ -11189,6 +11252,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Match by operator text rather than token id: the parser assigns `%`
             // a token outside the Types.MOD constant, so text is the robust key.
             String sym = be.operation.text
+            if (be.operation.type == Types.LOGICAL_AND || be.operation.type == Types.LOGICAL_OR) {
+                // Phase 411 — the right operand runs only when the left doesn't decide the result
+                be.leftExpression.visit(this)
+                int[] m = marks()
+                be.rightExpression.visit(this)
+                guardSince(m, be.operation.type == Types.LOGICAL_AND ? be.leftExpression
+                                                                     : (Expression) new NotExpression(be.leftExpression))
+                return
+            }
             if (be.operation.type == Types.LEFT_SQUARE_BRACKET &&
                 be.leftExpression instanceof VariableExpression) {
                 indexSites.add(new IndexSite(node: be,
