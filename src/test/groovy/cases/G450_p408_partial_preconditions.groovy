@@ -72,7 +72,7 @@ final class Holder {
         // A real failure (`a` may be empty) still refutes, but the model's call needn't meet the dropped conjuncts
         [group: "P408 partial preconditions", name: "a real failure under a partial precondition refutes, with no call",
          expect: ["Possible IndexOutOfBoundsException",
-                  "no failing call: the precondition's '(h.arr.length > 0)', '(h.arr != null)' is outside what the verifier models"],
+                  "no failing call: the precondition's 'h.arr != null', 'h.arr.length > 0' are outside what the verifier models"],
          refute: "fails on",
          src: tc('''class A {
                         @Requires({ h != null && h.arr != null && h.arr.length > 0 && a != null })

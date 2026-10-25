@@ -703,11 +703,11 @@ class CheckResult {
             counterexample: counterexample == null ? null : new LinkedHashMap<String, Long>(counterexample),
             sortedCounterexample: sortedCounterexample == null ? null : new LinkedHashMap<String, String>(sortedCounterexample),
             notes: notes == null ? null : new ArrayList<String>(notes),
-            taints: new HashSet<String>(taints))
+            taints: new LinkedHashSet<String>(taints))
     }
 
     /** Phase 406 — the session's {@link SmtSession#witnessTaints} when it was checked. */
-    Set<String> taints = new HashSet<String>()
+    Set<String> taints = new LinkedHashSet<String>()
 
     static CheckResult verified() {
         new CheckResult(status: Status.VERIFIED)

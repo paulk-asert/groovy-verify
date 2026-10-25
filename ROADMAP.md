@@ -17870,6 +17870,28 @@ call's argument, a declaration and an assert; the region pass (a re-assignment t
 a loop body. Refuted with a real call: the arm the condition doesn't guard, and a guarded arm's own division by
 zero (`fails on: f(new int[1])`). Kept unguarded: an expression that writes.
 
+## Phase 412 — the repros page, caught up  *(shipped — docs, honesty of the message)*
+
+`examples/repros.md` explains each "no failing call" note, but its table covered 6 of the 14 the verifier emits —
+none of the three this run added (Phases 404, 406, 408), which are the ones a user now meets most.
+
+- **Three worked pairs, each pinned** (`doclint:case` + `doclint:diagnostic`, so the docLint gate checks them against
+  their cases' real output): what a call leaves (P406's frame-only callee, beside a callee whose @Ensures states it,
+  which keeps its call); two arrays that may be one (P404's field store, and `a !== arr` as the way out, beside a
+  failure that doesn't need the alias); a precondition read in part (P408's receiver array, beside the open getter
+  that now proves).
+- **Eight table rows** for the notes it lacked: what a call leaves; two arrays as one; a precondition part; what a call
+  returns; what a call returns inside a helper; inside a closure; through a loop's summary; at an exit inside the loop.
+- **Phase 408's note as written** (found quoting it): the conjuncts it left out came in no particular order (the
+  witness taints were a `HashSet`, now a `LinkedHashSet` in the session and on the verdict), bracketed as the AST
+  prints them (`Reporter.ungrouped`), and with a singular verb. Now: `the precondition's 'h.arr != null',
+  'h.arr.length > 0' are outside what the verifier models, …`.
+
+**Changed cases:** P408's partial-precondition refutation (the note's new wording).
+
+**Shipped tests:** group `P412 notes as written`, 2 cases: one part left out (as written, `is`), and two (in source
+order, `are`).
+
 ---
 
 ## Definition of done, per increment

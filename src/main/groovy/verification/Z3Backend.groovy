@@ -127,7 +127,7 @@ class Z3Backend implements SmtBackend {
 @CompileStatic
 class Z3Session implements SmtSession {
 
-    private final Set<String> taints = new HashSet<String>()   // Phase 406
+    private final Set<String> taints = new LinkedHashSet<String>()   // Phase 406 (Phase 412: in the order added)
     @Override Set<String> witnessTaints() { taints }
 
     private final Context ctx
@@ -1593,7 +1593,7 @@ class Z3Session implements SmtSession {
             Z3Backend.vcCache.put(key, result.copy())
         }
         if (Reporter.DUMP_SMT) println("; groovy-verify/Z3 verdict: ${result.status}".toString())
-        result.taints = new HashSet<String>(taints)   // Phase 406 — this session's, cached verdict or not
+        result.taints = new LinkedHashSet<String>(taints)   // Phase 406 — this session's, cached verdict or not
         return result
     }
 

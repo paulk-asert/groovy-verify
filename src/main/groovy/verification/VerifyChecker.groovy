@@ -2751,7 +2751,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<String> pre = r.taints.findAll { it.startsWith('pre:') }.collect { "'" + it.substring(4) + "'" }
             if (!pre.isEmpty()) {
                 r.failingCall = null
-                String note = String.format(PRE_TAINT_NOTE, pre.join(', '))
+                String note = String.format(PRE_TAINT_NOTE, pre.join(', '), pre.size() == 1 ? 'is' : 'are')
                 if (!r.notes.contains(note)) r.notes.add(note)
             }
         }
@@ -5311,11 +5311,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object t = null
             try { t = enc.translateBool(c) } catch (Throwable ignored) { t = null }
             if (t != null) s.assertExpr(t)
-            else s.witnessTaints().add('pre:' + clip(c.text))
+            else s.witnessTaints().add('pre:' + clip(Reporter.ungrouped(c.text)))   // Phase 412 — as written: `h.arr != null`
         }
     }
 
-    static final String PRE_TAINT_NOTE = 'no failing call: the precondition\'s %s is outside what the verifier models, so a ' +
+    static final String PRE_TAINT_NOTE = 'no failing call: the precondition\'s %s %s outside what the verifier models, so a ' +
         'call built from the counterexample may not meet it'
 
     /** Assume the method's own @Requires (if encodable), the class invariants, plus the path facts at a site. */

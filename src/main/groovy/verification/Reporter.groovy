@@ -877,6 +877,13 @@ class Reporter {
         "(${s})"
     }
 
+    /** Phase 412 — {@code t} without the one pair of brackets the AST's text puts round an operation:
+     *  `(h.arr != null)` is shown `h.arr != null` */
+    static String ungrouped(String t) {
+        String s = t?.trim()
+        s != null && s.startsWith('(') && oneGroup(s) ? s.substring(1, s.length() - 1) : t
+    }
+
     /** true when {@code s} is one bracketed group: its opening `(` or `[` closes at its last character */
     private static boolean oneGroup(String s) {
         if (!s.startsWith('(') && !s.startsWith('[')) return false

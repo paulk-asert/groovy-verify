@@ -265,6 +265,139 @@ the verifier doesn't model (an unmodelled call or expression), so no run is know
 Here the assert is in fact true — `(4.5..6.5).toList()` is `[4.5, 5.5, 6.5]` — and the note is the hint that the
 verifier, not the code, ran out of road.
 
+## What a call leaves
+
+A call the verifier doesn't follow into — its body calls a library method, divides, or can be overridden — is known
+only by its frame (what it may write) and its @Ensures. Here `bump()` sets `other` to 5, but through `Math.abs`, so
+all the verifier knows is that `other` may change:
+
+<!-- doclint:case p406-call-havoc-witnesses/a-claim-over-what-a-call-leaves-unknown-to-the-verifier-shows-no-call -->
+```groovy
+class A {
+    @Requires({ c != null && c.other == 5 })
+    @Ensures({ result == 5 })
+    static int f(Counter c) {
+        c.bump()
+        return c.other
+    }
+}
+final class Counter {
+    int count
+    int other
+    void bump() { other = Math.abs(5) }
+}
+```
+
+The solver's `other = 6` after the call is no run's — every run returns 5 — so no call is shown:
+
+<!-- doclint:diagnostic p406-call-havoc-witnesses/a-claim-over-what-a-call-leaves-unknown-to-the-verifier-shows-no-call -->
+```
+[Static type checking] - Cannot prove postcondition of f holds on this return path … no failing call: the failure
+rests on what a call leaves in 'c.other', which the verifier knows only from its frame and @Ensures, not from its
+body — an @Ensures that states it would let the call be shown
+```
+
+State what the call leaves, and a wrong claim over it has a real call again — here `bump()` says it adds one, and the
+caller claims `result == 7` from a `count` of 5:
+
+<!-- doclint:case p406-call-havoc-witnesses/a-value-the-callee-s-ensures-fixes-keeps-the-call -->
+```groovy
+final class Counter {
+    int count
+    @Ensures({ count == old.count + 1 })
+    void bump() { count = count + 1 }
+}
+```
+
+<!-- doclint:diagnostic p406-call-havoc-witnesses/a-value-the-callee-s-ensures-fixes-keeps-the-call -->
+```
+[Static type checking] - Cannot prove postcondition of f holds on this return path … fails on: f(new Counter(count: 5))
+```
+
+(A simple contract-free body — straight-line field writes, an if, one element store — is read exactly, so its call
+is shown without an @Ensures.)
+
+## Two arrays that may be one
+
+Two parameters are taken to be two arrays (the documented assumption), but a field may hold the very array a parameter
+names. A store into `arr` is then a store into `a`, and the verifier counts it as one:
+
+<!-- doclint:case p404-field-array-aliasing/an-assert-over-a-parameter-array-after-a-field-store-refuted-no-call-shown -->
+```groovy
+final class A {
+    int[] arr
+    @Requires({ arr != null && arr.length > 0 && a != null && a.length > 0 && a[0] == 1 })
+    void f(int[] a) {
+        arr[0] = 0
+        assert a[0] == 1
+    }
+}
+```
+
+The failing run needs `arr` and `a` to be one array, and a call built from fresh arguments never is:
+
+<!-- doclint:diagnostic p404-field-array-aliasing/an-assert-over-a-parameter-array-after-a-field-store-refuted-no-call-shown -->
+```
+[Static type checking] - Assertion may not hold: (a[0] == 1) … no failing call: the failure needs two of the arrays
+this method names to be one array, which the verifier takes as possible (a write into one is a write into the other)
+but no call here is built to show
+```
+
+If they are never one array, say so — `@Requires({ a !== arr })` — and every call site is held to it. A failure that
+doesn't need the alias keeps its call:
+
+<!-- doclint:case p404-field-array-aliasing/a-real-failure-beside-a-possible-alias-keeps-its-call -->
+```groovy
+int f(int[] a) {
+    a[0] = 0
+    10 % a[0]
+}
+```
+
+<!-- doclint:diagnostic p404-field-array-aliasing/a-real-failure-beside-a-possible-alias-keeps-its-call -->
+```
+[Static type checking] - Possible ArithmeticException: Division by zero … fails on: f([1] as int[])
+```
+
+## A precondition the verifier can't read in full
+
+Each part of a @Requires the verifier can read is assumed; a part it can't — here a receiver's array field,
+`h.arr` — is left out. The check still stands (it assumed less, not more), but a call built from its counterexample
+may break the part it left out:
+
+<!-- doclint:case p408-partial-preconditions/a-real-failure-under-a-partial-precondition-refutes-with-no-call -->
+```groovy
+class A {
+    @Requires({ h != null && h.arr != null && h.arr.length > 0 && a != null })
+    static int f(Holder h, int[] a) {
+        h.arr[0] = 99
+        return a[0]
+    }
+}
+```
+
+<!-- doclint:diagnostic p408-partial-preconditions/a-real-failure-under-a-partial-precondition-refutes-with-no-call -->
+```
+[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds … no failing call: the
+precondition's 'h.arr != null', 'h.arr.length > 0' are outside what the verifier models, so a call built from the
+counterexample may not meet it
+```
+
+The bug is real — `a` may be empty — and adding `a.length > 0` fixes it. The parts left out are named so you can tell
+which they were; before, one such part lost the whole precondition, and `c != null && c.count == 5` (with `count` read
+through an open getter) let `c.bump()` "fail on" `f(null)`. Now that proves:
+
+<!-- doclint:case p408-partial-preconditions/a-conjunct-outside-the-model-keeps-the-others -->
+```groovy
+class A {
+    @Requires({ c != null && c.count == 5 })
+    static int f(Open c) {
+        c.bump()
+        return 1
+    }
+}
+```
+
 ## Reading the notes
 
 | The note says | What it means | What to do |
@@ -275,6 +408,14 @@ verifier, not the code, ran out of road.
 | in a catch, in a state the try block may leave | no throw that enters the catch is followed exactly | expected for a try with a call; refactor if the catch matters |
 | rests on … a value the verifier doesn't model | the claim depends on something outside the fragment | bind it to a modelled form, or accept the warning |
 | what a statement writes inside it | a nested write, a finally or a fall-through was havocked | split the statement if the call matters |
+| rests on what a call leaves in … known only from its frame and @Ensures | the callee's body isn't followed (it calls out, divides, or can be overridden), so what it wrote is unknown | add an @Ensures saying what it leaves |
+| needs two of the arrays this method names to be one array | the failure needs a field and a parameter (or two fields) to be the same array | declare them apart, `@Requires({ a !== arr })`, if they are |
+| the precondition's … outside what the verifier models | part of the @Requires couldn't be read, so a call built from the model may break it | restate that part in modelled terms, or accept the warning |
+| rests on what a call returns … only from the callee's @Ensures | the assertion depends on more of a call's result than its contract says | strengthen the callee's @Ensures |
+| what f(…) returns inside a helper | the same, for a call inside a pure helper | strengthen the callee's @Ensures |
+| inside a closure | the closure's arguments and captured state are taken as unknown | lift the logic out of the closure if the call matters |
+| at a loop iteration the check reaches through the loop's summary | the failure is after a loop, read through its invariant, and no early run reaches it | strengthen that loop's invariant |
+| at an exit inside the loop | a `break` or `return` inside the loop, from a state its invariant allows | strengthen the invariant |
 
 The search is bounded: the shortest runs first, then runs spread across the iterations of nested loops; a failure that
 needs more than eight iterations of a loop, or loops with unrelated bounds, can fall outside it, and its call is
