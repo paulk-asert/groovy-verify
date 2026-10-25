@@ -318,6 +318,7 @@ class C {
 }
 ```
 
+<!-- doclint:diagnostic p44-overflow/unguarded-increment-refutes -->
 ```
 Possible ArithmeticException: addition overflows 32-bit signed range
     obligation: Integer.MIN_VALUE <= (n + 1) && (n + 1) <= Integer.MAX_VALUE
@@ -345,6 +346,7 @@ overflow is in the `low + high` addition, before any division):
 static int mid(int low, int high) { (low + high).intdiv(2) }
 ```
 
+<!-- doclint:diagnostic p-bloch-binsearch/buggy-midpoint-low-high-intdiv-2-overflows -->
 ```
 Possible ArithmeticException: addition overflows 32-bit signed range
     obligation: Integer.MIN_VALUE <= (low + high) && (low + high) <= Integer.MAX_VALUE
@@ -376,6 +378,7 @@ value is non-negative" therefore refutes, at exactly that one input:
 static int abs(int n) { n < 0 ? -n : n }
 ```
 
+<!-- doclint:diagnostic p-abs-minvalue/abs-claims-non-negative-but-overflows-at-min-value -->
 ```
 Possible ArithmeticException: negation overflows 32-bit signed range
     obligation: Integer.MIN_VALUE <= -n && -n <= Integer.MAX_VALUE

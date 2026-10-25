@@ -288,6 +288,7 @@ with the input that triggers it:
 static int mid(int low, int high) { (low + high).intdiv(2) }
 ```
 
+<!-- doclint:diagnostic p-bloch-binsearch/buggy-midpoint-low-high-intdiv-2-overflows -->
 ```
 Possible ArithmeticException: addition overflows 32-bit signed range
     obligation: Integer.MIN_VALUE <= (low + high) && (low + high) <= Integer.MAX_VALUE

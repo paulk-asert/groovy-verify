@@ -17822,6 +17822,30 @@ in an @Ensures, a class @Invariant and a @Requires at a call site (each unsound 
 invariant is checked, the precondition assumed and the postcondition checked; a `//` in a string literal, or in a
 block comment, is kept; the insertion sort, commented, proves.
 
+## Phase 410 — obligations as written  *(shipped — honesty of the message)*
+
+Found drafting the blog post's refresh. An overflow or divisor obligation brackets its operand, but the AST's text
+already brackets an operation (`(low + high)`) and a negation's operand (`-(n)`), so Bloch's midpoint read
+`Integer.MIN_VALUE <= ((low + high)) && ((low + high)) <= Integer.MAX_VALUE`, `-n` read `(-(n))` and a divisor `x`
+read `(x) != 0`. The README, the tour and the blog all quoted the intended form, and none of those quotes was pinned
+to its case, so the drift went unseen.
+
+- **An operand is bracketed only when it doesn't read as one** (`Reporter.operand`): a name, a number, a call or
+  index on one (`a.intdiv(b)`, `a[0]`), `-` before any of these, or text that is one bracketed group stays as it is;
+  anything else is bracketed. A negation shows its operand unbracketed when that is one operand (`-n`,
+  `-(a + b)`). Used by the overflow, division-by-zero and modulus obligations.
+- **The quotes are pinned**: README's and the tour's four quoted overflow diagnostics carry `doclint:diagnostic`
+  now, so the docLint gate checks them against what their cases emit.
+
+**Changed cases:** none (no case quoted these obligations).
+
+**Shipped tests:** group `P410 obligations as written`, 5 cases: an addition bracketed once, a negation and a negated
+sum as written, a call as one operand, and divisors that are a name, an expression and an element.
+
+**Seen on the way, not fixed here:** a ternary's guard doesn't reach its arm when the ternary is nested in a larger
+expression — `1 + (a != null && a.length > 0 ? a[0] : 0)` gets an index obligation that `fails on: f(new int[0])`,
+which returns 1. A false positive with a false witness (the ternary alone proves).
+
 ---
 
 ## Definition of done, per increment

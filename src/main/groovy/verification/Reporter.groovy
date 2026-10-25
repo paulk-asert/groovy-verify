@@ -864,16 +864,41 @@ class Reporter {
             "Could not decide array index bounds", result)
     }
 
+    /** Phase 410 — {@code t} as an operand in an obligation: parenthesised unless it reads as one already (a name, a
+     *  number, a call or index on one — `a.intdiv(b)`, `a[0]` — `-` before any of these, or text that is one
+     *  bracketed group), so `(low + high)` isn't shown as `((low + high))`, nor `n` as `(n)`. */
+    static String operand(String t) {
+        String s = t?.trim()
+        if (!s) return "(${t})"
+        String u = s.startsWith('-') ? s.substring(1) : s
+        def head = u =~ /^[\w.$]+/
+        String rest = head.find() ? u.substring(head.end()) : u
+        if (rest.isEmpty() || oneGroup(rest)) return s
+        "(${s})"
+    }
+
+    /** true when {@code s} is one bracketed group: its opening `(` or `[` closes at its last character */
+    private static boolean oneGroup(String s) {
+        if (!s.startsWith('(') && !s.startsWith('[')) return false
+        int depth = 0
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i)
+            if (c == '(' as char || c == '[' as char) depth++
+            else if (c == ')' as char || c == ']' as char) { depth--; if (depth == 0 && i < s.length() - 1) return false }
+        }
+        depth == 0
+    }
+
     static String formatDivisionByZero(String divisorText, CheckResult result) {
         implicit("Possible ArithmeticException: Division by zero",
-            "(${divisorText}) != 0",
+            "${operand(divisorText)} != 0",
             "Could not decide divisor non-zero", result)
     }
 
     static String formatModulusNotPositive(String divisorText, CheckResult result) {
         // Groovy's a.mod(b) delegates to BigInteger.mod, which requires a positive modulus.
         implicit("Possible ArithmeticException: BigInteger: modulus not positive",
-            "(${divisorText}) > 0",
+            "${operand(divisorText)} > 0",
             "Could not decide modulus positive", result)
     }
 
@@ -920,11 +945,16 @@ class Reporter {
             typeName = to in ['int', 'Integer'] ? 'Integer' : to in ['short', 'Short'] ? 'Short' : to in ['byte', 'Byte'] ? 'Byte' : 'Character'
             exprText = exprText.replaceFirst(/^\(\w+\)\s*/, '')   // the cast's operand is what must fit
         }
+        // Phase 410 — the AST's text already brackets an operation (`(low + high)`) and a negation's operand
+        // (`-(n)`): show each as written, `(low + high)` and `-n`, not `((low + high))` and `(-(n))`
+        def neg = exprText =~ /^-\((.*)\)$/
+        if (op == 'neg' && neg.matches() && operand((String) neg.group(1)) == neg.group(1)) exprText = '-' + neg.group(1)
+        String e = operand(exprText)
         // Division's failure case is the specific pair MIN_VALUE / -1, not a general result-out-of-range —
         // phrase the obligation accordingly so the diagnostic reads true.
         String obligation = (op == 'div') ?
-            "!((${exprText}) is ${typeName}.MIN_VALUE / -1)" :
-            "${typeName}.MIN_VALUE <= (${exprText}) && (${exprText}) <= ${typeName}.MAX_VALUE"
+            "!(${e} is ${typeName}.MIN_VALUE / -1)" :
+            "${typeName}.MIN_VALUE <= ${e} && ${e} <= ${typeName}.MAX_VALUE"
         implicit("Possible ArithmeticException: ${kindWord} overflows ${width}-bit signed range",
             obligation,
             "Could not decide ${kindWord} stays in ${width}-bit range", result)
