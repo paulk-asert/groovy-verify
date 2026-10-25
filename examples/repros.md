@@ -362,7 +362,7 @@ int f(int[] a) {
 ## A precondition the verifier can't read in full
 
 Each part of a @Requires the verifier can read is assumed; a part it can't — here a receiver's array field,
-`h.arr` — is left out. The check still stands (it assumed less, not more), but a call built from its counterexample
+`h.arr`, in a method that also writes it — is left out. The check still stands (it assumed less, not more), but a call built from its counterexample
 may break the part it left out:
 
 <!-- doclint:case p408-partial-preconditions/a-real-failure-under-a-partial-precondition-refutes-with-no-call -->

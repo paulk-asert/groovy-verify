@@ -95,8 +95,9 @@ final class Holder {
                         }
                     }''' + HOLDER)],
 
+        // Since Phase 413 a read in a method that writes no array is checked: `h.arr` is a named array there
         [group: "P408 partial preconditions", name: "… and a read of one",
-         expect: "Skipped array index safety check ('h.arr[0]' indexes the array 'h.arr'",
+         expect: ["Possible IndexOutOfBoundsException", "fails on: f(new Holder(arr: new int[0]))"],
          src: tc('''class A {
                         @Requires({ h != null && h.arr != null })
                         static int f(Holder h) {

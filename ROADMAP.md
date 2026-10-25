@@ -17892,6 +17892,41 @@ none of the three this run added (Phases 404, 406, 408), which are the ones a us
 **Shipped tests:** group `P412 notes as written`, 2 cases: one part left out (as written, `is`), and two (in source
 order, `are`).
 
+## Phase 413 — receiver-field arrays  *(shipped — precision, honesty of the witness)*
+
+Phase 408 made `h.arr[0]` — an array a parameter's field holds — a loud skip, and its `h.arr.length > 0` a precondition
+part left out, so the call of any failure beside it was withheld. Modelling such an array in general means every
+writer (an element store, a call's frame, a rebinding `h.arr = x`, a reassigned `h`, a local alias, an array it may
+share with) has to update or havoc it, and missing one is unsound. This phase takes the sound first slice: the methods
+that write none of them, where the array is the same, with the same contents, from entry to exit.
+
+- **`h.arr` is the named array `h$arr`** (`Encoder.receiverFieldArray`): its elements (`h.arr[i]`, a negative index
+  counting from the end), its length (`h.arr.length`, the size oracle's `0 ≤ n ≤ MAX_VALUE`), its nullity
+  (`h.arr != null`). The name is Phase 404's, which already framed such arrays by it.
+- **Only where nothing can change it** (`receiverArraysOf`, `writesNoArray`): `h` a parameter of a class no other
+  parameter shares (whose fields would be identity-keyed, Phase 89), `arr` read as the field (no getter may stand in
+  for it, Phase 361), an integral primitive element type — and a method with no element store or increment, no write
+  to or through an object parameter, and a frame (Phase 405's inference, callees included) that writes only scalars.
+  Anywhere else the index skips loudly, as in Phase 408.
+- **Its index is an obligation** (`h.arr.length` in the message), and its precondition parts are assumed, so the
+  call of a failure beside it is shown.
+- **A failing call rebuilds the holder**: `new Holder(arr: [4, 4, 5] as int[])`, its nullness, length and the
+  elements the model fixed; the counterexample shows them as `h.arr.length`, `h.arr[k]`; and Phase 337's re-check
+  against the full precondition pins them, so a call meets the quantified parts a bounds check leaves out.
+
+**Not changed:** a subscript gets no null-dereference obligation, for a parameter array as for this one (`a[i]` with
+`a` possibly null is checked for bounds only) — an older gap, noted here, not this phase's.
+
+**Changed cases:** P408's receiver-field read (`return h.arr[0]` under `h.arr != null`) now refutes with
+`fails on: f(new Holder(arr: new int[0]))`; P412's two-part note now uses a holder a subclass may override, since a
+final holder's array is read.
+
+**Shipped tests:** group `P413 receiver-field arrays`, 12 cases. Proved: a guarded read (and `h.arr[-1]`), a loop over
+it, a postcondition over its elements. Refuted with a rebuilt holder: an unguarded read, a wrong postcondition (its
+elements shown), a failure whose call must meet a quantified precondition, a failure beside it that was withheld
+before. Still skipped loudly: a store into it, a call that may write an array, two holders of one class, a holder a
+subclass may override; a write into a parameter array it may be is Phase 404's loud skip.
+
 ---
 
 ## Definition of done, per increment

@@ -54,8 +54,8 @@ class G454_p412_notes_as_written {
                             10 % x
                         }
                     }
-                    final class Holder {
+                    class Holder {
                         int[] arr
-                    }''')],
+                    }''')],   // not final: `h.arr` may be a subclass's getter (a final one's is read since Phase 413)
     ]
 }

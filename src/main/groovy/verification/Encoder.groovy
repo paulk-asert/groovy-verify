@@ -2136,6 +2136,23 @@ class Encoder implements TheoryApi {
      *  array (an element type it could share). A write into one is a write into whichever of them it is. */
     Map<String, Set<String>> mayShare = Collections.<String, Set<String>> emptyMap()
 
+    /** Phase 413 — the receivers' array fields this method reads as named arrays (`h.arr` is the array `h$arr`): set
+     *  by the checker only for a method that writes no array and nothing through an object parameter, so each is the
+     *  same array, with the same contents, from entry to exit. */
+    Set<String> receiverArrays = Collections.<String> emptySet()
+
+    /** Phase 413 — the named array {@code e} reads, when it is a modelled receiver's array field ({@code h.arr}). */
+    String receiverFieldArray(Expression e) {
+        if (receiverArrays.isEmpty() || !(e instanceof PropertyExpression)) return null
+        PropertyExpression pe = (PropertyExpression) e
+        if (!(pe.objectExpression instanceof VariableExpression) || pe.propertyAsString == null) return null
+        String recv = ((VariableExpression) pe.objectExpression).name
+        if (!objectParams.containsKey(recv) && objectAliases.containsKey(recv)) recv = objectAliases.get(recv)
+        if (!objectParams.containsKey(recv) || isAliasModeled(recv)) return null
+        String name = recv + '$' + pe.propertyAsString
+        receiverArrays.contains(name) ? name : null
+    }
+
     /** Phase 404 — pairs of array names the method takes as two arrays (two parameters, or declared `x !== y` in its
      *  @Requires); `===` / `!==` between two other array names doesn't translate. */
     Closure<Boolean> arraysApart = { String a, String b -> false }
@@ -4805,6 +4822,7 @@ class Encoder implements TheoryApi {
             if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
                 return sizeOf(((VariableExpression) obj).name)
             }
+            if (prop == 'length' && receiverFieldArray(obj) != null) return sizeOf(receiverFieldArray(obj))   // Phase 413
             // Phase 84 — `m.key` on a map *parameter* (after .size etc.): the value at key `prop`,
             // routed to the map's value array — `m.sum` ≡ `m['sum']`. The dual of Phase 83's map factories.
             Object mapParamVal = foldMapParamProperty(obj, prop)
@@ -5742,8 +5760,10 @@ class Encoder implements TheoryApi {
                 idx = translateInSort(be.rightExpression, kSort)
             } else {
                 // Phase 369 — `xs[-1]` is the last element
+                String ra = receiverFieldArray(bracketRecv)   // Phase 413 — `h.arr[-1]` counts from the end too
                 idx = bracketRecv instanceof VariableExpression ?
-                    indexTerm(((VariableExpression) bracketRecv).name, be.rightExpression) : translate(be.rightExpression)
+                    indexTerm(((VariableExpression) bracketRecv).name, be.rightExpression) :
+                    ra != null ? indexTerm(ra, be.rightExpression) : translate(be.rightExpression)
             }
             if (idx == null) return null
             Object sel = session.select(arr, idx)
@@ -5816,6 +5836,13 @@ class Encoder implements TheoryApi {
             VariableExpression ref = nullComparisonTarget(be)
             if (ref != null) {
                 Object isNull = nullityOf(ref.name)
+                return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
+            }
+            // Phase 413 — `h.arr == null` / `!= null` for a modelled receiver array
+            String nra = isNullLiteral(be.rightExpression) ? receiverFieldArray(be.leftExpression) :
+                         isNullLiteral(be.leftExpression) ? receiverFieldArray(be.rightExpression) : null
+            if (nra != null) {
+                Object isNull = nullityOf(nra)
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
             }
             // Phase 37 — xs[i] == null / xs.get(i) == null and their `!=` mirrors: lower to the
@@ -8880,6 +8907,8 @@ class Encoder implements TheoryApi {
         if (recv instanceof VariableExpression) {
             return arrayFor(((VariableExpression) recv).name)
         }
+        String ra = receiverFieldArray(recv)   // Phase 413
+        if (ra != null) return arrayFor(ra)
         if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
             return arrayFor('old$' + ((PropertyExpression) recv).propertyAsString)
         }

@@ -393,6 +393,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         made.reversedRanges = currentReversedRanges   // Phase 380
         made.contractedValue = { Expression call -> contractedCallValue(session, made, call) }   // Phase 401
         made.mayShare = arraySharers(currentMethod)   // Phase 404
+        made.receiverArrays = receiverArraysOf(currentMethod)   // Phase 413
         MethodNode apartIn = currentMethod
         made.arraysApart = { String a, String b -> bothParameters(apartIn, a, b) }
         made
@@ -1655,7 +1656,92 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         col.overflowChecking = currentOverflowChecking
         col.specSite = { Expression call -> specThrowSiteFor(call) }
         col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
+        Set<String> ras = receiverArraysOf(currentMethod)   // Phase 413
+        if (!ras.isEmpty()) col.receiverArray = { PropertyExpression pe ->
+            pe.objectExpression instanceof VariableExpression && ras.contains(
+                ((VariableExpression) pe.objectExpression).name + '$' + pe.propertyAsString) ?
+                ((VariableExpression) pe.objectExpression).name + '$' + pe.propertyAsString : null
+        }
         col
+    }
+
+    /**
+     * Phase 413 — the receivers' array fields {@code m} reads as named arrays: {@code h$arr} for a parameter {@code h}
+     * of a class (unshared with another parameter, so no alias of it is modelled) whose field {@code arr} is an array of
+     * an integral primitive, read as the field (no getter can stand in for it) — and only when {@code m} writes no array
+     * and nothing through an object parameter ({@link #writesNoArray}), so the array and its contents are the same from
+     * entry to exit. Memoised per method.
+     */
+    private static Set<String> receiverArraysOf(MethodNode m) {
+        if (m == null) return Collections.<String> emptySet()
+        Object memo = m.getNodeMetaData(RECEIVER_ARRAYS_KEY)
+        if (memo != null) return (Set<String>) memo
+        Set<String> out = new LinkedHashSet<String>()
+        Map<String, Integer> byClass = new HashMap<String, Integer>()
+        for (Parameter par : m.parameters) if (par.type != null) byClass.put(par.type.name, (byClass.get(par.type.name) ?: 0) + 1)
+        for (Parameter par : m.parameters) {
+            ClassNode t = par.type
+            if (t == null || t.isArray() || !t.isPrimaryClassNode() || byClass.get(t.name) > 1) continue
+            for (ClassNode c = t; c != null && c.isPrimaryClassNode(); c = c.superClass) {
+                for (FieldNode f : c.fields) {
+                    if (f.isStatic() || !f.type?.isArray() || !(f.type.componentType.name in RECEIVER_ARRAY_ELEMENTS)) continue
+                    if (propertyAccessorReason(t, f.name, false) != null) continue
+                    out.add(par.name + '$' + f.name)
+                }
+            }
+        }
+        if (!out.isEmpty() && !writesNoArray(m)) out.clear()
+        Set<String> r = out.isEmpty() ? Collections.<String> emptySet() : out
+        m.putNodeMetaData(RECEIVER_ARRAYS_KEY, r)
+        r
+    }
+    private static final String RECEIVER_ARRAYS_KEY = 'verify.p413.receiverArrays'
+    private static final Set<String> RECEIVER_ARRAY_ELEMENTS = ['int', 'long', 'short', 'byte'] as Set<String>
+
+    /**
+     * Phase 413 — true when {@code m}'s body can change no array: no element store or increment anywhere, no
+     * assignment to or through an object parameter, and every name its frame inference says it writes is a local,
+     * parameter or field of a primitive, boxed or String type (a local array, or one a call writes, may be the
+     * receiver's array itself: {@code int[] t = h.arr; Arrays.fill(t, 0)}).
+     */
+    private static boolean writesNoArray(MethodNode m) {
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body == null) return true
+        Set<String> objParams = new HashSet<String>()
+        Map<String, ClassNode> types = new HashMap<String, ClassNode>()
+        for (Parameter par : m.parameters) {
+            types.put(par.name, par.type)
+            if (par.type != null && !par.type.isArray() && !ClassHelper.isPrimitiveType(par.type)) objParams.add(par.name)
+        }
+        for (ClassNode c = m.declaringClass; c != null; c = c.superClass) for (FieldNode f : c.fields) types.putIfAbsent(f.name, f.type)
+        boolean[] bad = [false]
+        body.visit(new CodeVisitorSupport() {
+            boolean subscript(Expression e) { e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) types.put(((VariableExpression) de.leftExpression).name, de.leftExpression.type)
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && !(be instanceof DeclarationExpression)) {
+                    Expression l = be.leftExpression
+                    if (subscript(l)) bad[0] = true
+                    if (l instanceof VariableExpression && objParams.contains(((VariableExpression) l).name)) bad[0] = true
+                    if (l instanceof PropertyExpression && ((PropertyExpression) l).objectExpression instanceof VariableExpression &&
+                        objParams.contains(((VariableExpression) ((PropertyExpression) l).objectExpression).name)) bad[0] = true
+                }
+                if (be.operation.type == Types.LEFT_SHIFT && subscript(be.leftExpression)) bad[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression e) { if (subscript(e.expression)) bad[0] = true; super.visitPostfixExpression(e) }
+            @Override void visitPrefixExpression(PrefixExpression e) { if (subscript(e.expression)) bad[0] = true; super.visitPrefixExpression(e) }
+        })
+        if (bad[0]) return false
+        for (String w : writesOf(topStatements(body), m.declaringClass)) {
+            ClassNode t = types.get(w)
+            if (t == null || !(ClassHelper.isPrimitiveType(t) || ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(t)) ||
+                               t.name == 'java.lang.String')) return false
+        }
+        true
     }
 
     /** Phase 408 — the index sites reported as unchecked, once each (not while a witness search holds diagnostics). */
@@ -2843,6 +2929,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 int br = k.indexOf('[')
                 String base = br >= 0 ? k.substring(0, br) : k
                 if (elementArrays.contains(base)) display.put(k, v)   // param/field array element: meaningful
+                else if (receiverArraysOf(currentMethod).contains(base)) display.put(shownLocation(base) + k.substring(br), v)   // Phase 413
                 return                                                // local/loop element: pre-state, suppress
             }
             // Phase 121 — a trait property is woven onto the implementing class as a `<Trait>__<field>` backing
@@ -2858,6 +2945,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (k.endsWith('.size')) {
                 String recv = k.substring(0, k.length() - '.size'.length())
                 if (currentDecimalNames.contains(recv)) return
+                if (receiverArraysOf(currentMethod).contains(recv)) { display.put(shownLocation(recv) + '.length', v); return }   // Phase 413
                 display.put(recv + sizeAccessor(recv), v)
             } else {
                 // Phase 369 — an object parameter's field is shown as the source spells it, `c.count` (Phase 45's
@@ -3005,6 +3093,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
         }
+        // Phase 413 — a modelled receiver array is rendered too (`new Holder(arr: …)`), so it is pinned the same way;
+        // the method writes none of them, so none moved
+        for (String ra : receiverArraysOf(currentMethod)) {
+            String shown = shownLocation(ra)
+            if (ce.get(ra.substring(0, ra.indexOf('$')) + '?null') == 1L) continue   // no receiver: no array to pin
+            if (ce.get(ra + '?null') == 1L) { shape.add("${shown} == null".toString()); continue }
+            if (!ce.containsKey(ra + '.size') && !ce.containsKey(ra + '?null')) continue
+            long n = sizeOf(ra, ce)
+            shape.add("${shown} != null".toString())
+            shape.add("${shown}.length == ${n}".toString())
+            List<Long> elems = pinnedElements(ra, n, ce)
+            if (n <= MAX_PINNED_ELEMENTS) for (int k = 0; k < n; k++) elements.add("${shown}[${k}] == ${elems != null ? elems.get(k) : 0L}".toString())
+        }
     }
 
     /** Phase 343 — the parameters the method body writes: true when reassigned, false when only mutated in place. */
@@ -3147,6 +3248,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String tn = pn.type?.name
             if (tn in INT_TYPE_NAMES) props.add("${pn.name}: ${v}".toString())
             else if (tn in BOOL_TYPE_NAMES) props.add("${pn.name}: ${v == 1L}".toString())
+        }
+        // Phase 413 — a modelled receiver array (`h$arr`): its nullness, length and the elements the model fixed
+        for (PropertyNode pn : t.properties) {
+            if (pn.isStatic() || !pn.type?.isArray()) continue
+            String an = p.name + '$' + pn.name
+            if (ce.get(an + '?null') == 1L) { props.add("${pn.name}: null".toString()); continue }
+            if (!ce.containsKey(an + '.size') && !ce.containsKey(an + '?null')) continue
+            long n = sizeOf(an, ce)
+            if (n > MAX_REPRO_SIZE) return null
+            String comp = pn.type.componentType.nameWithoutPackage
+            List<Long> elems = pinnedElements(an, n, ce)
+            props.add(elems != null && elems.any { it != 0L } ? "${pn.name}: [${elems.join(', ')}] as ${comp}[]".toString() :
+                      "${pn.name}: new ${comp}[${n}]".toString())
         }
         "new ${t.nameWithoutPackage.replace('$', '.')}(${props.join(', ')})"
     }
@@ -6272,7 +6386,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 369 — `xs[-k]` is `xs[size - k]`, so its obligation reads so; and a list SUBSCRIPT (not `get`,
                 // not an array) past the end reads null rather than throws, which the head says
                 Long neg = Encoder.negativeConstant(ix.index)
-                String sizeText = ix.receiver + sizeAccessor(ix.receiver)
+                String sizeText = receiverArraysOf(currentMethod).contains(ix.receiver) ?
+                    shownLocation(ix.receiver) + '.length' : ix.receiver + sizeAccessor(ix.receiver)   // Phase 413
                 String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : ix.index.text
                 boolean listSubscript = neg == null && ix.node instanceof BinaryExpression && currentListNames.contains(ix.receiver)
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
@@ -11193,6 +11308,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Closure<SpecThrowSite> specSite = null
         /** Phase 408 — told of an array index the collector makes no obligation for (null: not told). */
         Closure<Object> unmodelledIndex = null
+        /** Phase 413 — the named array a receiver's array field reads as (`h.arr` → `h$arr`), or null (null: none). */
+        Closure<String> receiverArray = null
         /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
         final List<OverflowSite> overflowSites = []
         /** Phase 46e — collected at every {@code charAt(i)} call shape (string-typing checked at discharge). */
@@ -11273,6 +11390,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 408 — `this.arr[i]` is the field `arr`'s index, which had no obligation
                 indexSites.add(new IndexSite(node: be,
                     receiver: ((PropertyExpression) be.leftExpression).propertyAsString,
+                    index: be.rightExpression))
+            } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && receiverArray != null &&
+                       be.leftExpression instanceof PropertyExpression &&
+                       receiverArray.call((PropertyExpression) be.leftExpression) != null) {
+                // Phase 413 — a modelled receiver's array field: its own index obligation
+                indexSites.add(new IndexSite(node: be,
+                    receiver: receiverArray.call((PropertyExpression) be.leftExpression),
                     index: be.rightExpression))
             } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && unmodelledIndex != null) {
                 // Phase 408 — any other array (`h.arr[0]`, `grid[i][j]`, `f()[0]`) had none either, and said nothing
