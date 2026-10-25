@@ -1969,6 +1969,9 @@ class Encoder implements TheoryApi {
             // doesn't collide).
             PropertyExpression pe = (PropertyExpression) e
             Expression obj = pe.objectExpression
+            // Phase 417 — never in the String sort: a string-valued `t.name` isn't an enum constant, and was read as
+            // the literal "name"
+            if (expectedSort == session.declareSort('String')) return null
             if (obj instanceof ClassExpression || obj instanceof VariableExpression) {
                 return session.litOfSort(expectedSort, pe.propertyAsString)
             }

@@ -18030,6 +18030,35 @@ its precondition, a `substring` rebinding. Refuted: past the precondition (`f("A
 `""`, a guard off by one (`f("", 0)`), a literal's `[3]` and `[-4]`, a GString's `[5]`, a field without its
 precondition, a `substring` that may be empty.
 
+## Phase 417 — a subscript on a string that isn't a variable  *(shipped — soundness)*
+
+Phase 416 noted it: a string that isn't a variable (`s.substring(2)[0]`, `t.name[0]`, `s.trim()[0]`) had no
+obligation and said nothing, where an array's skips loudly (Phase 408).
+
+- **A string-typed subscript is bounded by its own length** (`IndexSite.stringExpr`, by STC's inferred type): where the
+  string translates — a modelled call's result (`substring`), a literal, a concatenation, a `List<String>` element —
+  `0 <= i < length`, read from the same string term its contract would; its obligation names it
+  (`s.substring(2).length()`, `'abc'.length()`). Its bounds are a non-null string's (a list element's by its element
+  nullity, Phase 37). `this.s[0]` reads the field as `s[0]` does (it read the size oracle Phase 416 retired).
+- **Where it doesn't translate, it skips loudly**, naming the string: `s.trim()` (no model), an open class's property
+  (`t.name`, read through an overridable getter).
+- **A property is never a String constant** (`Encoder.translateInSort`): the enum-constant branch (`Color.RED`, interned
+  by property name) caught any `x.prop` on a variable, so in the String sort `t.name` was the literal "name", four
+  characters long whatever `t` held. Contracts reject an open class's property before they reach it; this phase's
+  bounds would have proved `t.name[0]` from nothing (the test fails, compiling cleanly, without the fix).
+
+**Not changed:** a null string that isn't a variable (`t.name[0]`, `xs[0][0]`) has no null obligation, as a field's or an
+element's subscript has none. Found on the way, both older than this phase: a `List<String>` failing call renders its
+element null against a precondition's `xs[0] != null` (`f([null])`, an assert's too), and `String s = xs[0]` doesn't
+inherit the element's non-nullness, so `s.charAt(0)` refutes under `xs[0] != null`.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P417 string expression subscripts`, 9 cases. Proved: a substring's subscript within it,
+`this.s[0]` under its precondition. Refuted, each naming its string: a substring that may be empty, a literal's `[3]`
+(not its `[1]`), a concatenation's `[1]` on `f("")` (not its `[0]`), a list's string element, `this.s[0]` without a
+precondition. Skipped loudly: `s.trim()[0]`, an open class's `t.name[0]`.
+
 ---
 
 ## Definition of done, per increment

@@ -5708,6 +5708,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (String n : derefed) if (known.contains(n)) s.assertExpr(s.not(enc.nullityOf(n)))
     }
 
+    /** Phase 417 — a string subscript's bounds are a non-null string's: on a null one it throws before any index (a
+     *  list's element by its element nullity, Phase 37; else what the expression's own nullity says) */
+    private static void assumeStringNonNull(SmtSession s, Encoder enc, Expression e) {
+        Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e)
+        if (ind != null) {
+            Object idx = enc.translate(ind.indexExpr)
+            if (idx != null) s.assertExpr(s.eq(s.select(enc.elementNullityFor(ind.containerName), idx), s.intLit(0L)))
+            return
+        }
+        Object n = enc.nullityOfExpr(e)
+        if (n != null) s.assertExpr(s.not(n))
+    }
+
     /** Phase 415 — the references a guard can dereference by name: a precondition's, and the method's locals. */
     private static Set<String> localReferenceNames(MethodNode m) {
         Set<String> r = entryReferenceNames(m)
@@ -6537,13 +6550,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (ix.string) {
                 // Phase 416 — a string's subscript is in bounds by the string's length (`s[i]` on "" throws, `s[-1]` is
                 // its last character, measured), the length `s.length()` and `s.size()` read in a contract
-                Object sH = enc.translateInSort(new VariableExpression(ix.receiver), s.declareSort('String'))
+                Object sH = enc.translateInSort(ix.stringExpr ?: new VariableExpression(ix.receiver), s.declareSort('String'))
                 if (sH == null) {
                     addStaticTypeError(Reporter.formatImplicitSkipped("string index",
-                        "string '${ix.receiver}' is outside fragment"), ix.node)
+                        "string '${clip(ix.receiver)}' is outside fragment"), ix.node)
                     return
                 }
                 size = s.stringLength(sH)
+                if (ix.stringExpr != null) assumeStringNonNull(s, enc, ix.stringExpr)   // Phase 417
                 Long k = Encoder.negativeConstant(ix.index)
                 idx = k != null ? s.plus(size, s.intLit(k)) : enc.translate(ix.index)
             } else {
@@ -6566,6 +6580,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Long neg = Encoder.negativeConstant(ix.index)
                 String sizeText = receiverArraysOf(currentMethod).contains(ix.receiver) ?
                     shownLocation(ix.receiver) + '.length' :
+                    ix.stringExpr instanceof ConstantExpression ? "'${ix.receiver}'.length()".toString() :   // Phase 417
                     ix.string ? ix.receiver + sizeAccessors.getOrDefault(ix.receiver, '.length()') :   // Phase 416
                     ix.receiver + sizeAccessor(ix.receiver)   // Phase 413
                 String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : ix.index.text
@@ -11415,6 +11430,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean nullChecked
         /** Phase 416 — the receiver is a String: its bounds are its own length, not a size oracle's */
         boolean string
+        /** Phase 417 — a string that isn't a variable (`t.name`, `s.trim()`): its own expression; `receiver` is its text */
+        Expression stringExpr
     }
     /** A user {@code assert P} — its own obligation is the predicate {@code cond} itself. */
     @CompileStatic private static class AssertSite { ASTNode node; Expression cond }
@@ -11564,6 +11581,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         /** Phase 414 — the subscripts an assignment stores through (`a[i] = v` calls putAt; `a[i]++` reads first). */
         private final Set<Expression> subscriptStores = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
 
+        private static boolean isStringTyped(Expression e) {
+            ClassNode t = (ClassNode) e.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+            if (t == null) t = e.type
+            t != null && t.name == 'java.lang.String'
+        }
+
         private String subscriptMethod(BinaryExpression be) {
             subscriptStores.contains(be) || be.getNodeMetaData(SUBSCRIPT_STORE_KEY) != null ? 'putAt' : 'getAt'
         }
@@ -11608,7 +11631,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 408 — `this.arr[i]` is the field `arr`'s index, which had no obligation
                 indexSites.add(new IndexSite(node: be,
                     receiver: ((PropertyExpression) be.leftExpression).propertyAsString,
-                    index: be.rightExpression))
+                    index: be.rightExpression,
+                    string: isStringTyped(be.leftExpression)))   // Phase 417 — `this.s[0]` too
             } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && receiverArray != null &&
                        be.leftExpression instanceof PropertyExpression &&
                        receiverArray.call((PropertyExpression) be.leftExpression) != null) {
@@ -11616,6 +11640,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 indexSites.add(new IndexSite(node: be,
                     receiver: receiverArray.call((PropertyExpression) be.leftExpression),
                     index: be.rightExpression))
+            } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && isStringTyped(be.leftExpression)) {
+                // Phase 417 — any other string (`t.name[0]`, `s.trim()[0]`, `"abc"[i]`) had no obligation, and said
+                // nothing: its bounds are its own length, where it translates
+                indexSites.add(new IndexSite(node: be, receiver: be.leftExpression.text, index: be.rightExpression,
+                    string: true, stringExpr: be.leftExpression))
             } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && unmodelledIndex != null) {
                 // Phase 408 — any other array (`h.arr[0]`, `grid[i][j]`, `f()[0]`) had none either, and said nothing
                 ClassNode t = (ClassNode) be.leftExpression.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
