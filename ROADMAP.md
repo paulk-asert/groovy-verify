@@ -18059,6 +18059,34 @@ inherit the element's non-nullness, so `s.charAt(0)` refutes under `xs[0] != nul
 (not its `[1]`), a concatenation's `[1]` on `f("")` (not its `[0]`), a list's string element, `this.s[0]` without a
 precondition. Skipped loudly: `s.trim()[0]`, an open class's `t.name[0]`.
 
+## Phase 418 — a call statement leaves its receiver non-null  *(shipped — false positive)*
+
+Phase 415 noted it: an assignment's right side and a condition taken left what they dereference non-null, a call on
+its own line didn't, so `xs.clear(); xs.size()` reported its null twice.
+
+- **A call statement the path moved past is a survival fact** (`assumeDerefSurvival` at a `LemmaCall` step, on the
+  value-flow and postcondition paths; `xs << a` is its `add`, Phase 341): its receiver, and what its arguments
+  dereference, are non-null after it until the name is rebound.
+- **A call counts when it throws on a null receiver** (`throwsOnNull`): measured on Groovy 6, a null answers
+  `Object`'s own methods and the GDK's whose receiver is `Object` when dispatched dynamically (`null.each { }` is null,
+  `null.with { 1 }` is 1, `null.toString()` "null") — 46 names, read from the runtime's GDK classes
+  (`DGM_LIKE_CLASSES`, `NULL_ANSWERING_CALLS`) — and throws on any other (`clear`, `add`, `put`, `append`, `sort`,
+  `push`, `reverse`, `forEach`, …). Phase 414's measured list still counts first (`getAt` is one of the 46, for a
+  string key). The same rule now reads an assignment's and a precondition's calls, which Phase 414's list alone did:
+  `boolean b = xs.add(1)` leaves `xs` non-null, `@Requires({ xs.containsAll(ys) })` admits no null `xs`.
+
+**Not changed:** `xs << 1` on a parameter has no null obligation of its own, as no binary operator but a subscript has;
+`o.toString()` on an `Object` reference still reports a null that `null.toString()` answers ("null") — Phase 396's
+null-answering calls are a collection's, an array's and a string's. A call another extension module adds on `Object`
+isn't among the 46.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P418 call statement survival`, 8 cases. Reported once: a list's `clear()` before its
+`size()`, a builder's `append` twice, an assignment's `add`. Proved: a precondition's `containsAll`. Not counted: `each`
+(the `size()` after it reports), a precondition's `with` (it admits a null, no call shown), a rebinding to `null` after
+the call, the branch that skips the call.
+
 ---
 
 ## Definition of done, per increment

@@ -5412,6 +5412,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
+                    assumeDerefSurvival(s, enc, call, false)   // Phase 418 — a call statement the path moved past
                     // Note: countVals are scoped to a postcondition's @Ensures, not relevant for implicit
                     // obligations (bounds/null/div) — pass empty so the bcount boundary law just skips for
                     // unrelated v's. The size-thread is what we need here.
@@ -5603,6 +5604,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         'containsValue', 'first', 'last', 'head', 'isSorted', 'count', 'sum', 'max', 'min', 'indexOf', 'length',
         'charAt', 'startsWith', 'endsWith', 'substring', 'getAt'] as Set<String>
 
+    /**
+     * Phase 418 — the calls a null receiver answers rather than throws on, when dispatched dynamically: {@code Object}'s
+     * own methods, and the GDK's whose receiver is {@code Object} (`each`, `with`, `inspect`, `collect`, … — measured:
+     * `null.each { }` is null, `null.with { 1 }` is 1), read from the runtime's GDK classes. Any other call on a null
+     * throws ("Cannot invoke method clear() on null object"). Null when they can't be read: then only
+     * {@link #NULL_THROWING_CALLS} count.
+     */
+    private static final Set<String> NULL_ANSWERING_CALLS = nullAnsweringCalls()
+
+    private static Set<String> nullAnsweringCalls() {
+        try {
+            Set<String> r = new HashSet<String>()
+            for (java.lang.reflect.Method m : Object.methods) r.add(m.name)
+            for (Class<?> c : org.codehaus.groovy.runtime.DefaultGroovyMethods.DGM_LIKE_CLASSES) {
+                for (java.lang.reflect.Method m : c.methods) {
+                    if (java.lang.reflect.Modifier.isStatic(m.modifiers) && m.declaringClass == c &&
+                        m.parameterTypes.length > 0 && m.parameterTypes[0] == Object) r.add(m.name)
+                }
+            }
+            return r
+        } catch (Throwable ignored) {
+            return null
+        }
+    }
+
+    /** Phase 418 — does a call named {@code m} throw on a null receiver however dispatched? */
+    private static boolean throwsOnNull(String m) {
+        m != null && (NULL_THROWING_CALLS.contains(m) || (NULL_ANSWERING_CALLS != null && !NULL_ANSWERING_CALLS.contains(m)))
+    }
+
     /** Phase 414 — the names {@code e} dereferences whenever it's evaluated and true: both sides of an {@code &&};
      *  for an {@code ||}, what its left does when true and also does when false and the right true. */
     private static Set<String> trueDerefs(Expression e) {
@@ -5655,7 +5686,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             evaluatedDerefs(pe.objectExpression, out)
         } else if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
-            if (mce.safe || mce.implicitThis || !(mce.methodAsString in NULL_THROWING_CALLS)) return
+            if (mce.safe || mce.implicitThis || !throwsOnNull(mce.methodAsString)) return   // Phase 418 — any that throws
             String n = derefName(mce.objectExpression)
             if (n != null) out.add(n)
             evaluatedDerefs(mce.objectExpression, out)
@@ -13952,6 +13983,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
+                    assumeDerefSurvival(session, enc, call, false)   // Phase 418 — a call statement the path moved past
                     // A set mutation `s.add(x)` / `s.remove(x)` threads the set (a store on its
                     // characteristic array) and asserts the per-mutation cardinality law — the set
                     // analogue of the per-store count law above. A list mutation (Phase 40 —
