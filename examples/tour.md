@@ -220,6 +220,7 @@ accumulation written as a `for` proves it outright:
 
 <!-- doclint:case p161-each/d2-same-accumulation-proven-as-a-for-loop -->
 ```groovy
+@Requires({ a != null })
 @Ensures({ result == a.length })
 static int count(int[] a) {
     int c = 0

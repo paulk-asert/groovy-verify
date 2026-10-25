@@ -63,6 +63,7 @@ class G110_p161_each {
         // @Invariant, which a `.each` statement can't carry (a statement annotation on a method call won't parse).
         [group: 'P161 each', name: 'D2 same accumulation proven as a for-loop', ok: true,
          src: tc('''class C {
+             @Requires({ a != null })
              @Ensures({ result == a.length })
              static int count(int[] a) {
                  int c = 0

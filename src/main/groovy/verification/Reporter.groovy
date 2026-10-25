@@ -930,6 +930,13 @@ class Reporter {
             "Could not decide receiver non-null", result)
     }
 
+    /** Phase 415 — Groovy's message for a property read on null: "Cannot get property 'length' on null object". */
+    static String formatNullPropertyRead(String receiver, String property, CheckResult result) {
+        implicit("Possible NullPointerException: Cannot get property '${property}' on null object",
+            "${receiver} != null",
+            "Could not decide receiver non-null", result)
+    }
+
     /**
      * Phase 44 — refuted-overflow head mirrors the Java exception a developer would see if they
      * had a runtime overflow check (e.g. via {@code Math.addExact}/{@code multiplyExact}). The

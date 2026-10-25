@@ -22,6 +22,7 @@ import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.control.SourceUnit
@@ -95,6 +96,13 @@ class PathFacts extends ClassCodeVisitorSupport {
         // VerifyChecker are path-sensitive too.
         recordFacts(be)
         super.visitBinaryExpression(be)
+    }
+
+    @Override
+    void visitPropertyExpression(PropertyExpression pe) {
+        // Phase 415 — an array's `.length` read has its receiver's nullity obligation
+        recordFacts(pe)
+        super.visitPropertyExpression(pe)
     }
 
     /** Look up facts for a given call. Empty list = unconditional context. */

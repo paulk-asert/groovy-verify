@@ -17972,6 +17972,37 @@ null. Proved: `a != null`, a guard, a precondition that reads `a.length`, calls 
 `&&`, the entry's non-null through a loop that writes the contents, a postcondition's helper, a local `new int[n]` and
 `clone()`.
 
+## Phase 415 — an array's length may be read on null  *(shipped — soundness)*
+
+Phase 414 noted it: a subscript and a call carried a receiver's null obligation, a `.length` read didn't, so
+`return a.length` verified with `a` possibly null and threw "Cannot get property 'length' on null object" (measured on
+Groovy 6, dynamic and `@TypeChecked`; `@CompileStatic` throws the JVM's "Cannot read the array length").
+
+- **A length read on a parameter or local array is a dereference** (`ObligationCollector.visitPropertyExpression`): a
+  `DerefSite` whose message names the property (`Reporter.formatNullPropertyRead`); `a?.length` has none. Its path
+  facts are recorded as a call's are (`PathFacts`).
+- **What a path moved past dereferenced no null** (`assumeDerefSurvival`, beside Phase 222/388's survival facts): an
+  assignment's right side and a condition taken left what they dereference whenever evaluated non-null (and a
+  condition taken true, what it dereferences whenever true, Phase 414's `trueDerefs`), until the name is rebound. So a
+  null reports once, at its first dereference: `if (i < a.length) return a[i]` refutes at `a.length` only, `int n =
+  a.length; n + a.length` at the first, and the same for a call (`xs.size()` twice). On the value-flow and postcondition
+  paths; a condition `trueDerefs` sees through an `if`'s `BooleanExpression` now.
+
+**Not changed:** a field's `.length` (`arr.length`, `this.arr.length`, `h.arr.length`) has no null obligation, as a
+field's subscript and call have none; nor does any other property read (`p.name` on a null `p` throws too). A
+statement-level call (`xs.clear(); xs.size()`) leaves no survival fact, only an assignment or a condition. The
+unannotated `for (int i = 0; i < a.length; i++) s += a[i]` still reports its loop-summary bounds error (`i = -1`), as
+before.
+
+**Changed cases (3):** the jakarta `@Size(min = 20)` length (now `@NotNull` too, as Phase 414's `@Size(min = 1)`) and
+P161's for-loop count (`@Requires({ a != null })`, and its copy in the tour) — both throw on a null array; P414's local
+from a call reports its null at `b.length`, not at the `b[0] = 1` it guards.
+
+**Shipped tests:** group `P415 length nullity`, 13 cases. Refuted: a parameter's and a local's length. Proved: `a?.length`,
+`a != null`, a precondition reading the length, a null guard, a new array's length, an `||` guard. Reported once: a
+guard's length before its subscript, either branch, an assignment's length read before a second, a list's `size()`
+twice; a rebinding to `null` after the guard still refutes.
+
 ---
 
 ## Definition of done, per increment

@@ -151,8 +151,10 @@ class G456_p414_subscript_nullity {
                         }
                     }''')],
 
+        // Since Phase 415 the null is reported at its first dereference, `b.length`, which guards the store
         [group: "P414 subscript nullity", name: "… but a local from a call may be",
-         expect: ["Cannot invoke method putAt() on null object", "obligation: b != null"],
+         expect: ["Cannot get property 'length' on null object", "obligation: b != null"],
+         refute: "putAt()",
          src: tc('''class A {
                         static int[] mk() { new int[1] }
                         static void f() { int[] b = mk(); if (b.length > 0) b[0] = 1 }

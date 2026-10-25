@@ -5409,6 +5409,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
                     if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+                    assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
                     // Note: countVals are scoped to a postcondition's @Ensures, not relevant for implicit
@@ -5605,6 +5606,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 414 — the names {@code e} dereferences whenever it's evaluated and true: both sides of an {@code &&};
      *  for an {@code ||}, what its left does when true and also does when false and the right true. */
     private static Set<String> trueDerefs(Expression e) {
+        if (e instanceof BooleanExpression) return trueDerefs(((BooleanExpression) e).expression)   // Phase 415 — an if's
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
             BinaryExpression be = (BinaryExpression) e
             Set<String> l = trueDerefs(be.leftExpression), r = trueDerefs(be.rightExpression)
@@ -5624,6 +5626,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  (`h.arr` read through is `h$arr`) or a {@link #NULL_THROWING_CALLS} call's receiver, through the operands
      *  always evaluated — not an {@code &&}/{@code ||}'s right, a ternary's arms or a closure's body. */
     private static void evaluatedDerefs(Expression e, Set<String> out) {
+        if (e instanceof BooleanExpression) { evaluatedDerefs(((BooleanExpression) e).expression, out); return }
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             int op = be.operation.type
@@ -5687,6 +5690,37 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!ClassHelper.isPrimitiveType(f.type)) r.add(f.name)
         }
         r.addAll(receiverArraysOf(m))
+        r
+    }
+
+    /**
+     * Phase 415 — an expression the program moved past dereferenced no null: what it reads whenever it's evaluated
+     * (`int n = a.length` leaves `a` non-null), and for a condition taken, what it reads whenever it's true
+     * (`i < a.length` guards `a[i]`). A name an assignment inside it rebinds is left alone.
+     */
+    private void assumeDerefSurvival(SmtSession s, Encoder enc, Expression e, boolean whenTrue) {
+        if (e == null || !Encoder.nestedTargets(new ExpressionStatement(e)).isEmpty()) return
+        Set<String> derefed
+        if (whenTrue) derefed = trueDerefs(e)
+        else { derefed = new LinkedHashSet<String>(); evaluatedDerefs(e, derefed) }
+        if (derefed.isEmpty()) return
+        Set<String> known = localReferenceNames(currentMethod)
+        for (String n : derefed) if (known.contains(n)) s.assertExpr(s.not(enc.nullityOf(n)))
+    }
+
+    /** Phase 415 — the references a guard can dereference by name: a precondition's, and the method's locals. */
+    private static Set<String> localReferenceNames(MethodNode m) {
+        Set<String> r = entryReferenceNames(m)
+        if (m?.code == null) return r
+        m.code.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression d) {
+                if (d.leftExpression instanceof VariableExpression &&
+                    !ClassHelper.isPrimitiveType(((VariableExpression) d.leftExpression).originType)) {
+                    r.add(((VariableExpression) d.leftExpression).name)
+                }
+                super.visitDeclarationExpression(d)
+            }
+        })
         r
     }
 
@@ -6615,7 +6649,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             s.assertExpr(enc.nullityOf(df.receiver))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(df.receiver, df.method, r), r, 'NullPointerException'), df), df.node)
+                addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(df.receiver, df.property, r)
+                                                                     : Reporter.formatNullDereference(df.receiver, df.method, r)), r, 'NullPointerException'), df), df.node)
             }
             explainIfVerified(s, r, "${df.receiver} != null")
         }
@@ -11414,6 +11449,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String receiver
         String method
         Expression indexExpr   // null = scalar deref; non-null = indexed (Phase 37)
+        /** Phase 415 — a property read rather than a call (`a.length`): Groovy's message names the property */
+        String property
     }
 
     /**
@@ -11627,6 +11664,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     left: ue.expression, right: null, op: 'neg', text: ue.text))
             }
             super.visitUnaryMinusExpression(ue)
+        }
+
+        @Override
+        void visitPropertyExpression(PropertyExpression pe) {
+            // Phase 415 — an array's `.length` on null throws as a call on it does ("Cannot get property 'length' on null
+            // object", measured): the receiver's nullity obligation
+            if (!pe.safe && pe.propertyAsString == 'length' && pe.objectExpression instanceof VariableExpression) {
+                VariableExpression v = (VariableExpression) pe.objectExpression
+                Variable accessed = v.accessedVariable
+                ClassNode vt = accessed != null ? accessed.getType() : null
+                if ((accessed instanceof Parameter || accessed instanceof VariableExpression) && vt != null && vt.isArray() &&
+                    v.name != 'this' && v.name != 'super') {
+                    derefSites.add(new DerefSite(node: pe, receiver: v.name, property: 'length'))
+                }
+            }
+            super.visitPropertyExpression(pe)
         }
 
         @Override
@@ -13580,6 +13633,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     session.assertExpr(g.positive ? c : session.not(c))
                     assertSurvivalFacts(session, enc, g.cond, node)   // Phase 388 — the condition was evaluated
+                    assumeDerefSurvival(session, enc, g.cond, g.positive)   // Phase 415
                 } else if (step instanceof Havoc) {
                     // Phase 192 — catch-entry state: the try block may have executed any prefix before
                     // throwing, so the name's value is unknown here. Rebind to a fresh UNCONSTRAINED
@@ -19472,6 +19526,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private void assertSurvivalFacts(SmtSession s, Encoder enc, Expression e, MethodNode caller) {
         if (e == null || !Encoder.nestedTargets(new ExpressionStatement(e)).isEmpty()) return
+        assumeDerefSurvival(s, enc, e, false)   // Phase 415
         VerifyChecker self = this
         e.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression call) {

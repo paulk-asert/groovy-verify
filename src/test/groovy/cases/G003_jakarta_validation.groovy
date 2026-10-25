@@ -45,7 +45,7 @@ class G003_jakarta_validation {
         [group: 'jakarta validation', name: '@Min(1000000) large bound verifies (rung seeds it)', ok: true,
          src: tc('class C { @Ensures({ result >= 1000000 }) static int f(@Min(1000000) int n) { n } }')],
         [group: 'jakarta validation', name: '@Size(min=20) large length verifies (rung seeds it)', ok: true,
-         src: tc('class C { @Ensures({ result >= 20 }) static int g(@Size(min = 20) int[] a) { a.length } }')],
+         src: tc('class C { @Ensures({ result >= 20 }) static int g(@NotNull @Size(min = 20) int[] a) { a.length } }')],
         [group: 'jakarta validation', name: 'unbounded array index refuted', expect: 'IndexOutOfBoundsException',
          src: tc('class C { static int g(int[] a) { a[0] } }')],
         [group: 'jakarta validation', name: '@NotEmpty list index verifies', ok: true,
