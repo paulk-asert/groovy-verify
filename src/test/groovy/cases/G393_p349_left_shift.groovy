@@ -84,12 +84,14 @@ class G393_p349_left_shift {
                         @Modifies({ [] })
                         static int twice(int x) { List<Integer> l = []; l << x; return x * 2 }
                     }''')],
-        // The inferred frame is {xs}: the caller havocs the list and keeps everything else (Phase 347's route).
+        // The inferred frame is {xs}: the caller havocs the list and keeps everything else (Phase 347's route). Phase 419 —
+        // `xs << v` on a null throws, so the helper needs its list.
         [group: 'P349 `<<` writes its receiver', name: 'a contract-free helper appending to a parameter: the caller frames it', ok: true,
          src: tc('''class C {
                         static int count = 0
+                        @Requires({ xs != null })
                         static void push(List<Integer> xs, int v) { xs << v }
-                        @Requires({ n >= 0 && count == 0 })
+                        @Requires({ xs != null && n >= 0 && count == 0 })
                         @Ensures({ count == 0 })
                         static int f(List<Integer> xs, int n) {
                             push(xs, n)

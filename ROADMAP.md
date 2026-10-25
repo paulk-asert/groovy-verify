@@ -18087,6 +18087,42 @@ isn't among the 46.
 (the `size()` after it reports), a precondition's `with` (it admits a null, no call shown), a rebinding to `null` after
 the call, the branch that skips the call.
 
+## Phase 419 — `xs << v` may be on null  *(shipped — missed error)*
+
+Phase 418 noted it: `f(List xs) { xs << 1 }` compiled cleanly, and f(null) throws.
+
+- **`xs << v` carries its receiver's null obligation**: measured on Groovy 6, a null list, set, map, StringBuilder or
+  boxed Integer throws, dynamic and `@TypeChecked` ("Cannot invoke method leftShift() on null object"; statically
+  compiled, the JVM's message on the GDK's `self`). A parameter or local whose declared, origin or inferred type is
+  primitive has none: on an `int` `<<` is a shift. As a call does (Phase 418), the `<<` leaves its receiver non-null
+  after it, in a statement, an assignment's right side and a condition (`evaluatedDerefs`).
+- **A local declared with a list or map literal and never reassigned is never null** (`collectNewLocalNames`, as a
+  `new` is, Phase 277). Without it a loop appending with `<<` to `List out = []` reported a null: `<<` leaves a loop's
+  write set unbounded (Phase 349 bounds it only for a callee's writes), so the loop kept none of its prefix's facts,
+  `out != null` among them; `out.add(k)` kept them.
+- **The exemptions are by name, so another declaration of one is a reassignment** — a soundness fix: `if (c) {
+  StringBuilder sb = new StringBuilder(); … } else { StringBuilder sb = null; sb.append('b') }` compiled cleanly,
+  the `new` exempting both.
+
+**Not changed:** `xs <<= v` has no obligation. A loop's own write set still treats `<<` as unbounded, so a loop
+appending with it keeps no prefix fact about its other locals either. Found while testing, and before this phase
+(`add` and `size()` the same): a reassignment can leave a local's old nullity in place —
+`Map m = [:]; m = null; m.size()`, `List m = []; m = null; m << 2` and `Map m = [:]; m = p; m << [b: 2]` compile
+cleanly (the value-flow replay binds
+an assignment's nullity only from a variable, Phase 227; a map's not even then), an unannotated loop's summary keeps
+the nullity of a local its body sets to `null` (`havocLocation` resets the value, contents and size), and
+`StringBuilder m = new StringBuilder(); m = p; m.append('x')` reports with the wrong call (`fails on:
+f(new StringBuilder())`). `List xs = null; xs << 1` says "no failing call" for the same reason.
+
+**Changed cases:** `a contract-free helper appending to a parameter: the caller frames it` (P349): its helper
+`push(xs, v) { xs << v }` throws on `push(null, 0)`, which is now reported; it and its caller gained `xs != null`
+preconditions, and the frame the case checks is unchanged.
+
+**Shipped tests:** group `P419 left shift null`, 11 cases. Reported: a list parameter's `<<` (`fails on: f(null)`), a
+builder's and a map's, a local assigned `null`, a literal local reassigned from a parameter (at the second `<<` only),
+a redeclared `new` local. Once, at the `<<`: before a `size()`, as a statement and in an assignment. Proved: under a
+precondition, under a guard, an `int`'s shift, a literal local appended to in an annotated loop.
+
 ---
 
 ## Definition of done, per increment

@@ -5662,7 +5662,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             BinaryExpression be = (BinaryExpression) e
             int op = be.operation.type
             if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) { evaluatedDerefs(be.leftExpression, out); return }
-            if (op == Types.LEFT_SQUARE_BRACKET) {
+            if (op == Types.LEFT_SQUARE_BRACKET || op == Types.LEFT_SHIFT) {   // Phase 419 — `xs << v` throws on null too
                 String n = derefName(be.leftExpression)
                 if (n != null) out.add(n)
             } else if (!(op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN,
@@ -10382,10 +10382,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                      (stripCasts(de.rightExpression) instanceof ConstantExpression &&    // Phase 416 — and a string literal
                       ((ConstantExpression) stripCasts(de.rightExpression)).value != null) ||
                      stripCasts(de.rightExpression) instanceof ArrayExpression ||        // Phase 414 — `new int[n]`
+                     stripCasts(de.rightExpression) instanceof ListExpression ||         // Phase 419 — `[]`, `[1, 2]`
+                     stripCasts(de.rightExpression) instanceof MapExpression ||          // … and `[:]`
                      Encoder.isArrayClone(stripCasts(de.rightExpression)) ||             // … and an array's clone
                      ActorMailbox.isActorFactory(stripCasts(de.rightExpression)) ||    // Phase 289
                      (fresh && isFreshCollectionCall(stripCasts(de.rightExpression))))) {   // Phase 386
                     news.add(((VariableExpression) de.leftExpression).name)
+                } else if (de.leftExpression instanceof VariableExpression) {
+                    // Phase 419 — the sets are by name: another declaration of it (`def out = null` in a later block)
+                    // is one of its values too
+                    reassigned.add(((VariableExpression) de.leftExpression).name)
                 }
                 super.visitDeclarationExpression(de)
             }
@@ -11681,6 +11687,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ClassNode t = (ClassNode) be.leftExpression.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
                 if (t == null) t = be.leftExpression.type
                 if (t != null && t.isArray()) unmodelledIndex.call(be)
+            } else if (be.operation.type == Types.LEFT_SHIFT && be.leftExpression instanceof VariableExpression) {
+                // Phase 419 — `xs << v` on null throws as a call on it does ("Cannot invoke method leftShift() on null
+                // object", measured for a list, set, map, StringBuilder and boxed Integer): the receiver's nullity obligation
+                VariableExpression v = (VariableExpression) be.leftExpression
+                Variable accessed = v.accessedVariable
+                ClassNode vt = accessed != null ? accessed.getType() : null
+                ClassNode inf = (ClassNode) v.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+                boolean shift = [vt, accessed?.originType, inf].any { ClassNode t -> t != null && ClassHelper.isPrimitiveType(t) }
+                if ((accessed instanceof Parameter || accessed instanceof VariableExpression) && !shift &&
+                    v.name != 'this' && v.name != 'super') {
+                    derefSites.add(new DerefSite(node: be, receiver: v.name, method: 'leftShift'))
+                }
             } else if (sym == '/' || sym == '%') {
                 // Phase 152 — a JSR 385 `quantity / quantity` dispatches to Quantity.divide, NOT numeric division, so
                 // the divisor is a quantity (not a number that could be 0): no divide-by-zero obligation. The exact-
