@@ -18003,6 +18003,33 @@ from a call reports its null at `b.length`, not at the `b[0] = 1` it guards.
 guard's length before its subscript, either branch, an assignment's length read before a second, a list's `size()`
 twice; a rebinding to `null` after the guard still refutes.
 
+## Phase 416 — a string's subscript is bounded by its length  *(shipped — false positive)*
+
+Phase 414 found it: a subscript's bounds read a size oracle (`s.size`), and for a string nothing else reads it — a
+contract's or a guard's `s.length()`/`s.size()` is the string's own length (`stringLength`, Phase 46b), as `charAt`'s
+obligation is. So every `s[i]` refuted, guarded or not, and "failed on" a string that has the character: `f("A")` for
+`s[0]` under `@Requires({ s.size() > 0 })`.
+
+- **A string's subscript is in bounds by its length** (`IndexSite.string`, set from the subscripted variable's type,
+  so a local's too): `0 <= i < length`, a negative constant counting from the end (`s[-1]` is `s[length - 1]`) — the
+  bounds measured on Groovy 6, dynamic and static: `"abc"[-1]` is "c", `"abc"[-4]` and `""[0]` throw. Its obligation
+  reads the developer's spelling (`s.size()` when a contract wrote it, else `s.length()`).
+- **A local bound to a non-null literal is never null** (`collectNewLocalNames`), as a GString (Phase 373) and a `new`
+  are: `String s = 'abc'; s.length()` refuted on `f()`, a false positive since Phase 277 named only constructions.
+
+**Not changed:** a string subscript by a range (`s[0..2]`) skips loudly, as before (its skip now says "string index");
+a string that isn't a variable (`t.name[0]`, `s.trim()[0]`) has no obligation and says nothing — unlike an array's
+(Phase 408 skips `h.arr[0]` loudly), a gap for a later slice.
+
+**Changed cases (1):** P414's list and map subscripts gain the string one their comment left out (its null is now the
+one that fails, not its bounds).
+
+**Shipped tests:** group `P416 string subscript bounds`, 17 cases. Proved: a `size()` and a `length()` precondition, a
+guard in the body, `s[-1]` under `!s.isEmpty()`, a literal's subscript, a call on a literal local, a string field under
+its precondition, a `substring` rebinding. Refuted: past the precondition (`f("A")`), unguarded (`f("")`), `s[-1]` on
+`""`, a guard off by one (`f("", 0)`), a literal's `[3]` and `[-4]`, a GString's `[5]`, a field without its
+precondition, a `substring` that may be empty.
+
 ---
 
 ## Definition of done, per increment

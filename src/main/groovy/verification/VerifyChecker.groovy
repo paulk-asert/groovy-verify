@@ -6533,13 +6533,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // the type has no size() — the collection non-empty obligation would be factually
             // wrong here. (The receive's value contract is handled by tryBindChannelReceive.)
             if (currentChannelNames.contains(ix.receiver)) return
-            Object idx = enc.indexTerm(ix.receiver, ix.index)   // Phase 369 — a negative constant counts from the end
+            Object idx, size
+            if (ix.string) {
+                // Phase 416 — a string's subscript is in bounds by the string's length (`s[i]` on "" throws, `s[-1]` is
+                // its last character, measured), the length `s.length()` and `s.size()` read in a contract
+                Object sH = enc.translateInSort(new VariableExpression(ix.receiver), s.declareSort('String'))
+                if (sH == null) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("string index",
+                        "string '${ix.receiver}' is outside fragment"), ix.node)
+                    return
+                }
+                size = s.stringLength(sH)
+                Long k = Encoder.negativeConstant(ix.index)
+                idx = k != null ? s.plus(size, s.intLit(k)) : enc.translate(ix.index)
+            } else {
+                idx = enc.indexTerm(ix.receiver, ix.index)   // Phase 369 — a negative constant counts from the end
+                size = enc.sizeOf(ix.receiver)
+            }
             if (idx == null) {
-                addStaticTypeError(Reporter.formatImplicitSkipped("array index",
+                addStaticTypeError(Reporter.formatImplicitSkipped(ix.string ? "string index" : "array index",
                     "index '${ix.index.text}' is outside fragment"), ix.node)
                 return
             }
-            Object size = enc.sizeOf(ix.receiver)
             // Phase 414 — a null receiver throws before any index, and that is its DerefSite's to report
             if (ix.nullChecked) s.assertExpr(s.not(enc.nullityOf(ix.receiver)))
             Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
@@ -6550,7 +6565,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // not an array) past the end reads null rather than throws, which the head says
                 Long neg = Encoder.negativeConstant(ix.index)
                 String sizeText = receiverArraysOf(currentMethod).contains(ix.receiver) ?
-                    shownLocation(ix.receiver) + '.length' : ix.receiver + sizeAccessor(ix.receiver)   // Phase 413
+                    shownLocation(ix.receiver) + '.length' :
+                    ix.string ? ix.receiver + sizeAccessors.getOrDefault(ix.receiver, '.length()') :   // Phase 416
+                    ix.receiver + sizeAccessor(ix.receiver)   // Phase 413
                 String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : ix.index.text
                 boolean listSubscript = neg == null && ix.node instanceof BinaryExpression && currentListNames.contains(ix.receiver)
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
@@ -10316,6 +10333,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     (stripCasts(de.rightExpression) instanceof ConstructorCallExpression ||
                      stripCasts(de.rightExpression) instanceof ClosureExpression ||      // Phase 372 — a literal
                      stripCasts(de.rightExpression) instanceof GStringExpression ||      // Phase 373 — so is a GString
+                     (stripCasts(de.rightExpression) instanceof ConstantExpression &&    // Phase 416 — and a string literal
+                      ((ConstantExpression) stripCasts(de.rightExpression)).value != null) ||
                      stripCasts(de.rightExpression) instanceof ArrayExpression ||        // Phase 414 — `new int[n]`
                      Encoder.isArrayClone(stripCasts(de.rightExpression)) ||             // … and an array's clone
                      ActorMailbox.isActorFactory(stripCasts(de.rightExpression)) ||    // Phase 289
@@ -11394,6 +11413,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         /** Phase 414 — the receiver's nullity is its own obligation at the same node (a {@link DerefSite}): this
          *  one's is the bounds of a receiver that isn't null. */
         boolean nullChecked
+        /** Phase 416 — the receiver is a String: its bounds are its own length, not a size oracle's */
+        boolean string
     }
     /** A user {@code assert P} — its own obligation is the predicate {@code cond} itself. */
     @CompileStatic private static class AssertSite { ASTNode node; Expression cond }
@@ -11579,6 +11600,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     derefSites.add(new DerefSite(node: be, receiver: v.name, method: subscriptMethod(be)))
                     ix.nullChecked = true
                 }
+                ix.string = vt != null && vt.name == 'java.lang.String'   // Phase 416
             } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof PropertyExpression &&
                        ((PropertyExpression) be.leftExpression).objectExpression instanceof VariableExpression &&
                        ((VariableExpression) ((PropertyExpression) be.leftExpression).objectExpression).name == 'this' &&

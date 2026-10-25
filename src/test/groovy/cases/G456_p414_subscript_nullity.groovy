@@ -53,13 +53,16 @@ class G456_p414_subscript_nullity {
                         static void f(int[] a) { a[1] = 1 }
                     }''')],
 
-        // (a string's too, though its subscript's bounds don't read its length yet, so they fail first)
-        [group: "P414 subscript nullity", name: "a list's and a map's subscripts too",
-         expect: ["obligation: xs != null", "obligation: m != null"],
+        // (a string's bounds read its length since Phase 416, so its null is the one that fails)
+        [group: "P414 subscript nullity", name: "a list's, a map's and a string's subscripts too",
+         expect: ["obligation: xs != null", "obligation: m != null", "obligation: s != null"],
+         refute: "IndexOutOfBoundsException",
          src: tc('''class A {
                         @Requires({ xs == null || xs.size() > 0 })
                         static Object f(List<Integer> xs) { xs[0] }
                         static Object g(Map<String, Integer> m) { m['k'] }
+                        @Requires({ s == null || s.size() > 0 })
+                        static String h(String s) { s[0] }
                     }''')],
 
         // A non-null receiver's bounds are the index obligation's: its failing call is no null
