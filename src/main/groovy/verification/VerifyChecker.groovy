@@ -2415,6 +2415,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
+    /** Phase 425 — {@code e}'s nullity is a literal the encoder knows (a {@code new}, a {@code null}), not a name's flag. */
+    private static boolean knownLiteralNullity(Encoder enc, Expression e) {
+        Expression x = stripCasts(e)
+        !(x instanceof VariableExpression) && enc.nullityOfExpr(x) != null
+    }
+
     /** Phase 424 — a name whose value may be null: one declared a reference type, a boxed integer or boolean included. */
     private boolean holdsNull(ClassNode declaredType, String name) {
         (declaredType != null && !isIntElement(declaredType)) || currentBoxedNames.contains(name)
@@ -14256,6 +14262,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         resHandle = session.intVar('result$null$' + (++ssaVersion))
                         enc.bind('result', resHandle)
                         enc.bindNullity('result', session.boolLit(true))
+                    } else if (resHandle == null && !ClassHelper.isPrimitiveType(node.returnType) &&
+                               knownLiteralNullity(enc, p.result) && (postAst == null || onlyShapeUses(postAst, 'result', false))) {
+                        // Phase 425 — `return new StringBuilder()`: as `return null` above, an opaque value whose
+                        // nullity alone is known, where the postcondition reads only that (a claim on the value, which
+                        // the model doesn't know, would refute on a run that holds it: `s.replaceAll(re, x) == s`)
+                        resHandle = session.varOfSort('result$new$' + (++ssaVersion), enc.sortForType(node.returnType))
+                        enc.bind('result', resHandle)
+                        enc.bindNullity('result', enc.nullityOfExpr(p.result))
                     } else if (resHandle == null && enc.packsClaimSource(p.result)) {
                         // EncodingPack scope hook (Phases 151/188) — a pack-domain-returning method (e.g. a
                         // Quantity `squareKm() { 1.km * 1.km }`). A pack-claimed value has no scalar Z3 handle,
@@ -19060,7 +19074,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (replayScalarCall(enc, session, tmp, argExprs[i], formals[i].type)) argHandle = enc.translate(new VariableExpression(tmp))
                 }
                 // Phase 390 — a closure literal: an opaque value, never null (a `c != null` precondition discharges)
-                if (argHandle == null && stripCasts(argExprs[i]) instanceof ClosureExpression) {
+                // Phase 425 — so is any reference actual whose nullity alone is known (`new StringBuilder()`, `null`), where
+                // the precondition reads only that: its value is opaque, and its nullity reaches the formal below
+                if (argHandle == null && (stripCasts(argExprs[i]) instanceof ClosureExpression ||
+                        !ClassHelper.isPrimitiveType(formals[i].type) && knownLiteralNullity(enc, argExprs[i]) &&
+                        onlyShapeUses(contractAst, formals[i].name, false))) {
                     argHandle = session.varOfSort('$lit' + (havocCounter++) + '#arg', enc.sortForType(formals[i].type))
                 }
                 if (argHandle == null) {
@@ -20573,6 +20591,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 h = enc.translate(actuals.get(i))
                 // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))`): model it.
                 if (h == null && Encoder.isCarrier(ft)) h = carrierValueOf(s, enc, actuals.get(i), caller)
+            }
+            // Phase 425 — a reference actual whose nullity alone is known (`g(new StringBuilder())`), where the @Ensures
+            // reads only that: an opaque value, and the formal takes its nullity while the @Ensures is translated
+            if (h == null && !ClassHelper.isPrimitiveType(ft) && knownLiteralNullity(enc, actuals.get(i)) &&
+                    (ensuresAst == null || onlyShapeUses(ensuresAst, formals[i].name, false))) {
+                h = s.varOfSort('$lit' + (havocCounter++) + '#arg', enc.sortForType(ft))
+                if (!savedListOracles.containsKey(formals[i].name)) {
+                    savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
+                }
+                enc.bindNullity(formals[i].name, enc.nullityOfExpr(actuals.get(i)))
             }
             // Phase 226 — a collection-typed formal bound to a NAMED list actual: the contract reads the
             // formal's list oracles (`coll.every { … }`, `coll.count(o)`), so alias them to the actual's —

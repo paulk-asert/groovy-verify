@@ -18286,6 +18286,37 @@ assigned a parameter, one reassigned from a non-null, a `Long`'s, a `Boolean`'s.
 `Integer` and a `Long`; a literal's; `= null`'s; each branch's value. Mutation-checked: the binding, the rendered
 null and the hidden value each have a case that failed before it.
 
+## Phase 425 — a `new` value's nullity across a call  *(shipped — completeness, false positive)*
+
+Phase 424 checked candidate 3: a callee's `return new StringBuilder()` skipped its postcondition, and a
+`g(new StringBuilder())` argument its precondition (a `g(null)` one too), loudly — the value had no translation, though
+its nullity is known (Phase 131). After the skipped precondition, `StringBuilder m = g(new StringBuilder());
+m.append('x')` reported a possible null with "no failing call", g's `@Ensures({ result != null })` unused.
+
+- **A returned value whose nullity alone is known is an opaque value** (`knownLiteralNullity`: a `new`, a `null`, not a
+  name's flag), as Phase 149's `return null` is: `result` is fresh, its nullity the value's.
+- **So is such an actual at the call site**: for the precondition (Phase 390's closure-literal route, which already
+  passed a known nullity to the formal), and for the `@Ensures` assumed after the call (`assumeCalleeEnsures`: the
+  formal takes the actual's nullity while it is translated, then its own is restored, as Phase 323's list aliases are).
+- **Only where the contract reads it as `== null` / `!= null`** (Phase 343's `onlyShapeUses`). The first cut didn't
+  ask, and the full suite caught two wrong witnesses: an array clone and a `String` method's value have a known
+  nullity too, so `s.replaceAll("[aeiou]", "X")` refuted `result == s` on `f("!1!")`, a run that holds it, and
+  `bal.clone()` refuted `result.length == bal.length` with a made-up `result.length = 3` — both skipped before, and
+  skip again.
+
+**Not changed:** a contract that claims anything of the value itself (`result.length() == 0`,
+`@Requires({ p.length() == 0 })`, `result == s`) skips, as before. A ternary of a `new` and a `null` has no known nullity, so still skips.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P425 new value nullity`, 10 cases. Proved: a returned `new` (one path and two), a `new`
+argument meeting `p != null` with `m.append` after, a callee's `@Ensures` read on the argument's nullity (`new` and
+`null`). Refuted: `result == null` of a `new`, a `null` path beside a `new` (`fails on: g(false)`), a `null` argument
+(`fails on: f()`), the contrary of the callee's promise, and a caller's own `p` that shares the formal's name still
+fails on `f(null)`. Skipped: a claim on the returned value, and on the argument's. Mutation-checked: the formal's
+nullity in the assumed `@Ensures` has a case that fails without it; the return and argument branches each had cases
+that failed before them.
+
 ---
 
 ## Definition of done, per increment
