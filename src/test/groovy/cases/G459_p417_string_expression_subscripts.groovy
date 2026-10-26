@@ -90,11 +90,12 @@ class G459_p417_string_expression_subscripts {
 
         // ── outside the model: loud ──
 
+        // `s.trim()` was this case's call until Phase 427 modelled it
         [group: "P417 string expression subscripts", name: "a call the model doesn't know skips, naming it",
-         expect: "Skipped string index safety check (string 's.trim()' is outside fragment)",
+         expect: "Skipped string index safety check (string 's.strip()' is outside fragment)",
          src: tc('''class A {
                         @Requires({ s != null })
-                        static String f(String s) { s.trim()[0] }
+                        static String f(String s) { s.strip()[0] }
                     }''')],
 
         // Proved from the literal "name" with this phase's bounds alone

@@ -3230,6 +3230,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     static final String REPRO_BREAKS_REQUIRES =
         'no failing call: these arguments break the @Requires, which this check assumed only in part (it may not be reachable)'
 
+    /** Phase 427 — {@code s} as a double-quoted Groovy literal: a quote, backslash or {@code $} escaped, a control
+     *  character as {@code \\t}, {@code \\n} … or {@code \\uXXXX} (a trimmed string's witness is often one) */
+    static String groovyStringLiteral(String s) {
+        StringBuilder out = new StringBuilder('"')
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '"': out.append('\\"'); break
+                case '\\': out.append('\\\\'); break
+                case '$': out.append('\\$'); break
+                case '\n': out.append('\\n'); break
+                case '\t': out.append('\\t'); break
+                case '\r': out.append('\\r'); break
+                case '\b': out.append('\\b'); break
+                case '\f': out.append('\\f'); break
+                default:
+                    if (c < (char) 0x20 || c == (char) 0x7f) out.append(String.format('\\u%04x', (int) c))
+                    else out.append(c)
+            }
+        }
+        out.append('"').toString()
+    }
+
     /**
      * Render one parameter as a Groovy literal drawn from the counterexample. {@code sortedCe} holds
      * non-Int model values (Phase 27 step 9): a String parameter that the model pinned to {@code admin}
@@ -3266,7 +3288,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (nulled) return 'null'
         if (tn == 'java.lang.String') {
             String modelVal = sortedCe?.get(p.name)
-            return modelVal != null ? "\"${modelVal}\"".toString() : '""'
+            return modelVal != null ? groovyStringLiteral(modelVal) : '""'
         }
         if (t != null && (t.isEnum() || isEnumLikeType(t))) {
             String modelVal = sortedCe?.get(p.name)

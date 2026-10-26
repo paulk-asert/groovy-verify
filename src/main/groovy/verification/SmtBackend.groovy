@@ -510,6 +510,14 @@ interface SmtSession extends AutoCloseable {
     Object stringReverse(Object s)
 
     /**
+     * Phase 427 — {@code s.trim()}: the string with every leading and trailing character {@code <= ' '} removed (Java's
+     * contract). Exact, with no universals: each application is the middle of {@code s = p ++ t ++ q}, {@code p} and
+     * {@code q} in {@code [NUL- ]*}, and {@code t} empty or starting and ending above {@code ' '} — a split that is
+     * unique, so it is the trim.
+     */
+    Object stringTrim(Object s)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

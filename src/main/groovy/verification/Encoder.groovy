@@ -614,7 +614,7 @@ class Encoder implements TheoryApi {
             // {@code s.substring(1, 4).length()} or {@code s.replace("a", "b").length()}
             // resolves correctly through the string-receiver path.
             if ((m == 'substring' || m == 'concat' || m == 'replace' || m == 'replaceAll' ||
-                 m == 'toUpperCase' || m == 'toLowerCase' || m == 'reverse') &&
+                 m == 'toUpperCase' || m == 'toLowerCase' || m == 'reverse' || m == 'trim') &&   // Phase 427 — trim
                 isStringReceiver(mc.objectExpression)) {
                 return true
             }
@@ -7587,6 +7587,8 @@ class Encoder implements TheoryApi {
             // Phase 47i — {@code s.reverse()} (GDK). Uninterpreted with per-literal pinning; literal
             // involution and length fall out, symbolic identities are out (no universals — see 47g).
             if (m == 'reverse' && args.isEmpty()) return session.stringReverse(sH)
+            // Phase 427 — `s.trim()`, exactly: Java's leading/trailing characters `<= ' '` removed
+            if (m == 'trim' && args.isEmpty()) return session.stringTrim(sH)
             // Phase 100 — `s.next(i)` / `s.next()` (Groovy 6: the last character incremented by `i`, default 1
             // — `'A'.next(2) == 'C'`, `'A'.next(25) == 'Z'`). First slice: *single-character* receivers, ASCII,
             // no wraparound. Modelled as a fresh single-char string whose code point is `charAt(s,0) + i`,

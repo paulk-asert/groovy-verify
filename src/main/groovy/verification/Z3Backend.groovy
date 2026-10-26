@@ -1131,6 +1131,46 @@ class Z3Session implements SmtSession {
         ctx.mkApp(reverseFn, (Expr) s)
     }
 
+    /** Phase 427 — {@code trim$}, an uninterpreted {@code (String) -> String} defined at each application (no universals). */
+    private FuncDecl trimFn
+    private com.microsoft.z3.ReExpr trimPad, trimEdge
+    private int trimCounter = 0
+
+    @Override
+    Object stringTrim(Object s) {
+        if (trimFn == null) {
+            trimFn = ctx.mkFuncDecl('trim$', [stringSort()] as Sort[], stringSort())
+            com.microsoft.z3.ReSort reSort = ctx.mkReSort(stringSort())
+            com.microsoft.z3.ReExpr pad = ctx.mkRange(ctx.mkString(String.valueOf((char) 0)), ctx.mkString(' '))
+            trimPad = ctx.mkStar(pad)
+            trimEdge = ctx.mkIntersect(ctx.mkAllcharRe(reSort), ctx.mkComplement(pad))   // one character above ' '
+        }
+        Object t = ctx.mkApp(trimFn, (Expr) s)
+        int k = trimCounter++
+        Object p = ctx.mkConst("trim\$pre#${k}".toString(), stringSort())
+        Object q = ctx.mkConst("trim\$post#${k}".toString(), stringSort())
+        Object allChars = ctx.mkFullRe(ctx.mkReSort(stringSort()))
+        Object edged = reConcat(reConcat(trimEdge, allChars), trimEdge)
+        Object shapes = reUnion(reUnion(reToRe(ctx.mkString('')), trimEdge), edged)
+        BoolExpr split = ctx.mkAnd(
+            (BoolExpr) eq(s, stringConcat(stringConcat(p, t), q)),
+            (BoolExpr) stringInRegex(p, trimPad), (BoolExpr) stringInRegex(q, trimPad),
+            (BoolExpr) stringInRegex(t, shapes))
+        // and trimming it again changes nothing (true of every trim; Z3 doesn't find it from the split alone)
+        BoolExpr again = (BoolExpr) eq(ctx.mkApp(trimFn, (Expr) t), t)
+        // and a non-empty one's first and last characters are each above ' ' (implied by the shape; without it,
+        // `!t.endsWith(" ")` times out)
+        IntExpr len = ctx.mkLength((Expr) t)
+        BoolExpr edges = ctx.mkImplies(ctx.mkGt(len, ctx.mkInt(0)), ctx.mkAnd(
+            (BoolExpr) stringInRegex(ctx.mkAt((Expr) t, ctx.mkInt(0)), trimEdge),
+            (BoolExpr) stringInRegex(ctx.mkAt((Expr) t, ctx.mkSub(len, ctx.mkInt(1))), trimEdge)))
+        solver.add(split, again, edges)
+        assertedExprs.add(split)
+        assertedExprs.add(again)
+        assertedExprs.add(edges)
+        t
+    }
+
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
 
     @Override
@@ -1801,7 +1841,7 @@ class Z3Session implements SmtSession {
             if (var.getSort() == cachedStringSort) {
                 Expr mv = m.evaluate(var, false)
                 if (mv != null && mv.isString()) {
-                    sce[name] = mv.getString()
+                    sce[name] = cleanZ3String(mv.getString())   // Phase 427 — the text, not Z3's `\u{1}` escapes
                 }
                 return  // continue
             }

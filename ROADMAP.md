@@ -18341,6 +18341,37 @@ a first cut of this phase changed it to `.length`, and that case caught it.
 under a precondition on the non-null case, with only the null left; with the null ruled out too, nothing.
 Mutation-checked: without the guard, the first case shows its index failure on `f(new int[0], null)` again.
 
+## Phase 427 — `s.trim()`, exactly  *(shipped — completeness, honesty of the witness)*
+
+Phase 422 noted it: `return s.trim()` was outside the fragment (Phase 425 made `result != null` prove, as an opaque value
+of known nullity, but any claim on the value skipped), and `s.trim()[0]` skipped its bounds (Phase 417). `reverse` and
+the case foldings are uninterpreted functions pinned on literals only, because universals over a `String → String`
+function stall Z3's model construction (Phases 47g, 47i). Trim needs none: Java's contract — every leading and trailing
+character `<= ' '` removed — is the middle of the one split `s = p + t + q` with p and q in `[NUL- ]*` and t empty or
+starting and ending above `' '`, which is regular-expression membership, and Z3 decides it.
+
+- **`trim$` is defined at each application** (`stringTrim`): its split, with fresh p and q; that trimming it again
+  changes nothing (`trim$(t) == t`, true of every trim — without it `s.trim().trim() == s.trim()` timed out); and that
+  a non-empty one's first and last characters are above `' '` (implied by the split — without it
+  `!result.endsWith(" ")` timed out). The encoder routes `s.trim()` to it, as a string receiver too.
+- **A string witness is a Groovy literal**: the model's value is read back through `cleanZ3String` (it was
+  Z3's own spelling, `f("\u{1}")`), then escaped (`groovyStringLiteral`: a quote, backslash, `$`, a control character).
+
+**Not changed:** `strip()` (Unicode whitespace) is unmodelled. `!result.startsWith(" ") && !result.endsWith(" ")` in
+one claim times out, loudly ("could not decide"), where each proves alone. Found while testing, and before this
+phase: the `ensured:` line drops a string literal's quotes (`ensured: (result ==  a)` for `result == " a"`,
+`!(result.endsWith( ))`) — a message bug to take next.
+
+**Changed cases:** `a call the model doesn't know skips, naming it` (P417) used `s.trim()[0]`, which now fails on
+`f("")`; it takes `s.strip()[0]`, still unmodelled.
+
+**Shipped tests:** group `P427 string trim`, 10 cases. Proved: a trim no longer than, and inside, its string; twice
+is once; no leading and no trailing space (two claims); a literal's fold; `s.trim()[0]` under a non-empty trim.
+Refuted: a literal's contrary, equal length (`fails on: f("\u0001")`, no `u{`), `!s.contains(" ")` as untrimmed
+(`f("\u0000")` — Java's contract, not spaces), `s.trim()[0]` on `f("")`, and a witness that needs escaping
+(`f("\"")`). Mutation-checked: the idempotence and edge facts, the decoding and the escaping each have a case that
+fails without them.
+
 ---
 
 ## Definition of done, per increment
