@@ -18258,6 +18258,34 @@ holds), a returned `xs?.isEmpty()` proves `result == true` when `xs` can't be nu
 fails `result == true` on `f(null)`, a null and a non-null aren't equal (`f(null, …)`). Mutation-checked: the
 equality, the `== null` form and the result and local registrations each have a case that fails without them.
 
+## Phase 424 — a boxed local's nullity  *(shipped — false positive, honesty of the witness)*
+
+Phases 422 and 423 noted it: `Integer n = p; return n != null` refuted with `fails on: f(-2147483648)`, where the run
+that fails is `f(null)`, and it refuted under `@Requires({ p != null })` too. The postcondition path binds a written
+name's nullity for reference types only (Phase 132), and `isIntElement` counts `Integer` as an int, so `n`'s flag was
+free; a `Boolean` local's the same (`fails on: f(false)`, a call that returns true). The value-flow and loop paths
+already bound it for every type.
+
+- **A boxed integer's or boolean's writes bind its nullity** (`currentBoxedNames`, collected as the boolean locals are,
+  through a shared `collectNamesOfType`; `holdsNull`): `n = p` takes p's, `n = 5` non-null, `n = null` null, so a
+  reassignment forgets the old non-null fact and each branch's value is its own.
+- **A null boxed parameter renders as `null`** in the failing call and its pins (`renderArg`, `reproPins`), and its
+  value, which no run has, is left off the counterexample.
+
+**Item 3 of the candidates, checked:** a callee's `return new StringBuilder()` and a `new StringBuilder()` argument
+are both loud ("Skipped verification of postcondition / precondition … outside fragment … allowed to proceed
+unchecked"), so a fragment gap, not a soundness one. After the skipped precondition, `m.append('x')` on the call's
+value reports a possible null with "no failing call".
+
+**Not changed:** an uninitialised boxed local (`Integer n; if (b) n = 1 else n = p`) is still outside the fragment.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P424 boxed nullity`, 7 cases. Reported on `f(null)`, with no `-2147483648`: a boxed local
+assigned a parameter, one reassigned from a non-null, a `Long`'s, a `Boolean`'s. Proved: under `p != null`, for an
+`Integer` and a `Long`; a literal's; `= null`'s; each branch's value. Mutation-checked: the binding, the rendered
+null and the hidden value each have a case that failed before it.
+
 ---
 
 ## Definition of done, per increment

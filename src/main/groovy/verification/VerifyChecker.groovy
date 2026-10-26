@@ -342,6 +342,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code intVar}, avoiding the {@code eq(intFresh, boolRhs)} sort-mismatch crash.
      */
     private Set<String> currentBooleanLocals = new HashSet<String>()
+    /** Phase 424 — names declared a boxed integer or boolean ({@code Integer n}): Int- or Bool-sorted, but their value may be null. */
+    private Set<String> currentBoxedNames = new HashSet<String>()
     /**
      * Phase 28 — enum classes in the same module, mapped from source-level simple name to value
      * count. Lets the encoder fold {@code Color.values().length} (and {@code .size()}) to the
@@ -2413,6 +2415,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
+    /** Phase 424 — a name whose value may be null: one declared a reference type, a boxed integer or boolean included. */
+    private boolean holdsNull(ClassNode declaredType, String name) {
+        (declaredType != null && !isIntElement(declaredType)) || currentBoxedNames.contains(name)
+    }
+
     private static boolean isIntElement(ClassNode t) {
         String n = t?.name
         n == 'int' || n == 'long' || n == 'short' || n == 'byte' || n == 'char' ||
@@ -2671,11 +2678,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * boolean sibling).
      */
     private static Set<String> collectBooleanLocals(MethodNode node) {
+        collectNamesOfType(node) { ClassNode t -> isBooleanType(t) }
+    }
+
+    /** The parameters, fields, result and body locals of {@code node} declared a type {@code accepts} admits. */
+    private static Set<String> collectNamesOfType(MethodNode node, Closure<Boolean> accepts) {
         Set<String> out = new HashSet<String>()
-        for (Parameter p : node.parameters) if (isBooleanType(p.type)) out.add(p.name)
+        for (Parameter p : node.parameters) if (accepts(p.type)) out.add(p.name)
         ClassNode dc = node.declaringClass
-        if (dc != null) for (FieldNode f : dc.fields) if (isBooleanType(f.type)) out.add(f.name)
-        if (isBooleanType(node.returnType)) out.add('result')
+        if (dc != null) for (FieldNode f : dc.fields) if (accepts(f.type)) out.add(f.name)
+        if (accepts(node.returnType)) out.add('result')
         Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
         if (cleanBody == null) cleanBody = node.code
         if (cleanBody == null) return out
@@ -2687,7 +2699,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
                     for (VariableExpression v : declaredTargets(de)) {
-                        if (isBooleanType(v.originType ?: v.type)) out.add(v.name)
+                        if (accepts(v.originType ?: v.type)) out.add(v.name)
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -2918,6 +2930,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String held = k.endsWith('.size') ? k.substring(0, k.length() - 5) :
                 k.endsWith(']') && k.indexOf('[') > 0 ? k.substring(0, k.indexOf('[')) : null
             if (held != null && r.counterexample.get(held + '?null') == 1L) return
+            // Phase 424 — nor a null boxed integer or boolean a value (its call shows the null)
+            if (currentBoxedNames.contains(k) && r.counterexample.get(k + '?null') == 1L) return
             if (UNMODELLED_KEY.matcher(k).matches()) {
                 if (k.contains('?null$')) return   // Phase 420 — a nullity flag, not a value (the note names it)
                 String base = unmodelledBase(k)
@@ -3103,7 +3117,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean nulled = ce.get(p.name + '?null') == 1L
             Boolean reassigned = loose.get(p.name)
             if (reassigned == Boolean.TRUE) continue
-            if (tn in INT_TYPE_NAMES) {
+            if (nulled && (tn in INT_TYPE_NAMES || tn in BOOL_TYPE_NAMES) && !ClassHelper.isPrimitiveType(p.type)) {
+                shape.add("${p.name} == null".toString())   // Phase 424 — a boxed one's null
+            } else if (tn in INT_TYPE_NAMES) {
                 Long v = ce.get(p.name)
                 shape.add("${p.name} == ${v != null ? v : 0L}".toString())
             } else if (tn in BOOL_TYPE_NAMES) {
@@ -3231,6 +3247,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return "new ${comp}[${n}]"
         }
         String tn = t?.name
+        // Phase 424 — a boxed integer or boolean may be null, and the model says when
+        if (nulled && (tn in INT_TYPE_NAMES || tn in BOOL_TYPE_NAMES) && !ClassHelper.isPrimitiveType(t)) return 'null'
         if (tn in INT_TYPE_NAMES) {
             Long v = ce.get(p.name)
             return String.valueOf(v != null ? v : 0L)
@@ -4396,6 +4414,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentDecimalNames = collectDecimalNames(node)
         currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
+        currentBoxedNames = collectNamesOfType(node) { ClassNode t -> (isIntElement(t) || isBooleanType(t)) && !ClassHelper.isPrimitiveType(t) }
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
@@ -4778,6 +4797,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentDecimalNames = new HashSet<String>()
             currentFpNames = new HashMap<String, Boolean>()
             currentBooleanLocals = new HashSet<String>()
+            currentBoxedNames = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
         }
     }
@@ -14020,12 +14040,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // `name = n` under `@Requires({ n != null })` establishes a `name != null` invariant, and a
                         // later `name = <nullable>` correctly *forgets* the old non-null fact. Known nullity binds
                         // directly; an unknown RHS havocs to a fresh free flag (sound — never retains a stale fact).
-                        if (declaredType != null && !isIntElement(declaredType) && !enc.isDecimalName(a.name)) {
+                        // Phase 424 — a boxed integer's too (`Integer n = p`): its `n != null` read a free flag
+                        if (holdsNull(declaredType, a.name) && !enc.isDecimalName(a.name)) {
                             Object rhsNull = enc.nullityOfExpr(a.rhs)
                             enc.bindNullity(a.name, rhsNull != null ? rhsNull : session.boolVar(a.name + '?null#' + ssaVersion))
                         }
                     } else if (a.rhs instanceof ConstantExpression && ((ConstantExpression) a.rhs).value == null &&
-                               declaredType != null && !isIntElement(declaredType)) {
+                               holdsNull(declaredType, a.name)) {
                         // Phase 132 — `name = null` on a reference field/local: the value isn't modelled (null has no
                         // sort handle), but the nullity is *definitely* null — so a `name != null` invariant refutes
                         // preservation here. Havoc the value, pin the nullity flag to true.
