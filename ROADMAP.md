@@ -18464,6 +18464,34 @@ an int in one condition, a call's `@Ensures` naming the field, and two parameter
 false. Mutation-checked: without the boolean names, the first two skip with the internal cast error again and the
 two-parameter case fails.
 
+## Phase 432 — a field write through a parameter  *(shipped — reach)*
+
+Found probing Phase 431: `c.n = 1` through a lone object parameter skipped the postcondition path (`field write
+'c.n = 1' is outside fragment`), an int field's as a boolean's. Only Phase 89's identity-keyed map — two parameters
+of one class — took a field write.
+
+- **The field holds the value** (`storeParamField`): a write through an object parameter, or through a local alias of
+  it (`C d = c; d.n = 5`), to a primitive int-like or boolean field binds `c$n` forward, so a later `c.n` and the
+  postcondition read it. Callers already saw it: the frame records a write through `c` (Phase 357), so the caller
+  havocs `c.n` at the call.
+- **Declined, with the reason in the skip:** a class with an `@Invariant` (`'C' declares an @Invariant, which a write
+  through 'c' isn't re-proved against`) — nothing re-proves it after the write, and callers re-assume it; and a class
+  whose setter may not be the field (Phase 361's reason, `make the class final (or sealed)`). A boxed, String or array
+  field is no store yet (the bare skip).
+- **A call's framed field is shown as the source spells it**: `c.n (after a call) = 1`, where it showed the encoder's
+  `c$n` (Phase 350's display; the echo-source rule).
+
+**Not changed:** a postcondition can't name a parameter field's entry value — `old.c.n` doesn't type-check (`old`
+holds the declaring class's fields), so `c.n == old(c.n) + 1` has no spelling yet.
+
+**Changed cases:** 12 expectations of `c$count (after a call)` / `c$other (after a call)` in groups P350, P351 and P403
+now read `c.count (after a call)` / `c.other (after a call)`.
+
+**Shipped tests:** group `P432 field write through a parameter`, 5 cases: an int and a boolean field written (and read
+back, and through an alias) proving, a wrong claim refuting on `g(new C())`, a caller seeing the callee's write
+(`c.n (after a call) = 1`), and the `@Invariant` and overridable-setter declines. Mutation-checked: declining every
+store fails the first two (the caller's case rests on the frame, not the store).
+
 ---
 
 ## Definition of done, per increment

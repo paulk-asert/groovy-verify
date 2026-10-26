@@ -2951,7 +2951,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (cm.matches()) {
                 String base = cm.group(1)
                 if (latestCallHavoc.get(base) == Integer.parseInt(cm.group(2)) && !base.contains('#') && !base.startsWith('$')) {
-                    display.put(base + ' (after a call)', v)
+                    display.put(shownLocation(base) + ' (after a call)', v)   // Phase 432 — `c.n`, not `c$n`
                 }
                 return
             }
@@ -3017,6 +3017,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 430 — a boolean's model value is 0/1: shown as the false/true the source would print
         r.booleanKeys = new LinkedHashSet<String>(display.keySet().findAll { String k -> isBooleanShown(k) })
         r
+    }
+
+    /**
+     * Phase 432 — {@code c.f = v} through a lone object parameter (or its local alias): its primitive int or boolean
+     * field takes the value, read back by a later {@code c.f} and the postcondition. Null when stored; otherwise why
+     * not, for the skip ({@code ''} when there is nothing more to say). Callers see the write: the frame records a
+     * write through {@code c} (Phase 357). A class with an {@code @Invariant} is declined, its re-proof after the write
+     * being unmodelled; and a setter that isn't the field (Phase 361) is no store at all.
+     */
+    private String storeParamField(SmtSession session, Encoder enc, PropStore ps, Object val) {
+        String obj = currentObjectParams.containsKey(ps.obj) ? ps.obj : currentObjectAliases.get(ps.obj)
+        ClassNode t = obj == null ? null : currentObjectParams.get(obj)
+        if (t == null) return ''
+        FieldNode f = null
+        for (ClassNode c = t; c != null && f == null; c = c.superClass) f = c.getDeclaredField(ps.field)
+        if (f == null || f.isStatic() || !ClassHelper.isPrimitiveType(f.type)) return ''
+        boolean bool = isBooleanType(f.type)
+        if (!bool && !isIntElement(f.type) || bool != session.isBool(val)) return ''
+        String accessor = propertyAccessorReason(t, ps.field, true)
+        if (accessor != null) return " — ${accessor}"
+        if (!classInvariantTexts(t).isEmpty()) {
+            return " — '${t.nameWithoutPackage}' declares an @Invariant, which a write through '${ps.obj}' isn't re-proved against"
+        }
+        enc.bind(obj + '$' + ps.field, val)
+        null
     }
 
     /** Phase 430 — whether a displayed counterexample key ({@code b}, {@code b (after the loop)}, {@code c.on}) names a boolean. */
@@ -14219,9 +14244,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // subsequent read of obj.field (or other.field when other === obj) sees it.
                     PropStore ps = (PropStore) step
                     Object val = enc.translate(ps.value)
-                    if (val == null || !enc.storeField(ps.obj, ps.field, val)) {
+                    String why = val == null ? '' : enc.storeField(ps.obj, ps.field, val) ? null : storeParamField(session, enc, ps, val)
+                    if (why != null) {
                         throw new UnsupportedConstructException(
-                            "field write '${ps.obj}.${ps.field} = ${ps.value.text}' is outside fragment")
+                            "field write '${ps.obj}.${ps.field} = ${ps.value.text}' is outside fragment${why}")
                     }
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step

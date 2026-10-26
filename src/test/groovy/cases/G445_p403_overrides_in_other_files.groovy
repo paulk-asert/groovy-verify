@@ -80,19 +80,19 @@ class G445_p403_overrides_in_other_files {
 
         // Unsound before: proved — Sub.groovy's override of bump() was no part of the call's frame
         [group: "P403 overrides in other files of the compilation", name: "a closed world's override in another file frames the call",
-         expect: ["Cannot prove postcondition of f", "c\$other (after a call)"],
+         expect: ["Cannot prove postcondition of f", "c.other (after a call)"],
          extraSources: ['Counter.groovy': COUNTER, 'Sub.groovy': SUB],
          src: tcw(FRAMED)],
 
         // … with the base class here and only the subclass elsewhere
         [group: "P403 overrides in other files of the compilation", name: "… the base class beside the caller, the override in another file",
-         expect: ["Cannot prove postcondition of f", "c\$other (after a call)"],
+         expect: ["Cannot prove postcondition of f", "c.other (after a call)"],
          extraSources: ['Sub.groovy': SUB],
          src: tcw(FRAMED + '\n' + COUNTER)],
 
         // Unsound before: a sealed class closes the world by itself, and its permitted subclass was in another file
         [group: "P403 overrides in other files of the compilation", name: "a sealed class's permitted subclass in another file",
-         expect: ["Cannot prove postcondition of f", "c\$other (after a call)"],
+         expect: ["Cannot prove postcondition of f", "c.other (after a call)"],
          extraSources: ['Counter.groovy': SEALED, 'Sub.groovy': FINAL_SUB],
          src: tc(FRAMED)],
 

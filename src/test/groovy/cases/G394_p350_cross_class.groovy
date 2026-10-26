@@ -39,7 +39,7 @@ class G394_p350_cross_class {
 
         // Fixed (unsound before): `int x = c.bump()` routed through the generic call framing, which havoced the CALLER's
         // `count` (there is none here) and left `c.count` at its entry value, so `result == 3` verified.
-        [group: 'P350 a cross-class call is framed by its writes', name: 'a value call on an object parameter havocs the fields its callee writes', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P350 a cross-class call is framed by its writes', name: 'a value call on an object parameter havocs the fields its callee writes', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
@@ -47,7 +47,7 @@ class G394_p350_cross_class {
                     }
                     final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
         // Phase 45 havoced every field of the receiver; the callee's inferred frame says which (here the only one).
-        [group: 'P350 a cross-class call is framed by its writes', name: 'a statement call does the same, by the callee\'s frame now', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P350 a cross-class call is framed by its writes', name: 'a statement call does the same, by the callee\'s frame now', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
@@ -67,7 +67,7 @@ class G394_p350_cross_class {
                         @Ensures({ count == old.count + 1 })
                         void incr() { count = count + 1 }
                     }''')],
-        [group: 'P350 a cross-class call is framed by its writes', name: '… and a wrong claim against it refutes', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P350 a cross-class call is framed by its writes', name: '… and a wrong claim against it refutes', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 5 })
@@ -172,7 +172,7 @@ class G394_p350_cross_class {
                     final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
         // The collector reads `c.incr()` by incr's frame: a written field is the receiver, so twice's frame is {c}, and a
         // written OBJECT parameter at the call site means its fields.
-        [group: 'P350 a cross-class call is framed by its writes', name: 'a same-class helper writing through an object parameter havocs its fields', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P350 a cross-class call is framed by its writes', name: 'a same-class helper writing through an object parameter havocs its fields', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         @Requires({ c != null })
                         static void twice(Counter c) { c.incr(); c.incr() }

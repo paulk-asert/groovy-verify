@@ -36,7 +36,7 @@ class G395_p351_any_receiver {
 
         // An object FIELD of another class is a receiver like an object parameter (`c$count`). Before, `c.count` in a
         // contract was outside the fragment.
-        [group: 'P351 a call through any receiver lands on that receiver', name: 'a call on an object field havocs the field object\'s state', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P351 a call through any receiver lands on that receiver', name: 'a call on an object field havocs the field object\'s state', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && c.count == 3 })
@@ -70,7 +70,7 @@ class G395_p351_any_receiver {
                         @Ensures({ hits == old.hits + 1 })
                         void incr() { hits = hits + 1 }
                     }''')],
-        [group: 'P351 a call through any receiver lands on that receiver', name: '`this.c.incr()` is the same receiver', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P351 a call through any receiver lands on that receiver', name: '`this.c.incr()` is the same receiver', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         Counter c = new Counter()
                         @Requires({ c != null && c.count == 3 })
@@ -96,14 +96,14 @@ class G395_p351_any_receiver {
                     final class Counter { int count = 0; void incr() { count = count + 1 } }''')],
         // Fixed (unsound before): `d` is `c`, but the call through it havoced the caller's `count` (none here) and left
         // `c$count` at 3, so f verified. A local declared from a modelled receiver and never reassigned IS that receiver.
-        [group: 'P351 a call through any receiver lands on that receiver', name: 'a local alias of a parameter: a value call', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"], refute: 'c = 0',
+        [group: 'P351 a call through any receiver lands on that receiver', name: 'a local alias of a parameter: a value call', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"], refute: 'c = 0',
          src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
                         static int f(Counter c) { Counter d = c; int x = d.bump(); return c.count }
                     }
                     final class Counter { int count = 0; int bump() { count = count + 1; return count } }''')],
-        [group: 'P351 a call through any receiver lands on that receiver', name: '… a statement call', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P351 a call through any receiver lands on that receiver', name: '… a statement call', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         @Requires({ c != null && c.count == 3 })
                         @Ensures({ result == 3 })
@@ -196,7 +196,7 @@ class G395_p351_any_receiver {
                         @Ensures({ a[0] == 0 })
                         static int f(int[] a) { put0(a); return 0 }
                     }''')],
-        [group: 'P351 a call through any receiver lands on that receiver', name: 'a helper aliasing its object parameter writes it', expect: ["Cannot prove postcondition of f", "c\$count (after a call) = 4"],
+        [group: 'P351 a call through any receiver lands on that receiver', name: 'a helper aliasing its object parameter writes it', expect: ["Cannot prove postcondition of f", "c.count (after a call) = 4"],
          src: tc('''final class A {
                         @Requires({ c != null })
                         static void twice(Counter c) { Counter d = c; d.incr() }
