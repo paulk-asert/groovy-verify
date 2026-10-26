@@ -2918,6 +2918,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 k.endsWith(']') && k.indexOf('[') > 0 ? k.substring(0, k.indexOf('[')) : null
             if (held != null && r.counterexample.get(held + '?null') == 1L) return
             if (UNMODELLED_KEY.matcher(k).matches()) {
+                if (k.contains('?null$')) return   // Phase 420 — a nullity flag, not a value (the note names it)
                 String base = unmodelledBase(k)
                 if (!base.contains('#') && !base.startsWith('$')) display.put(base + ' (unmodelled)', v)
                 return
@@ -3003,7 +3004,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static final java.util.regex.Pattern RESULT_KEY = java.util.regex.Pattern.compile('([A-Za-z_][A-Za-z0-9_]*)\\$result\\$(\\d+)')
 
     /** Phase 346 — a value the encoder couldn't translate, havocked: {@code <name>$unmodelled$<n>}. */
-    private static final java.util.regex.Pattern UNMODELLED_KEY = java.util.regex.Pattern.compile('(.+)\\$unmodelled\\$(\\d+)')
+    /** Phase 420 — a reassignment's unknown nullity flag too ({@code m?null$unmodelled$<n>}): its base is the name. */
+    private static final java.util.regex.Pattern UNMODELLED_KEY = java.util.regex.Pattern.compile('(.+?)(?:\\?null)?\\$unmodelled\\$(\\d+)')
 
     /** Phase 13's caller-side havoc of a location a callee modifies: {@code havoc$<name>$<n>}. */
     private static final java.util.regex.Pattern CALL_HAVOC_KEY = java.util.regex.Pattern.compile('havoc\\$(.+)\\$(\\d+)')
@@ -5329,6 +5331,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (enc.isArrayTyped(a.name) && arrayReassign(s, enc, a.name, a.rhs, node)) continue   // Phase 375
                     if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
                     if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
+                    // Phase 420 — the name's nullity is the new value's (as LoopEncoder.rebind binds it): a null is known,
+                    // not an unmodelled value; an unknown one is fresh, where the old one stayed
+                    if (stripCasts(a.rhs) instanceof ConstantExpression && ((ConstantExpression) stripCasts(a.rhs)).value == null) {
+                        Object isNull = s.boolVar(a.name + '?null#vf' + (ssaCounter++))
+                        s.assertExpr(isNull)
+                        enc.bindNullity(a.name, isNull)
+                        enc.havoc(a.name)
+                        continue
+                    }
+                    Object knownNull = enc.nullityOfExpr(a.rhs)
+                    enc.bindNullity(a.name, knownNull != null ? knownNull : s.boolVar(a.name + '?null$unmodelled$' + (ssaCounter++)))
                     // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await
                     // read-out can't discharge in this seeded session: `def fa = async { e }` aliases fa to e, and
                     // `r = await(a,b,c)` records r as the gathered value-list factory.
@@ -7299,6 +7312,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (callable[0]) names.addAll(callableReach())
         for (String n : names) havocLocation(enc, n)
+        // Phase 420 — a name they reassign may hold another value, null among them: its nullity is unknown too (a call's
+        // receiver keeps its own — the call writes into it). `out = null` in a loop's body left `out = []`'s non-null.
+        for (String n : reassignedNames(stmts)) {
+            if (names.contains(n)) enc.bindNullity(n, enc.session.boolVar(n + '?null#hv' + (havocCounter++)))
+        }
         // Phase 404 — an array written through an object (`h.poke()`), or this one's under an implicit-this call, may be
         // one the method names: its contents are unknown too (its length isn't — an alias's write doesn't resize)
         for (String n : withAliasedArrays(names, thisCall[0])) if (!names.contains(n)) { enc.havocArray(n); enc.aliasHavocked.add(n) }

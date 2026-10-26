@@ -18123,6 +18123,38 @@ builder's and a map's, a local assigned `null`, a literal local reassigned from 
 a redeclared `new` local. Once, at the `<<`: before a `size()`, as a statement and in an assignment. Proved: under a
 precondition, under a guard, an `int`'s shift, a literal local appended to in an annotated loop.
 
+## Phase 420 — a reassignment sets the local's nullity  *(shipped — soundness)*
+
+Found while testing Phase 419: a reassignment could leave a local's old nullity in place, and say nothing.
+`Map m = [:]; m = null; m.size()`, `List m = []; m = null; m << 2` and `Map m = [:]; m = p; m << [b: 2]` compiled
+cleanly; `StringBuilder m = new StringBuilder(); m = p; m.append('x')` reported `fails on: f(new StringBuilder())`, which
+doesn't fail (the model chose `p` non-null and `m` null), and a `String`'s `s = p` `fails on: f("")`; an unannotated
+loop whose body sets a local to `null` (`out.add(k); out = null`) compiled cleanly, and f(2) throws.
+
+- **The name's nullity is the new value's**, in the region replay (`LoopEncoder.rebind`, which bound it only for a list
+  or array's alias, Phase 375) and the value-flow replay (which bound it only from a variable, Phase 227): a `null` is
+  null, a variable's is its own, a literal, a `new`, a closure and an array creation are non-null (`nullityOfExpr`),
+  and so, now, is a `java.lang.String` method's `String` (`s.substring(2)`, `s.toUpperCase()`; a GDK one may give null:
+  `'abc'.find(/x/)`). Any other is unknown — a fresh flag (`m?null$unmodelled$<n>`) a call resting on is withheld, as
+  Phase 346 withholds an unmodelled value's, and the counterexample doesn't show it.
+- **A `null` is a known value**, not an unmodelled one: `List xs = null; xs << 1` said "no failing call: the failure
+  rests on xs"; it fails on `f()` now.
+- **A loop's summary leaves a name it reassigns of unknown nullity** (`havocWritesOf`; `havocLocation` resets the value,
+  contents and size). A call's receiver keeps its own, so a loop appending to `out = []` still proves. An annotated
+  loop's frame facts already left out a name its body reassigns.
+
+**Not changed:** a non-collection call's `@Ensures({ result != null })` doesn't reach the name it's assigned to:
+`StringBuilder m = g(); m.append('x')` reports a null, declared or reassigned, before this phase and after (a list's
+does, Phase 225). The postcondition path's assignments were already bound (Phase 132).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P420 reassigned nullity`, 13 cases. Reported, with the call that fails: a literal map set to
+`null`, a list's under `<<`, one declared `null` (no longer "no failing call"), a map set to a parameter, a builder and
+a string set to one (`f(null)`), a `for` and a `while` loop that set the local to `null` (`f(2)`). Withheld: a GDK
+`find`'s value. Proved: a parameter the precondition rules non-null, another literal, a `String` method's `String`, a
+loop that only appends.
+
 ---
 
 ## Definition of done, per increment

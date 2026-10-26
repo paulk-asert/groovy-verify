@@ -4474,6 +4474,12 @@ class Encoder implements TheoryApi {
         if (e instanceof ArrayExpression || isArrayClone(e)) return session.boolLit(false)
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
             isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
+        // Phase 420 — nor is a String's own method's String (`s.substring(2)`, `s.trim()`; a GDK one, `s.find(re)`, may be)
+        if (e instanceof MethodCallExpression) {
+            Object t = e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+            if (t instanceof MethodNode && ((MethodNode) t).declaringClass?.name == 'java.lang.String' &&
+                ((MethodNode) t).returnType?.name == 'java.lang.String') return session.boolLit(false)
+        }
         null
     }
 

@@ -1109,6 +1109,7 @@ class LoopEncoder {
      * variables — and thus its invariant and any bounds obligation that depends
      * only on them — can still be reasoned about.
      */
+    private static int rebindCounter = 0
     private static void rebind(Encoder enc, SmtSession s, String name, Expression rhs) {
         // Phase 375 — an array name re-assigned holds another array: rebinding its scalar handle alone left its
         // contents, length and nullity those of the old one (`v = grow(v)` kept `v.length == m` across the loop)
@@ -1119,6 +1120,19 @@ class LoopEncoder {
         // invariant {@code positive.size() <= i} would refute at iteration 0.
         if (enc.tryMaterialiseSetBinopAssign(name, rhs)) return
         if (enc.tryRecordFactoryAssign(name, rhs)) return
+        // Phase 420 — the name holds the new value, so its nullity is the value's: `m = null`, `m = p` or `m = g()` left the
+        // old one in place, and `Map m = [:]; m = null; m.size()` proved (an unknown one is fresh)
+        Expression r = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (r instanceof ConstantExpression && ((ConstantExpression) r).value == null) {
+            // a flag the model shows (a literal one left it empty, and its call unnamed), and a value it knows: none
+            Object isNull = s.boolVar(name + '?null#rb' + (rebindCounter++))
+            s.assertExpr(isNull)
+            enc.bindNullity(name, isNull)
+            enc.havoc(name)
+            return
+        }
+        Object nul = enc.nullityOfExpr(rhs)
+        enc.bindNullity(name, nul != null ? nul : s.boolVar(name + '?null$unmodelled$' + (rebindCounter++)))   // no run's: withheld
         Object h = enc.translate(rhs)
         if (h == null && containsCall(rhs)) {
             // Phase 347 — a call the encoder can't translate as a function (a contracted one, or one that writes):
