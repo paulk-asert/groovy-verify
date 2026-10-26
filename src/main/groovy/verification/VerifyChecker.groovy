@@ -3389,8 +3389,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 body.visit(accessorScanner())
             } catch (Throwable ignored) {
             }
-        }
-    }
+        }    }
 
     /** A visitor that records {@code recv.length} / {@code recv.size} / {@code recv.size()} spellings. */
     private ClassCodeVisitorSupport accessorScanner() {
@@ -5303,6 +5302,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         ObligationCollector col = newCollector()
         try { e.visit(col) } catch (Throwable ignored) { return }
+        col.guardSafeCallIndices()   // Phase 426
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() &&
             col.derefSites.isEmpty() && col.overflowSites.isEmpty() &&
             col.stringCharAtSites.isEmpty() && col.stringSubstringSites.isEmpty() &&
@@ -7233,6 +7233,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // reads `i` after the increment): its sites stay unguarded, as before.
         ObligationCollector col = newCollector()
         try { e.visit(col) } catch (Throwable ignored) {}
+        col.guardSafeCallIndices()   // Phase 426
         boolean guarded = !writesWithin(e)
         for (Object site : combineSites(col)) {
             List<Statement> p = preceding
@@ -11699,6 +11700,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
 
         private int[] marks() { siteLists().collect { it.size() } as int[] }
+
+        /** Phase 426 — an index whose value is a safe call's (`a[xs?.size()]`, `a[xs?.size() + 1]`) throws on its null
+         *  before anything is indexed (measured on Groovy 6: a null index, its arithmetic and its cast all throw), so
+         *  its bounds are checked where the receiver isn't null; the null is the safe call's own report */
+        void guardSafeCallIndices() {
+            for (IndexSite ix : indexSites) {
+                for (Expression recv : nullThrowingSafeReceivers(ix.index)) {
+                    List<Expression> gs = siteGuards[ix]
+                    if (gs == null) siteGuards[ix] = gs = new ArrayList<Expression>()
+                    gs.add(new BinaryExpression(recv, Token.newSymbol(Types.COMPARE_NOT_EQUAL, -1, -1), ConstantExpression.NULL))
+                }
+            }
+        }
+
+        /** the receivers of the safe calls whose null makes {@code e} throw: {@code e} itself, its cast, its negation,
+         *  an arithmetic operand (not an Elvis's, whose null is harmless) */
+        private List<Expression> nullThrowingSafeReceivers(Expression e) {
+            Expression x = stripCasts(e)
+            if (Encoder.isSafeCall(x)) return [((MethodCallExpression) x).objectExpression]
+            if (x instanceof UnaryMinusExpression) return nullThrowingSafeReceivers(((UnaryMinusExpression) x).expression)
+            if (x instanceof BinaryExpression && ((BinaryExpression) x).operation.type in
+                    [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD]) {
+                BinaryExpression be = (BinaryExpression) x
+                return nullThrowingSafeReceivers(be.leftExpression) + nullThrowingSafeReceivers(be.rightExpression)
+            }
+            []
+        }
 
         /** every site collected since {@code m} runs under {@code guard} */
         private void guardSince(int[] m, Expression guard) {

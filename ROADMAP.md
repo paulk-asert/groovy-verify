@@ -18317,6 +18317,30 @@ fails on `f(null)`. Skipped: a claim on the returned value, and on the argument'
 nullity in the assumed `@Ensures` has a case that fails without it; the return and argument branches each had cases
 that failed before them.
 
+## Phase 426 — a safe call as an index  *(shipped — honesty of the message)*
+
+Phase 422 noted it: `a[xs?.size()]` reported an index out of bounds on a null `xs` (the null case's sentinel, below
+every number), beside the NullPointerException it reports there too, so the one call failed twice. Measured on Groovy 6,
+dynamic: a null index throws before anything is indexed (`a[null]` a NullPointerException, `a[(int) null]` "Cannot cast
+'null' to class 'int'"), and so does its arithmetic on either side (`null + 1`, `-null`; `1 + null` an ambiguous
+overload).
+
+- **An index whose value is a safe call's is bounded where the receiver isn't null** (`guardSafeCallIndices`, after the
+  collector's visit, on the value-flow and leaf discharges): the index itself, its cast, its negation, an arithmetic
+  operand. An Elvis's left isn't one (`xs?.size() ?: 0` is not null).
+
+**Not changed:** an Elvis index (`a[xs?.size() ?: 0]`) is outside the fragment, loudly, as before. A list's out-of-range
+subscript keeps its Phase 369 head. An array no one sized in the source still reads `a.size()` in an obligation: that is
+Phase 9's choice (the Groovy idiom valid for arrays too, pinned by `implicit access defaults to .size()`), not a slip —
+a first cut of this phase changed it to `.length`, and that case caught it.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P426 safe call index`, 4 cases. Reported on a non-null `xs` only: a safe call's index
+(`fails on: f(new int[0], [])`, its null still on `f(new int[0], null)`), and one through arithmetic. Proved: the bounds
+under a precondition on the non-null case, with only the null left; with the null ruled out too, nothing.
+Mutation-checked: without the guard, the first case shows its index failure on `f(new int[0], null)` again.
+
 ---
 
 ## Definition of done, per increment
