@@ -18420,6 +18420,24 @@ int refuted by its branch value (`f(false, 0)`), an int left unwritten refuted a
 `long`, `boolean`, `String`, `Integer`), and a String left unwritten refuted as null. Mutation-checked: a default of 1
 for an int fails the unwritten-int and defaults cases.
 
+## Phase 430 — a boolean in a counterexample  *(shipped — honesty of the message)*
+
+Found in Phase 429: a boolean's model value is an int, 0 or 1, and the counterexample printed it so —
+`counterexample: b = 0` above `fails on: f(false)`, two spellings of one value in one message.
+
+- **A boolean name shows as `false`/`true`** (`CheckResult.booleanKeys`, set in `shown` from the method's boolean
+  names — parameters, locals, fields, `result` — and read by `Reporter.formatModel`), including its labelled forms
+  (`b (after the loop)`). An `@ThrowsIf` refutation's counterexample likewise.
+
+**Not changed:** an object parameter's boolean field (`c.on`) — its encoding fails first (`internal: Cannot cast
+object 'c$on' … IntExpr to … BoolExpr`, a loud skip), so it has no counterexample to show yet.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P430 boolean counterexample`, 3 cases: a boolean parameter shown as `false`, one shown as
+`true` beside an int (`f(true, 0)`), and an instance's own boolean field. Mutation-checked: rendering without the
+boolean keys fails all three.
+
 ---
 
 ## Definition of done, per increment

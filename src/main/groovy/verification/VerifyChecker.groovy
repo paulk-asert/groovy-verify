@@ -3014,7 +3014,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         r.counterexample = display
+        // Phase 430 — a boolean's model value is 0/1: shown as the false/true the source would print
+        r.booleanKeys = new LinkedHashSet<String>(display.keySet().findAll { String k -> isBooleanShown(k) })
         r
+    }
+
+    /** Phase 430 — whether a displayed counterexample key ({@code b}, {@code b (after the loop)}) names a boolean. */
+    private boolean isBooleanShown(String key) {
+        int paren = key.indexOf(' (')
+        currentBooleanLocals.contains(paren > 0 ? key.substring(0, paren) : key)
     }
 
     /** A loop summary's havocked scalar: {@code <name>$havoc$<n>}. */
@@ -15117,7 +15125,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult r = s.check()
             if (r.status == CheckResult.Status.REFUTED) {
                 String cex = r.counterexample.collect { k, v ->
-                    k.endsWith('?null') ? "${k - '?null'} = ${v == 1L ? 'null' : 'non-null'}" : "${k} = ${v}"
+                    k.endsWith('?null') ? "${k - '?null'} = ${v == 1L ? 'null' : 'non-null'}" :
+                        "${k} = ${currentBooleanLocals.contains(k) ? v != 0L : v}"   // Phase 430
                 }.join(', ')
                 addStaticTypeError(Reporter.formatThrowsIfRefuted(node.name, direction, cex), (ASTNode) anchor)
                 return true

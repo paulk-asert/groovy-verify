@@ -1091,7 +1091,7 @@ class Reporter {
 
     private static void appendModel(StringBuilder sb, CheckResult result, boolean withCall) {
         if (result.counterexample) {
-            sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
+            sb.append("\n    counterexample: ").append(formatModel(result.counterexample, result.booleanKeys))
         }
         // Phase 126 — model-derived element notes (e.g. the offending array slot) on their own lines.
         if (result.notes) {
@@ -1106,10 +1106,10 @@ class Reporter {
         }
     }
 
-    private static String formatModel(Map<String, Long> ce) {
+    private static String formatModel(Map<String, Long> ce, Set<String> booleanKeys) {
         if (ce.isEmpty()) return "(solver gave no values)"
         ce.entrySet()
-          .collect { "${it.key} = ${it.value}" }
+          .collect { "${it.key} = ${booleanKeys?.contains(it.key) ? it.value != 0L : it.value}" }   // Phase 430
           .sort()
           .join(", ")
     }

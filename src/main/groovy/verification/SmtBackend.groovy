@@ -689,6 +689,8 @@ class CheckResult {
      * Empty unless the refutation involves a non-Int sort.
      */
     Map<String, String> sortedCounterexample = [:]
+    /** Phase 430 — the {@link #counterexample} keys that name a boolean, its 0/1 model value shown as false/true. */
+    Set<String> booleanKeys = new LinkedHashSet<String>()
     /** Free-text reason, populated on UNKNOWN. */
     String reason
     /**
@@ -711,6 +713,7 @@ class CheckResult {
             counterexample: counterexample == null ? null : new LinkedHashMap<String, Long>(counterexample),
             sortedCounterexample: sortedCounterexample == null ? null : new LinkedHashMap<String, String>(sortedCounterexample),
             notes: notes == null ? null : new ArrayList<String>(notes),
+            booleanKeys: new LinkedHashSet<String>(booleanKeys),
             taints: new LinkedHashSet<String>(taints))
     }
 
