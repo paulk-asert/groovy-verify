@@ -5342,6 +5342,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         continue
                     }
                     Object knownNull = enc.nullityOfExpr(a.rhs)
+                    enc.noteNullableValue(a.name, a.rhs)   // Phase 423
                     enc.bindNullity(a.name, knownNull != null ? knownNull : s.boolVar(a.name + '?null$unmodelled$' + (ssaCounter++)))
                     // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await
                     // read-out can't discharge in this seeded session: `def fa = async { e }` aliases fa to e, and
@@ -14013,6 +14014,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (rhs != null) {
                         session.assertExpr(session.eq(fresh, rhs))
                         enc.bind(a.name, fresh)
+                        // Phase 423 — a safe call's value: its null case, whatever the declared type (a boxed one too)
+                        if (enc.noteNullableValue(a.name, a.rhs)) enc.bindNullity(a.name, enc.nullityOfExpr(a.rhs))
                         // Phase 132 — flow nullity through the write of a reference-typed name (field or local), so
                         // `name = n` under `@Requires({ n != null })` establishes a `name != null` invariant, and a
                         // later `name = <nullable>` correctly *forgets* the old non-null fact. Known nullity binds
@@ -14253,6 +14256,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // `return x + y`, or `return x` for a @Requires-known-non-null `x` all establish non-nullness.
                         // Phase 421 — a returned call's is its own `result == null` (on its hoisted local)
                         enc.bindNullity('result', enc.nullityOfExpr(retExpr instanceof VariableExpression ? retExpr : p.result))
+                        enc.noteNullableValue('result', p.result)   // Phase 423
                     }
                     // Phase 45b — when the return expression is a list-typed local, also alias the
                     // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures

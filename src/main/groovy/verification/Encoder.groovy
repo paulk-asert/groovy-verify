@@ -5027,6 +5027,28 @@ class Encoder implements TheoryApi {
     }
     private int safeCallCounter = 0
 
+    /** Phase 423 — names a safe call's value was assigned to (only added: each assignment binds the name's nullity on
+     *  its path, so one that holds a non-null there reads as such). */
+    private final Set<String> nullableValueNames = new HashSet<String>()
+
+    /** Phase 423 — the nullity of a value whose null case the model carries apart from its value: a safe call's, or a
+     *  name's that one was assigned to; null for any other (its comparisons read the value alone, as before). */
+    Object valueNullity(Expression e) {
+        if (e instanceof CastExpression) return valueNullity(((CastExpression) e).expression)
+        if (isSafeCall(e)) return nullityOfExpr(e)
+        if (e instanceof VariableExpression && nullableValueNames.contains(((VariableExpression) e).name)) {
+            return nullityOf(((VariableExpression) e).name)
+        }
+        null
+    }
+
+    /** Phase 423 — {@code name} is assigned {@code rhs}: true, and the name noted, when its null case is carried apart. */
+    boolean noteNullableValue(String name, Expression rhs) {
+        if (valueNullity(rhs) == null) return false
+        nullableValueNames.add(name)
+        true
+    }
+
     // ── Phase 73 — IEEE-754 floating point (double/float via Z3's FP theory) ──────────────────────
     /** True if {@code e} produces a {@code double}/{@code float} value (an FP name, literal, or +,-,*,/). */
     boolean isFpValued(Expression e) {
@@ -5909,6 +5931,11 @@ class Encoder implements TheoryApi {
                 Object isNull = nullityOf(ref.name)
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
             }
+            // Phase 423 — `xs?.isEmpty() == null`: the safe call's own nullity (null couldn't be translated)
+            Expression other = isNullLiteral(be.rightExpression) ? be.leftExpression :
+                               isNullLiteral(be.leftExpression) ? be.rightExpression : null
+            Object otherNull = other != null && isSafeCall(other) ? nullityOfExpr(other) : null
+            if (otherNull != null) return op == Types.COMPARE_EQUAL ? otherNull : session.not(otherNull)
             // Phase 413 — `h.arr == null` / `!= null` for a modelled receiver array
             String nra = isNullLiteral(be.rightExpression) ? receiverFieldArray(be.leftExpression) :
                          isNullLiteral(be.leftExpression) ? receiverFieldArray(be.rightExpression) : null
@@ -6062,6 +6089,18 @@ class Encoder implements TheoryApi {
             R = logical && isSafeCall(be.rightExpression) ? truthy(be.rightExpression, null) : translate(be.rightExpression)
         }
         if (L == null || R == null) return null
+        // Phase 423 — Groovy's `==` on a null: only a null equals it (`null == false` is false, `null != true` true,
+        // measured). A boolean's, string's or decimal's null case is an unconstrained value, so equality reads the
+        // nullities first; an integer's is a sentinel no number in range equals, which needs nothing more.
+        if ((op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) && !(session.isInt(L) && session.isInt(R))) {
+            Object ln = valueNullity(be.leftExpression), rn = valueNullity(be.rightExpression)
+            if (ln != null || rn != null) {
+                Object f = session.boolLit(false)
+                ln = ln ?: f; rn = rn ?: f
+                Object same = session.ite(session.or([ln, rn]), session.and([ln, rn]), session.eq(L, R))
+                return op == Types.COMPARE_EQUAL ? same : session.not(same)
+            }
+        }
         // Phase 129 — a String/sequence operand reached the arithmetic/comparison dispatch, which is typed for
         // the Int sort and would throw (an {@code ArithExpr} cast in {@code plus}, or a sort-mismatch in
         // {@code mkEq}). The static {@link #isStringReceiver} route above only fires when both operand

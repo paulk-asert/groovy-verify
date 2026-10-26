@@ -18230,6 +18230,34 @@ on a null `xs`; a condition's null read as false. Its value: `result >= 0` and `
 `result == null || result >= 0`, and `result >= 0` under `xs != null`, prove. Mutation-checked: the guard, the
 harmless contexts, the value, the sentinel, the nullity and the truth each have a case that fails without them.
 
+## Phase 423 — only a null equals a null  *(shipped — completeness)*
+
+Phase 422 noted it: a safe call's null case is an unconstrained value for a boolean (a string's, a decimal's), so `==`
+read the value alone. `@Ensures({ result == true })` of `xs?.isEmpty()` refuted with no call shown;
+`xs?.isEmpty() == false` couldn't be proved false on a null `xs`; `xs?.isEmpty() == null` and `xs?.size() == null` were
+outside the fragment. Measured on Groovy 6, dynamic and `@CompileStatic`: only a null equals a null — `null == false`,
+`null == true` false, `null != true` true, `null == null` true.
+
+- **`==` and `!=` read the nullities first** (`ite(either null, both null, values equal)`) when an operand's null case
+  is carried apart from its value (`valueNullity`): a safe call's, or a name's one was assigned to — a local, the
+  result (`noteNullableValue`, on the value-flow, postcondition and region replays; names are only added, as each
+  assignment binds its name's nullity on its path, Phase 420). An integer's null case is already a sentinel no number
+  equals (Phase 422).
+- **`x?.m() == null` is the call's nullity**, as `name == null` is a name's.
+- **A boxed local assigned a safe call's value has its nullity bound on the postcondition path**, whatever its declared
+  type (`Boolean b = xs?.isEmpty()`): that path bound it for reference types only (Phase 132).
+
+**Not changed:** an operand whose null case isn't carried apart (a `Boolean` parameter, a call's value) compares by
+value, as before. A boxed `Integer` local assigned anything else still has no nullity on the postcondition path.
+
+**Changed cases:** `a boolean's null value is no truth value` (P422) now fails on `f(null)`, where it showed no call.
+
+**Shipped tests:** group `P423 null equality`, 7 cases. Proved: a null equals neither `true` nor `false` (`!= true`
+holds), a returned `xs?.isEmpty()` proves `result == true` when `xs` can't be null, `xs?.isEmpty() == null` and
+`xs?.size() == null` are `xs == null`, a `Boolean` local keeps its null, two nulls are equal. Refuted: a returned null
+fails `result == true` on `f(null)`, a null and a non-null aren't equal (`f(null, …)`). Mutation-checked: the
+equality, the `== null` form and the result and local registrations each have a case that fails without them.
+
 ---
 
 ## Definition of done, per increment

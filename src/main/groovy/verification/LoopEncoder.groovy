@@ -1132,6 +1132,7 @@ class LoopEncoder {
             return
         }
         Object nul = enc.nullityOfExpr(rhs)
+        enc.noteNullableValue(name, rhs)   // Phase 423
         enc.bindNullity(name, nul != null ? nul : s.boolVar(name + '?null$unmodelled$' + (rebindCounter++)))   // no run's: withheld
         Object h = enc.translate(rhs)
         if (h == null && containsCall(rhs)) {

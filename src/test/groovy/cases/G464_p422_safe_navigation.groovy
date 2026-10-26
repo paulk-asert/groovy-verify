@@ -105,9 +105,10 @@ class G464_p422_safe_navigation {
                         static int g(List<Integer> xs) { if (xs?.isEmpty() || false) return 1; return 0 }
                     }''')],
 
-        // A Boolean's null isn't false as a value (`null == true` is false): the claim refutes, no call shown
+        // A Boolean's null isn't false as a value (`null == true` is false): the claim refutes. Phase 423 — on f(null),
+        // as only a null equals a null (it showed no call)
         [group: "P422 safe navigation", name: "a boolean's null value is no truth value",
-         expect: ["Cannot prove postcondition of f", "no failing call: the failure rests on xs?.isEmpty"],
+         expect: ["Cannot prove postcondition of f", "fails on: f(null)"],
          src: tc('''class A {
                         @Requires({ xs == null || xs.isEmpty() })
                         @Ensures({ result == true })
