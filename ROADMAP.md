@@ -18372,6 +18372,33 @@ Refuted: a literal's contrary, equal length (`fails on: f("\u0001")`, no `u{`), 
 (`f("\"")`). Mutation-checked: the idempotence and edge facts, the decoding and the escaping each have a case that
 fails without them.
 
+## Phase 428 — string literals as written  *(shipped — honesty of the message)*
+
+Phase 427 found it: a diagnostic shows a contract through Groovy's own `getText()`, and a string constant's text is its
+bare value. `@Ensures({ result == " a" })` read `ensured: (result ==  a)`, `endsWith(' ')` read `endsWith( )`, and
+`examples/kerridge.md` quoted `ensured: (result == Hello World)` — docLint-pinned, so the bug's own output was
+checked in as the expected text.
+
+- **A string value is quoted in a diagnostic** (`shownText`, on a copy: `.text` stays the bare value for the code that
+  keys or compares on it, Phase 409's round-trip among them): `ensured:`, `required:`, a class or loop `invariant:`,
+  an assertion, a termination measure, a vacuous precondition, EXPLAIN's invariant note.
+- **As written, where it can be**: a re-parsed contract's root carries the text it was parsed from
+  (`SOURCE_TEXT_KEY`, set by `contractAstFor` and `ContractExpansionTransform.reparse`), and a literal's columns cut
+  its spelling out of it — `'Hello World'` stays single-quoted, `" a"` double. Elsewhere (an assertion's condition is
+  the body's own AST) it is a double-quoted Groovy literal, escaped (`groovyStringLiteral`, Phase 427).
+- **A name isn't a value**: a property's (`a.length`), a method's (`'q'.length()`) and a map key's stay bare.
+
+**Not changed:** the brackets Groovy's text adds (`(result == 'Hello World')`) stay, as every pinned diagnostic has
+them. A contract whose root a later pass rebuilt has no captured text, so its literals are double-quoted.
+
+**Changed cases:** none. `examples/kerridge.md`'s quote of `consumeHW read in the wrong order is refuted` now reads
+`ensured: (result == 'Hello World')` (docLint: 59/59).
+
+**Shipped tests:** group `P428 string literals as written`, 4 cases: an @Ensures with a double- and a single-quoted
+literal as written, a @Requires likewise, a property's and a method's name left bare beside a quoted receiver, and an
+assertion's literal quoted and escaped (`"a\$b\"c"`). Mutation-checked: without the slice, the first case's `' '`
+reads `" "`; without the quoting, each case's literal is bare again.
+
 ---
 
 ## Definition of done, per increment

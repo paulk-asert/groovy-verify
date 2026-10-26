@@ -624,7 +624,7 @@ static String produceHW() {
 <!-- doclint:diagnostic p246-kerridge-gallery/consumehw-read-in-the-wrong-order-is-refuted -->
 ```
 [Static type checking] - Cannot prove postcondition of produceHW holds on this return path
-    ensured: (result == Hello World)
+    ensured: (result == 'Hello World')
     fails on: produceHW()
 ```
 

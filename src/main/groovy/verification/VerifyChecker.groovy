@@ -47,6 +47,7 @@ import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.AttributeExpression
 import org.codehaus.groovy.ast.expr.ArrayExpression
 import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
@@ -3230,6 +3231,66 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     static final String REPRO_BREAKS_REQUIRES =
         'no failing call: these arguments break the @Requires, which this check assumed only in part (it may not be reachable)'
 
+    /** Phase 428 — {@code e} as a diagnostic shows it: Groovy's own text, but a string value quoted (its text is the bare
+     *  value, so `result == " a"` read `(result ==  a)`) — as written, where {@code e} is a re-parsed contract whose
+     *  text it can slice, else double-quoted. A property's, a method's or a map key's name stays as written. */
+    static String shownText(Expression e) {
+        if (e == null) return null
+        try {
+            new Quoting(source: (String) e.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY)).transform(e).text
+        } catch (Throwable ignored) {
+            e.text
+        }
+    }
+
+    private static class Quoting implements ExpressionTransformer {
+        String source
+
+        /** the literal as {@code source} spells it, when the node's columns cut one quoted run out of it */
+        private String written(ConstantExpression c) {
+            if (source == null || c.lineNumber < 1 || c.lastLineNumber != c.lineNumber) return null
+            List<String> lines = source.readLines()
+            if (c.lineNumber > lines.size()) return null
+            String line = lines[c.lineNumber - 1]
+            int from = c.columnNumber - 1, to = c.lastColumnNumber - 1
+            if (from < 0 || to > line.length() || to - from < 2) return null
+            String cut = line.substring(from, to)
+            char q = cut.charAt(0)
+            (q == '\'' as char || q == '"' as char) && cut.charAt(cut.length() - 1) == q ? cut : null
+        }
+
+        @Override
+        Expression transform(Expression x) {
+            if (x == null) return null
+            if (x.class == ConstantExpression && ((ConstantExpression) x).value instanceof String) {
+                ConstantExpression c = (ConstantExpression) x
+                String quoted = written(c) ?: groovyStringLiteral((String) c.value)
+                return new ConstantExpression(c.value) { @Override String getText() { quoted } }
+            }
+            if (x instanceof MethodCallExpression) {
+                MethodCallExpression m = (MethodCallExpression) x
+                MethodCallExpression c = new MethodCallExpression(transform(m.objectExpression), m.method, transform(m.arguments))
+                c.safe = m.safe; c.spreadSafe = m.spreadSafe; c.implicitThis = m.implicitThis
+                return c
+            }
+            if (x instanceof AttributeExpression) {
+                AttributeExpression a = (AttributeExpression) x
+                return new AttributeExpression(transform(a.objectExpression), a.property, a.safe)
+            }
+            if (x instanceof PropertyExpression) {
+                PropertyExpression pe = (PropertyExpression) x
+                PropertyExpression c = new PropertyExpression(transform(pe.objectExpression), pe.property, pe.safe)
+                c.spreadSafe = pe.spreadSafe
+                return c
+            }
+            if (x instanceof MapEntryExpression) {
+                MapEntryExpression me = (MapEntryExpression) x
+                return new MapEntryExpression(me.keyExpression, transform(me.valueExpression))
+            }
+            x.transformExpression(this)
+        }
+    }
+
     /** Phase 427 — {@code s} as a double-quoted Groovy literal: a quote, backslash or {@code $} escaped, a control
      *  character as {@code \\t}, {@code \\n} … or {@code \\uXXXX} (a trimmed string's witness is often one) */
     static String groovyStringLiteral(String s) {
@@ -4873,7 +4934,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             assumeValidationConstraints(s, enc)   // the constraints participate in the satisfiability check too
             CheckResult r = s.check()   // VERIFIED == UNSATISFIABLE → the precondition can never hold
             if (r.status == CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatVacuousPrecondition(node.name, reqAst != null ? reqAst.text : null), node)
+                addStaticTypeError(Reporter.formatVacuousPrecondition(node.name, shownText(reqAst)), node)
             }
         } catch (Throwable ignored) {
         } finally { try { s.close() } catch (Throwable ignored) {} }
@@ -6689,7 +6750,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // 'c' (line n) may block forever — …"), which would paste an English sentence into a contract.
                 String label = (String) asite.node.getNodeMetaData(ASSERT_LABEL_KEY)   // Phase 252 — a synthesized assert's own wording
                 boolean overParam = label == null && referencesParameter(asite.cond, currentMethod)
-                addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : asite.cond.text, r, overParam), r, 'AssertionError'), asite.node)
+                addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : shownText(asite.cond), r, overParam), r, 'AssertionError'), asite.node)
             }
             return
         }
@@ -13237,7 +13298,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Expression inv : invs) {
                 if (probeEnc.translate(inv) == null) {
                     addStaticTypeError(
-                        Reporter.formatClassInvariantSkipped(node.name, inv.text), node)
+                        Reporter.formatClassInvariantSkipped(node.name, shownText(inv)), node)
                 } else {
                     ok.add(inv)
                 }
@@ -14451,7 +14512,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             String[] monLaw = (String[]) node.getNodeMetaData(MONADIC_LAW_KEY)
             if (monLaw != null) {
-                addStaticTypeError(Reporter.formatMonadicLawFailure(monLaw[0], monLaw[1], postAst?.text, r), anchor)
+                addStaticTypeError(Reporter.formatMonadicLawFailure(monLaw[0], monLaw[1], shownText(postAst), r), anchor)
                 return
             }
             String[] rgLaw = (String[]) node.getNodeMetaData(RG_LAW_KEY)
@@ -14468,7 +14529,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String failing = pbtFailingCall(node, postAst, reqAst)
                 if (failing != null) {
                     addStaticTypeError(
-                        Reporter.formatPostconditionRefutedByTesting(node.name, postAst.text, failing), anchor)
+                        Reporter.formatPostconditionRefutedByTesting(node.name, shownText(postAst), failing), anchor)
                     return
                 }
             }
@@ -14477,10 +14538,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // counterexample distinguishes whether the @Ensures or an invariant clause
                 // broke (a per-clause attribution is a future polish).
                 addStaticTypeError(
-                    withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
+                    withRepro(Reporter.formatPostconditionFailure(node.name, shownText(postAst), r), r, 'AssertionError'), anchor)
             } else {
                 // Phase 15a — no @Ensures present; the obligation is purely the class invariant.
-                String invText = classInvs.collect { it.text }.join(' && ')
+                String invText = classInvs.collect { shownText(it) }.join(' && ')
                 addStaticTypeError(
                     Reporter.formatClassInvariantViolation(node.name, invText, r), anchor)
             }
@@ -17976,7 +18037,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
-                    withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), ex.node)
+                    withRepro(Reporter.formatPostconditionFailure(node.name, shownText(postAst), r), r, 'AssertionError'), ex.node)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
@@ -18074,7 +18135,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object h = enc.translate(inv)
             if (h != null) {
                 s.assertExpr(h)
-                if (Reporter.EXPLAIN) s.explainNoteFact('@Invariant ' + inv.text, h)
+                if (Reporter.EXPLAIN) s.explainNoteFact('@Invariant ' + shownText(inv), h)
             }
         }
         // Phase 45 — for each class-typed parameter, assume the parameter's class invariants under
@@ -18614,7 +18675,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ASTNode anchor = (resultExpr != null && resultExpr.lineNumber > 0) ?
                     (ASTNode) resultExpr : (ASTNode) site.loopStmt
                 addStaticTypeError(
-                    withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
+                    withRepro(Reporter.formatPostconditionFailure(node.name, shownText(postAst), r), r, 'AssertionError'), anchor)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
@@ -18846,7 +18907,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 63 — the for-in desugar's auto-injected index-bounds clause is internal; show only the
         // user-written invariant clauses so the diagnostic reads in source terms (the loop variable),
         // not the synthetic index.
-        site.spec.invariants.collect { it.text }
+        site.spec.invariants.collect { shownText(it) }
             .findAll { !it.contains(ContractExpansionTransform.FOR_IN_INDEX) }
             .join(' && ')
     }
@@ -19274,13 +19335,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 case CheckResult.Status.REFUTED:
                     addStaticTypeError(
                         Reporter.formatPreconditionFailure(
-                            target.name, contractAst.text, r),
+                            target.name, shownText(contractAst), r),
                         callExpr as ASTNode)
                     return
                 case CheckResult.Status.UNKNOWN:
                     addStaticTypeError(
                         Reporter.formatPreconditionFailure(
-                            target.name, contractAst.text, r),
+                            target.name, shownText(contractAst), r),
                         callExpr as ASTNode)
                     return
             }
@@ -19592,7 +19653,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }
             if (entry == null || callMeasure == null) {
                 // Can't model the measure → don't silently accept the inductive hypothesis.
-                addStaticTypeError(Reporter.formatTerminationSkipped(node.name, measureAst.text), callExpr as ASTNode)
+                addStaticTypeError(Reporter.formatTerminationSkipped(node.name, shownText(measureAst)), callExpr as ASTNode)
                 return
             }
             // Obligation: 0 <= measure[args] && measure[args] < measure[entry].
@@ -19600,7 +19661,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             s.assertExpr(s.not(obligation))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatTerminationFailure(node.name, measureAst.text, r), callExpr as ASTNode)
+                addStaticTypeError(Reporter.formatTerminationFailure(node.name, shownText(measureAst), r), callExpr as ASTNode)
             }
         } finally {
             currentBcountKExprs = Collections.<Expression> emptyList()
@@ -21026,7 +21087,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String text = findContractText(m, kind)
         // Normalise the fresh re-parse against m's signature (the one home for pre-resolution parse
         // shapes — e.g. the SAM shorthand f(x) → f.apply(x)), so the encoder deals in one spelling.
-        return text != null ? ContractNormalizer.normalize(parseContract(text), m) : null
+        if (text == null) return null
+        Expression e = ContractNormalizer.normalize(parseContract(text), m)
+        e?.putNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY, text)   // Phase 428 — its literals as written
+        e
     }
 
     /** Read @ContractSource's member, walking superclass then implemented interfaces for inherited contracts. */

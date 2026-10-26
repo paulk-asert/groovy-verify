@@ -1829,6 +1829,10 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     /** Re-parse a captured contract expression's text into a fresh CONVERSION AST. */
+    /** Phase 428 — on a re-parsed contract's root: the text it was parsed from, so a diagnostic can show a string
+     *  literal as written (its node's columns are the text's) */
+    static final String SOURCE_TEXT_KEY = 'verify.contractSourceText'
+
     /* package */ static Expression reparse(String text) {    // also used by Phase 251's streaming invariants
         if (text == null) return null
         try {
@@ -1838,7 +1842,9 @@ class ContractExpansionTransform implements ASTTransformation {
             if (top instanceof BlockStatement) {
                 BlockStatement bs = (BlockStatement) top
                 if (bs.statements.size() == 1 && bs.statements.get(0) instanceof ExpressionStatement) {
-                    return ((ExpressionStatement) bs.statements.get(0)).expression
+                    Expression e = ((ExpressionStatement) bs.statements.get(0)).expression
+                    e.putNodeMetaData(SOURCE_TEXT_KEY, text)   // Phase 428
+                    return e
                 }
             }
             return null
