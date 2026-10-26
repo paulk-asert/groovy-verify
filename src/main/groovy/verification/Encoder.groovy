@@ -1855,7 +1855,7 @@ class Encoder implements TheoryApi {
             if (isAliasModeled(receiverPrefix) && ft != null && isIntLikeType(ft)) {
                 return session.select(fieldMap(objectParams.get(receiverPrefix).name, name), objId(receiverPrefix))
             }
-            return varForRaw(receiverPrefix + '$' + name)
+            return fieldVar(receiverPrefix + '$' + name)
         }
         // Phase 27 step 9 — a non-Int scalar (String, Enum) parameter/field dispatches to
         // varForOfSort, which caches in sortedEnv. The standard env stays Int-only so the
@@ -1882,6 +1882,16 @@ class Encoder implements TheoryApi {
             return v
         }
         return varForRaw(name)
+    }
+
+    /** Phase 431 — an object parameter's field {@code c$f}: Bool when the field is a boolean, Int otherwise. */
+    private Object fieldVar(String name) {
+        if (!booleanLocals.contains(name)) return varForRaw(name)
+        Object cached = env.get(name)
+        if (cached != null) return cached
+        Object v = session.boolVar(name)
+        env.put(name, v)
+        v
     }
 
     /** Phase 45 — raw Int variable lookup without receiver-context or non-Int-sort routing. */
@@ -4805,7 +4815,7 @@ class Encoder implements TheoryApi {
                         if (isAliasModeled(recvName) && ft != null && isIntLikeType(ft)) {
                             return session.select(fieldMap(objectParams.get(recvName).name, prop), objId(recvName))
                         }
-                        return varForRaw(recvName + '$' + prop)
+                        return fieldVar(recvName + '$' + prop)
                     }
                 }
             }

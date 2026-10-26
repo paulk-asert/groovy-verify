@@ -3019,10 +3019,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         r
     }
 
-    /** Phase 430 — whether a displayed counterexample key ({@code b}, {@code b (after the loop)}) names a boolean. */
+    /** Phase 430 — whether a displayed counterexample key ({@code b}, {@code b (after the loop)}, {@code c.on}) names a boolean. */
     private boolean isBooleanShown(String key) {
         int paren = key.indexOf(' (')
-        currentBooleanLocals.contains(paren > 0 ? key.substring(0, paren) : key)
+        String name = paren > 0 ? key.substring(0, paren) : key
+        int dot = name.indexOf('.')   // Phase 431 — `c.on` is `c$on`
+        currentBooleanLocals.contains(name) || (dot > 0 && currentBooleanLocals.contains(name.substring(0, dot) + '$' + name.substring(dot + 1)))
     }
 
     /** A loop summary's havocked scalar: {@code <name>$havoc$<n>}. */
@@ -4516,6 +4518,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
         currentObjectParams = collectObjectParams(node)
         currentObjectAliases = collectObjectAliases(node, currentObjectParams)
+        // Phase 431 — an object parameter's boolean field (`c$on`) is a boolean name too, so it is minted Bool
+        currentObjectParams.each { String pn, ClassNode t ->
+            for (ClassNode c = t; c != null; c = c.superClass) {
+                for (FieldNode f : c.fields) if (!f.isStatic() && isBooleanType(f.type)) currentBooleanLocals.add(pn + '$' + f.name)
+            }
+        }
         currentTupleParams = collectTupleParams(node)
         currentCatchCoverage = collectCatchCoverage(node)
         currentChannelDesugared = false

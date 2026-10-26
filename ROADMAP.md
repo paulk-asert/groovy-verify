@@ -18438,6 +18438,32 @@ object 'c$on' … IntExpr to … BoolExpr`, a loud skip), so it has no counterex
 `true` beside an int (`f(true, 0)`), and an instance's own boolean field. Mutation-checked: rendering without the
 boolean keys fails all three.
 
+## Phase 431 — an object parameter's boolean field  *(shipped — reach)*
+
+Found writing Phase 430's cases: an object parameter's field was always minted an Int (`c$on`), so a boolean field
+read as a condition (`c.on ? 1 : 0`) skipped the method with `internal: Cannot cast object 'c$on' with class
+'com.microsoft.z3.IntExpr' to class 'com.microsoft.z3.BoolExpr'` — loud, but an internal error, and the method
+unchecked.
+
+- **A boolean field of an object parameter is a Bool** (`Encoder.fieldVar`): its `c$on` joins the method's boolean
+  names, so an explicit `c.on` read and a bare `on` in the class's assumed invariant mint the same Bool.
+- **Shown as the source spells it**: `counterexample: c.on = false` (Phase 430's rendering, through the `c$on`
+  name), and the failing call builds `new C(on: false)` (Phase 369's object literal already rendered a boolean
+  property).
+
+**Not changed:** a write through the parameter (`c.on = true`) still skips — as an Int field's write does
+(`field write 'c.n = 1' is outside fragment`). Two parameters of one class read a boolean field per name, not through
+Phase 89's identity-keyed map (Int fields only): `a === b` doesn't make `a.on` and `b.on` agree, which can only fail to
+prove, never prove falsely.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P431 object boolean field`, 6 cases: a boolean field read proving under its precondition,
+refuting with `c.on = false` and `f(new C(on: false…`, a class invariant over the field assumed, the field mixed with
+an int in one condition, a call's `@Ensures` naming the field, and two parameters of the class refuting on both
+false. Mutation-checked: without the boolean names, the first two skip with the internal cast error again and the
+two-parameter case fails.
+
 ---
 
 ## Definition of done, per increment
