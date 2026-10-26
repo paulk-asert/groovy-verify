@@ -18155,6 +18155,35 @@ a string set to one (`f(null)`), a `for` and a `while` loop that set the local t
 `find`'s value. Proved: a parameter the precondition rules non-null, another literal, a `String` method's `String`, a
 loop that only appends.
 
+## Phase 421 — a call's `result == null` is its own  *(shipped — soundness, false positive)*
+
+Phase 420 noted the false positive: `StringBuilder m = g(); m.append('x')` reported a null that g's
+`@Ensures({ result != null })` rules out (a list's call carried it, Phase 225). Its cause was also a vacuity: a callee's
+`result == null` translates to the name-keyed flag `result?null`, one flag every call on a path shared, and the
+caller's own `result` too. Two callees promising `result != null` and `result == null` contradicted each other, so
+`String a = g(); String b = h(); return x` proved `@Ensures({ result == 1 })`; and the name a call's value was assigned
+to never took the flag.
+
+- **Each call's flag is its own** (`assumeCalleeEnsures`: a fresh `result?null#call<n>` while the callee's `@Ensures`
+  is translated, the caller's binding put back after) and is left on the encoder (`lastCallResultNullity`).
+- **The name assigned the call's value takes it**, on every replay: the value-flow and postcondition paths' scalar
+  call assignment, the region replay's hoisted call (`hoistCalls`, then `rebind` when the right-hand side is the call),
+  and a returned call's hoisted local, which `result` now reads (`return g(p)` proved `@Ensures({ result != null })`
+  only through the shared flag). A list's call keeps its renamed-slot route (Phase 225).
+
+**Not changed:** a `new StringBuilder()` argument is outside the fragment, so the call's contract isn't used at all
+("Skipped verification of precondition … actual argument … is outside fragment"), nor is a callee's own
+`return new StringBuilder()` checked against its `@Ensures`. After `a.append('x')`, a model naming `a` withholds the
+call (Phase 405's unframed-call havoc), so `b`'s null shows its call only before `a` is touched.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P421 call result nullity`, 11 cases. Refuted: the two contrary callees' path. Proved from
+the callee's promise: a declaration, a reassignment, a loop body's call, a postcondition over the local, a returned
+call. Reported: a call promising `null` (`fails on: f()`, which named no call before), an uncontracted call's, two
+locals each taking its own call's, a loop body's promising `null` (`f(1)`), a returned call promising `null`.
+Mutation-checked: each binding has a case that fails without it.
+
 ---
 
 ## Definition of done, per increment

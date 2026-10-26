@@ -2015,6 +2015,13 @@ class Encoder implements TheoryApi {
     Object peekSize(String name) { sizeEnv.get(name) }
     Object peekNullity(String name) { nullEnv.get(name) }
 
+    /** Put back a {@link #peekNullity} binding, removing one the name didn't have. */
+    void restoreNullity(String name, Object saved) { if (saved != null) nullEnv.put(name, saved) else nullEnv.remove(name) }
+
+    /** Phase 421 — the flag the last contracted call's {@code result == null} read: its own, so the name its value is
+     *  assigned to can take it (set by the checker's caller-side framing, taken by whoever binds that name). */
+    Object lastCallResultNullity = null
+
     /** Phase 323 — the list oracles bound under {@code name} (contents, size, nullity), for a save/restore around a
      *  temporary alias; {@link #restoreListOracles} puts them back, removing any the name didn't have. */
     Object[] saveListOracles(String name) { [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name)] as Object[] }

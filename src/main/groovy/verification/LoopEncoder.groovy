@@ -1138,7 +1138,12 @@ class LoopEncoder {
             // Phase 347 — a call the encoder can't translate as a function (a contracted one, or one that writes):
             // each is framed and its result bound to a fresh handle, then the right-hand side reads that handle.
             // Any call left unmodelled makes the loop skip loudly: its writes are unknown, so is the state after it.
-            h = enc.translate(hoistCalls(rhs, enc, s))
+            Expression hoisted = hoistCalls(rhs, enc, s)
+            h = enc.translate(hoisted)
+            // Phase 421 — the right-hand side is the call: the name's nullity is what its @Ensures says of `result`
+            if (hoisted instanceof VariableExpression && enc.peekNullity(((VariableExpression) hoisted).name) != null) {
+                enc.bindNullity(name, enc.peekNullity(((VariableExpression) hoisted).name))
+            }
         }
         if (h == null) enc.havoc(name, 'unmodelled')   // Phase 346 — no run is known to give the value it takes
         else enc.bind(name, h)
@@ -1207,7 +1212,9 @@ class LoopEncoder {
                 if (x == null) return null
                 if (x instanceof ClosureExpression) return x
                 if ((x instanceof MethodCallExpression || x instanceof StaticMethodCallExpression) && enc.translate(x) == null) {
+                    enc.lastCallResultNullity = null
                     Object fresh = h != null ? h.handleValue(x, enc, s) : null
+                    Object resultNull = fresh != null ? enc.lastCallResultNullity : null   // Phase 421 — its @Ensures'
                     if (fresh == null) {
                         // a same-class call the handler can't model has unknown writes: loud. Any other call (a
                         // library or cross-class one) keeps the earlier reading, an opaque value — the cross-class
@@ -1221,6 +1228,7 @@ class LoopEncoder {
                     }
                     String nm = '$call$local$' + (hoistCounter++)
                     enc.bind(nm, fresh)
+                    if (resultNull != null) enc.bindNullity(nm, resultNull)
                     return new VariableExpression(nm)
                 }
                 x.transformExpression(this)

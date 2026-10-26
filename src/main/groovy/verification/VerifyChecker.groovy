@@ -5382,6 +5382,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             Object fresh = s.intVar('specw$' + Integer.toHexString(System.identityHashCode(a.rhs)))
                             if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
                                 s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                                enc.bindNullity(a.name, enc.lastCallResultNullity)   // Phase 421 — what its @Ensures says
                                 modelled = true
                             }
                         }
@@ -13939,6 +13940,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     } else if (isCallExpr(rhsE) &&
                                assumeCalleeEnsures(session, enc, rhsE, node, fresh, hasDecreases(node))) {
                         enc.bind(a.name, fresh)
+                        enc.bindNullity(a.name, enc.lastCallResultNullity)   // Phase 421 — its @Ensures' `result == null`
                         // s = f(args): s is constrained by f's @Ensures (result ↦ s,
                         // formals ↦ actuals) — Phase 7 inter-procedural reasoning. The
                         // callee's @Requires is discharged separately at the call site.
@@ -14110,7 +14112,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // The callee's @Requires is still discharged by the obligation pass over the original
                         // return expression, so soundness of the precondition check is unaffected.
                         Expression rewritten = hoistValueCalls(retExpr, enc, session, node)
-                        if (rewritten != null) resHandle = enc.translate(rewritten)
+                        if (rewritten != null) { resHandle = enc.translate(rewritten); retExpr = rewritten }
                     }
                     if (resHandle == null && p.result instanceof ConstantExpression &&
                         ((ConstantExpression) p.result).value == null) {
@@ -14142,7 +14144,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // Phase 131 — flow the return value's nullity onto `result`, so an @Ensures({ result != null })
                         // (or an implicit @NonNull-return obligation) can be *proven* — `return "x"`, `return new T()`,
                         // `return x + y`, or `return x` for a @Requires-known-non-null `x` all establish non-nullness.
-                        enc.bindNullity('result', enc.nullityOfExpr(p.result))
+                        // Phase 421 — a returned call's is its own `result == null` (on its hoisted local)
+                        enc.bindNullity('result', enc.nullityOfExpr(retExpr instanceof VariableExpression ? retExpr : p.result))
                     }
                     // Phase 45b — when the return expression is a list-typed local, also alias the
                     // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures
@@ -19135,6 +19138,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                 if (assumeCalleeEnsures(session, enc, e, node, fresh, hasDecreases(node))) {
                                     String nm = 'ret$call$local$' + hoistSeq
                                     enc.bind(nm, fresh)
+                                    enc.bindNullity(nm, enc.lastCallResultNullity)   // Phase 421 — its @Ensures' `result == null`
                                     hoistedAny[0] = true
                                     return new VariableExpression(nm)
                                 }
@@ -20692,6 +20696,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // `<local>.vN`, which the registered tuple local resolves to its per-slot entities.
         Expression effEnsures = (resultTupleName != null && ensuresAst != null) ?
             renameVariable(ensuresAst, 'result', resultTupleName) : ensuresAst
+        // Phase 421 — `result == null` read the one name-keyed flag every call shares: two callees promising `result != null`
+        // and `result == null` made the path vacuous (`@Ensures({ result == 1 }) f(int x) { … return x }` proved), and the
+        // name assigned the value never took it. Each call's is its own now, the caller's own `result` put back after.
+        Object savedResultNull = enc.peekNullity('result')
+        Object resultNull = s.boolVar('result?null#call' + (havocCounter++))
+        enc.bindNullity('result', resultNull)
+        enc.lastCallResultNullity = resultNull
         Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
         Object post
         List<Object> effectTerms = new ArrayList<Object>()
@@ -20719,6 +20730,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         } finally {
             enc.popScalarTypes(savedTypes)
+            enc.restoreNullity('result', savedResultNull)
         }
         for (List<String> ts : deferredTaints.values()) s.witnessTaints().addAll(ts)
         for (Object t : effectTerms) s.assertExpr(t)
