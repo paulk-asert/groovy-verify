@@ -18399,6 +18399,27 @@ literal as written, a @Requires likewise, a property's and a method's name left 
 assertion's literal quoted and escaped (`"a\$b\"c"`). Mutation-checked: without the slice, the first case's `' '`
 reads `" "`; without the quoting, each case's literal is bare again.
 
+## Phase 429 — a local declared without a value  *(shipped — reach)*
+
+`int n; if (b) { n = 1 } else { n = p }; return n` — a local declared first and assigned on each branch — skipped the
+postcondition path whole ("uninitialised local 'n'"), as did its `String` twin. The obligation path already ran it.
+
+- **The declaration assigns the type's default** (`BodyEncoder.defaultValueOf`), measured on Groovy 6 — dynamic,
+  `@TypeChecked` and `@CompileStatic` alike print `[0, null, null, false]` for an unwritten `int`, `String`,
+  `Integer` and `boolean`: 0 for `int`/`long`/`short`/`byte`, false for `boolean`, null for a reference or boxed type
+  (and `def`), its nullity bound as for a written `= null` (Phase 424). A path that leaves the local unwritten is
+  checked against that value, so `int n; if (b) n = 1; return n` refutes `result > 0` on `f(false)`.
+
+**Not changed:** a `char`, `float` or `double` local declared without a value still skips, naming it — the model has
+no default for those yet.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P429 uninitialised local`, 5 cases: an int and a String assigned on every branch proving, the
+int refuted by its branch value (`f(false, 0)`), an int left unwritten refuted as 0, the defaults themselves (`int`,
+`long`, `boolean`, `String`, `Integer`), and a String left unwritten refuted as null. Mutation-checked: a default of 1
+for an int fails the unwritten-int and defaults cases.
+
 ---
 
 ## Definition of done, per increment

@@ -35,6 +35,7 @@ import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
@@ -406,6 +407,15 @@ class BodyEncoder {
         })
     }
 
+    /** Phase 429 — the value a local declared without one holds, or null where the model has no default. */
+    private static Expression defaultValueOf(ClassNode t) {
+        if (t == null || !ClassHelper.isPrimitiveType(t)) return ConstantExpression.NULL
+        if (ClassHelper.isPrimitiveBoolean(t)) return ConstantExpression.FALSE
+        if (ClassHelper.isPrimitiveInt(t) || ClassHelper.isPrimitiveLong(t) ||
+            ClassHelper.isPrimitiveShort(t) || ClassHelper.isPrimitiveByte(t)) return new ConstantExpression(0)
+        null
+    }
+
     private static WalkResult walkOne(Statement s, Path prefix, boolean tail) {
         WalkResult res = new WalkResult()
 
@@ -554,8 +564,14 @@ class BodyEncoder {
                 String name = ((VariableExpression) de.leftExpression).name
                 Expression rhs = de.rightExpression
                 if (rhs == null || rhs instanceof EmptyExpression) {
-                    throw new UnsupportedConstructException(
-                        "uninitialised local '${name}' (line ${s.lineNumber})")
+                    // Phase 429 — a local declared without a value holds its type's default (measured on
+                    // Groovy 6, dynamic and static alike): 0 for an integral primitive, false for boolean,
+                    // null for a reference or boxed type, so the declaration is an assignment of that.
+                    rhs = defaultValueOf(((VariableExpression) de.leftExpression).originType)
+                    if (rhs == null) {
+                        throw new UnsupportedConstructException(
+                            "uninitialised local '${name}' (line ${s.lineNumber})")
+                    }
                 }
                 Path np = copy(prefix)
                 np.steps.add(new Assign(name, rhs))
