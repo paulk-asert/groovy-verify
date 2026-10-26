@@ -18184,6 +18184,52 @@ call. Reported: a call promising `null` (`fails on: f()`, which named no call be
 locals each taking its own call's, a loop body's promising `null` (`f(1)`), a returned call promising `null`.
 Mutation-checked: each binding has a case that fails without it.
 
+## Phase 422 — a safe-navigation call's null obligation, where its null throws  *(shipped — false positive, soundness)*
+
+Phase 292 recorded it: `c?.unstashAll()` carried a "Possible NullPointerException", and so did every `x?.m()`
+(`xs?.size()` fails on: f(null), which returns null). Measured on Groovy 6, dynamic, `@TypeChecked` and
+`@CompileStatic`: `x?.m(args)` on a null x is null, with no call and **no argument evaluated**
+(`sb?.append(xs.size())` with both null is null). The null value is then harmless or not by where it's used:
+`null < 0`, `!(null >= -5)`, `null != 0`, `if (null)` skips, `null + 'x'` is "nullx", `"a${null}"` "anull",
+`null ?: 0` 0; but `null + 1` throws ("Cannot execute null+1"), `-null` too, `int n = null` ("Cannot cast 'null' to
+class 'int'"), an `int` method's return, a `Math.abs(null)` argument, an `a[null]` index.
+
+- **What the call and its arguments oblige holds only when x isn't null**: the collector guards every site it collects
+  inside a safe call, except the receiver's own, with `x != null` (Phase 411's `siteGuards`, which the value-flow and
+  region discharges both honour). `sb?.append(xs.size())` reports `xs` only on a non-null `sb` (`fails on:
+  f(new StringBuilder(), null)`); `[]?.get(5)` still fails on `f([])`; `a[0]?.length()`'s index stays unguarded.
+- **x's own obligation goes where the null is harmless, and stays where it throws** (`harmlessSafeCalls`, by source
+  span — the discharge visits copies of a condition): a statement of its own (not a primitive-returning method's last),
+  a comparison's operand, a boolean position, a `String` concatenation's or GString's, an Elvis's left, a
+  reference-typed variable's or method's value, another safe call's or property's receiver. Elsewhere it reports
+  "`xs?.size()` is null when xs is, and a null throws where it's used".
+- **Its value is null on a null receiver** — a soundness fix the false positive hid. The encoder read `x?.m()` as
+  `x.m()`, so `@Ensures({ result >= 0 }) Integer f(List xs) { xs?.size() }` would have proved. Now
+  (`translateSafeCall`) an integer's null case is one below every long, which is Groovy's order exactly against any
+  number in range (`xs?.size() < 0` is true on a null `xs`, `>= -5` false); its truth in a boolean position is false
+  (`truthy`, a condition, `&&`/`||` operands, `!`); any other value's is unconstrained and a call resting on it is
+  withheld; its nullity is x's, or the call's own when that isn't known false (a primitive return's is). The FP and
+  decimal paths don't translate one at all.
+
+**Not changed:** a null `Boolean` value compared with `==` is unconstrained, not false (`null == false` is false), so
+such a claim refutes with no call shown. An `a[xs?.size()]` reports its index out of bounds (the sentinel), where Groovy
+throws a NullPointerException; the call shown does fail. A safe property read (`x?.p`) was never obligated. Found while
+testing, and before this phase: a `String` method's result returned (`return s.trim()`) is outside the fragment; a
+boxed `Integer` local's nullity isn't bound on the postcondition path, so `Integer n = p; return n != null` refutes with
+`fails on: f(-2147483648)`, not `f(null)`.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P422 safe navigation`, 16 cases. No obligation: `xs?.size()`, `sb?.append('x')`, and in a
+guard `xs?.size() > 0`, an Elvis, a concatenation, a chain, a `!`. Kept: `xs?.size() + 1`, `int n = xs?.size()`, an
+`int` method's `xs?.size()` (each `fails on: f(null)`). Reported: the plain `size()` after `xs?.isEmpty()` and
+`xs?.clear()`, a non-null receiver's `get(5)`, an argument's null on a non-null receiver, a receiver's own index.
+Proved: a precondition covering only the non-null receiver's case, for a bound and for an argument; `xs?.size() < 0`
+on a null `xs`; a condition's null read as false. Its value: `result >= 0` and `result != null` refute on `f(null)`,
+`xs?.size() >= -5` on a null `xs` too; a `Boolean`'s null refutes `result == true`, no call shown;
+`result == null || result >= 0`, and `result >= 0` under `xs != null`, prove. Mutation-checked: the guard, the
+harmless contexts, the value, the sentinel, the nullity and the truth each have a case that fails without them.
+
 ---
 
 ## Definition of done, per increment

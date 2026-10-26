@@ -1678,6 +1678,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         col.overflowChecking = currentOverflowChecking
         col.specSite = { Expression call -> specThrowSiteFor(call) }
         col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
+        col.harmlessSafeCalls = harmlessSafeCalls(currentMethod)   // Phase 422
         Set<String> ras = receiverArraysOf(currentMethod)   // Phase 413
         if (!ras.isEmpty()) col.receiverArray = { PropertyExpression pe ->
             pe.objectExpression instanceof VariableExpression && ras.contains(
@@ -5725,6 +5726,67 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /**
+     * Phase 422 — the safe calls in {@code m} whose value is used where a null is harmless (measured, Groovy 6): a statement
+     * of its own (not a primitive-returning method's last), a comparison's operand (`null < 0`), a boolean position, a
+     * `String` concatenation's or a GString's (`"null"`), an Elvis's left, a reference-typed variable's value or a
+     * reference-returning method's, another safe call's or property's receiver. Anywhere else — arithmetic
+     * (`Cannot execute null+1`), a primitive's value (`Cannot cast 'null' to class 'int'`), an argument, an index — a null
+     * throws, so the receiver keeps its obligation. Memoised per method.
+     */
+    private Set<Object> harmlessSafeCalls(MethodNode m) {
+        if (m == null || m.code == null) return null
+        Set<Object> memo = (Set<Object>) m.getNodeMetaData(HARMLESS_SAFE_CALLS_KEY)
+        if (memo != null) return memo
+        Set<Object> out = new HashSet<Object>()
+        boolean primRet = !m.isVoidMethod() && ClassHelper.isPrimitiveType(m.returnType)
+        Closure mark = { Expression e -> if (Encoder.isSafeCall(e)) out.add(safeCallKey(e)) }
+        Closure<Boolean> refTyped = { ClassNode t -> t != null && !ClassHelper.isPrimitiveType(t) }
+        m.code.visit(new CodeVisitorSupport() {
+            @Override void visitBlockStatement(BlockStatement b) {
+                List<Statement> ss = b.statements
+                for (int i = 0; i < ss.size(); i++) {
+                    if (ss[i] instanceof ExpressionStatement && (!primRet || i < ss.size() - 1)) mark(((ExpressionStatement) ss[i]).expression)
+                }
+                super.visitBlockStatement(b)
+            }
+            @Override void visitReturnStatement(ReturnStatement r) { if (!primRet) mark(r.expression); super.visitReturnStatement(r) }
+            @Override void visitBooleanExpression(BooleanExpression b) { mark(b.expression); super.visitBooleanExpression(b) }
+            @Override void visitNotExpression(NotExpression n) { mark(n.expression); super.visitNotExpression(n) }
+            @Override void visitGStringExpression(GStringExpression g) { for (Expression v : g.values) mark(v); super.visitGStringExpression(g) }
+            @Override void visitShortTernaryExpression(ElvisOperatorExpression e) { mark(e.trueExpression); super.visitShortTernaryExpression(e) }
+            @Override void visitMethodCallExpression(MethodCallExpression c) { if (c.safe) mark(c.objectExpression); super.visitMethodCallExpression(c) }
+            @Override void visitPropertyExpression(PropertyExpression p) { if (p.safe) mark(p.objectExpression); super.visitPropertyExpression(p) }
+            @Override void visitDeclarationExpression(DeclarationExpression d) {
+                if (d.leftExpression instanceof VariableExpression && refTyped(((VariableExpression) d.leftExpression).originType)) mark(d.rightExpression)
+                super.visitDeclarationExpression(d)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if (op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN, Types.COMPARE_LESS_THAN_EQUAL,
+                           Types.COMPARE_GREATER_THAN, Types.COMPARE_GREATER_THAN_EQUAL, Types.COMPARE_IDENTICAL,
+                           Types.COMPARE_NOT_IDENTICAL, Types.LOGICAL_AND, Types.LOGICAL_OR]) {
+                    mark(be.leftExpression); mark(be.rightExpression)
+                } else if (op == Types.PLUS && ((ClassNode) be.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE))?.name == 'java.lang.String') {
+                    mark(be.leftExpression); mark(be.rightExpression)
+                } else if (op == Types.ASSIGN && !(be instanceof DeclarationExpression) && be.leftExpression instanceof VariableExpression &&
+                           refTyped(((VariableExpression) be.leftExpression).accessedVariable?.originType)) {
+                    mark(be.rightExpression)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        m.putNodeMetaData(HARMLESS_SAFE_CALLS_KEY, out)
+        out
+    }
+    private static final String HARMLESS_SAFE_CALLS_KEY = 'verification.harmlessSafeCalls'
+
+    /** Phase 422 — a safe call by its source span: the discharge visits copies of a condition (an identity set missed
+     *  them); one with no position is itself. */
+    static Object safeCallKey(ASTNode e) {
+        e.lineNumber > 0 ? "${e.lineNumber}:${e.columnNumber}:${e.lastLineNumber}:${e.lastColumnNumber}".toString() : e
+    }
+
     /** Phase 414 — the references a precondition can name: the parameters, the class's fields, and the receiver
      *  arrays the model reads as named arrays (Phase 413). */
     private static Set<String> entryReferenceNames(MethodNode m) {
@@ -6727,6 +6789,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(df.receiver, df.property, r)
+                                                                     : df.safeUse ? Reporter.formatNullSafeUse(df.receiver, df.node.text, r)
                                                                      : Reporter.formatNullDereference(df.receiver, df.method, r)), r, 'NullPointerException'), df), df.node)
             }
             explainIfVerified(s, r, "${df.receiver} != null")
@@ -11545,6 +11608,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression indexExpr   // null = scalar deref; non-null = indexed (Phase 37)
         /** Phase 415 — a property read rather than a call (`a.length`): Groovy's message names the property */
         String property
+        /** Phase 422 — a safe call's receiver, where the call's null value is used as a value that throws on null */
+        boolean safeUse
     }
 
     /**
@@ -11593,6 +11658,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
          * collection.
          */
         boolean overflowChecking = false
+
+        /** Phase 422 — the safe calls whose null value is harmless where it's used ({@link #harmlessSafeCalls}); null: none */
+        Set<Object> harmlessSafeCalls = null
 
         /** Phase 411 — per site (by identity), the guards it runs under inside the visited expression: a ternary
          *  arm's condition or its negation, the left operand of {@code &&}, or its negation for {@code ||}. */
@@ -11810,6 +11878,45 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         @Override
         void visitMethodCallExpression(MethodCallExpression mce) {
+            if (!mce.safe || mce.implicitThis) { visitCall(mce); return }
+            // Phase 422 — `x?.m(args)` on a null x is null: no call, and its arguments aren't evaluated (measured, Groovy 6,
+            // dynamic, @TypeChecked and @CompileStatic). So what the call itself and its arguments oblige — x's own null
+            // obligation, `xs?.get(5)`'s bounds, `sb?.append(xs.size())`'s xs — holds only when x isn't null (x's then
+            // discharges trivially); the receiver's own (`a[0]?.m()`'s index) is evaluated either way
+            int[] m = marks()
+            visitCall(mce)
+            Set<ASTNode> inRecv = Collections.newSetFromMap(new IdentityHashMap<ASTNode, Boolean>())
+            mce.objectExpression.visit(new CodeVisitorSupport() {
+                @Override void visitMethodCallExpression(MethodCallExpression c) { inRecv.add(c); super.visitMethodCallExpression(c) }
+                @Override void visitBinaryExpression(BinaryExpression b) { inRecv.add(b); super.visitBinaryExpression(b) }
+                @Override void visitPropertyExpression(PropertyExpression pe) { inRecv.add(pe); super.visitPropertyExpression(pe) }
+                @Override void visitStaticMethodCallExpression(StaticMethodCallExpression c) { inRecv.add(c); super.visitStaticMethodCallExpression(c) }
+                @Override void visitUnaryMinusExpression(UnaryMinusExpression u) { inRecv.add(u); super.visitUnaryMinusExpression(u) }
+            })
+            inRecv.add(mce.objectExpression)
+            Expression nonNull = new BinaryExpression(mce.objectExpression, Token.newSymbol(Types.COMPARE_NOT_EQUAL, -1, -1),
+                ConstantExpression.NULL)
+            boolean harmless = harmlessSafeCalls != null && harmlessSafeCalls.contains(safeCallKey(mce))
+            List<List> ls = siteLists()
+            for (int i = 0; i < ls.size(); i++) {
+                for (int j = m[i]; j < ls[i].size(); j++) {
+                    Object site = ls[i][j]
+                    // a site whose node isn't known stays unguarded: one fact fewer, never a false one
+                    ASTNode n = site.hasProperty('node') ? (ASTNode) site['node'] : null
+                    if (n == null || inRecv.contains(n)) continue
+                    // its own receiver's, where its null value then throws (`xs?.size() + 1`, `int n = xs?.size()`): kept
+                    if (!harmless && site instanceof DerefSite && n.is(mce) && ((DerefSite) site).indexExpr == null) {
+                        ((DerefSite) site).safeUse = true
+                        continue
+                    }
+                    List<Expression> gs = siteGuards[site]
+                    if (gs == null) siteGuards[site] = gs = new ArrayList<Expression>()
+                    gs.add(nonNull)
+                }
+            }
+        }
+
+        private void visitCall(MethodCallExpression mce) {
             SpecThrowSite st = specSite != null ? specSite.call(mce) : null
             if (st != null) specThrowSites.add(st)
             Expression recv = mce.objectExpression

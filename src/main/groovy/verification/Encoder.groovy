@@ -4467,6 +4467,16 @@ class Encoder implements TheoryApi {
      */
     Object nullityOfExpr(Expression e) {
         if (e == null) return null
+        // Phase 422 — `x?.m()` is null when x is, else the call's own (a primitive's is never null)
+        if (isSafeCall(e)) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            Object recvNull = nullityOfExpr(mce.objectExpression)
+            if (recvNull == null) return null
+            Object t = mce.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+            Object own = t instanceof MethodNode && ClassHelper.isPrimitiveType(((MethodNode) t).returnType) ?
+                session.boolLit(false) : nullityOfExpr(unsafeCopy(mce))
+            return own == null ? null : session.or([recvNull, own])
+        }
         if (e instanceof CastExpression) return nullityOfExpr(((CastExpression) e).expression)   // Phase 393 — a coercion keeps null
         if (e instanceof ConstantExpression) return session.boolLit(((ConstantExpression) e).value == null)
         if (e instanceof VariableExpression) {
@@ -4534,6 +4544,7 @@ class Encoder implements TheoryApi {
 
     Object translate(Expression expr) {
         if (expr == null) return null
+        if (isSafeCall(expr)) return translateSafeCall((MethodCallExpression) expr)   // Phase 422
 
         // §III-E declassification is a value-level identity: `Declassify.to('Low', e)` carries the value of `e`
         // unchanged (only its security label is released). Unwrap so the value-flow fragment sees through it.
@@ -4608,7 +4619,9 @@ class Encoder implements TheoryApi {
 
         if (expr instanceof BooleanExpression) {
             // Groovy wraps if/while conditions in BooleanExpression
-            return translate(((BooleanExpression) expr).expression)
+            Expression cond = ((BooleanExpression) expr).expression
+            if (isSafeCall(cond)) return truthy(cond, null)   // Phase 422 — a null is false here
+            return translate(cond)
         }
 
         // Phase 46e — {@code (int) "hello".charAt(0)} bridges Groovy's char-vs-int distinction
@@ -4976,6 +4989,44 @@ class Encoder implements TheoryApi {
     /** Phase 67 — translate {@code e} into the Real sort (for a decimal-valued binding); null = skip. */
     Object asRealValue(Expression e) { asReal(e) }
 
+    /** Phase 422 — a safe-navigation call on an explicit receiver ({@code x?.m()}). */
+    static boolean isSafeCall(Expression e) {
+        e instanceof MethodCallExpression && ((MethodCallExpression) e).safe && !((MethodCallExpression) e).implicitThis
+    }
+
+    /** Phase 422 — {@code x?.m(args)} as the plain call: what it computes when x isn't null. */
+    static MethodCallExpression unsafeCopy(MethodCallExpression mce) {
+        MethodCallExpression c = new MethodCallExpression(mce.objectExpression, mce.method, mce.arguments)
+        c.safe = false
+        c.implicitThis = false
+        c.spreadSafe = mce.spreadSafe
+        c.methodTarget = mce.methodTarget
+        c.copyNodeMetaData(mce)
+        c.setSourcePosition(mce)
+        c
+    }
+
+    /**
+     * Phase 422 — {@code x?.m(args)} is null, with no call and no argument evaluated, when x is (measured, Groovy 6); it
+     * was translated as {@code x.m(args)}, so `@Ensures({ result >= 0 }) Integer f(List xs) { xs?.size() }` proved and
+     * f(null) returns null. Its value is the call's when x isn't null; when it is (its nullity, which
+     * {@link #nullityOfExpr} gives, is then true) an integer's is one below every long, as Groovy orders null below
+     * every number (`null < 0`, `!(null >= -5)`, `null != 0`, measured), and any other's is unconstrained, a value no
+     * run is known to give (so a call resting on it is withheld). A sort that can't be minted leaves it untranslated.
+     */
+    private Object translateSafeCall(MethodCallExpression mce) {
+        Object recvNull = nullityOfExpr(mce.objectExpression)
+        if (recvNull == null) return null
+        Object h = translate(unsafeCopy(mce))
+        if (h == null) return null
+        if (session.isInt(h)) return session.ite(recvNull, session.minus(session.intLit(Long.MIN_VALUE), session.intLit(1L)), h)
+        String nm = mce.objectExpression.text + '?.' + mce.methodAsString + '$unmodelled$' + (safeCallCounter++)
+        Object fresh = session.isBool(h) ? session.boolVar(nm) : session.isReal(h) ? session.realVar(nm) :
+            session.isSeq(h) ? session.varOfSort(nm, session.declareSort('String')) : null
+        fresh == null ? null : session.ite(recvNull, fresh, h)
+    }
+    private int safeCallCounter = 0
+
     // ── Phase 73 — IEEE-754 floating point (double/float via Z3's FP theory) ──────────────────────
     /** True if {@code e} produces a {@code double}/{@code float} value (an FP name, literal, or +,-,*,/). */
     boolean isFpValued(Expression e) {
@@ -5043,6 +5094,7 @@ class Encoder implements TheoryApi {
     /** Translate {@code e} into the FP sort. Pure FP only (FP names/literals + `+ - * /`, unary minus);
      *  an int operand or anything else returns null → loud skip (no silent int↔fp coercion). */
     Object asFp(Expression e) {
+        if (isSafeCall(e)) return null   // Phase 422 — its null case isn't modelled here
         if (e instanceof ConstantExpression) {
             Object v = ((ConstantExpression) e).value
             if (v instanceof Double) return session.fpLit(((Double) v).doubleValue(), true)
@@ -5157,6 +5209,7 @@ class Encoder implements TheoryApi {
 
     /** Translate {@code e} into the Real sort, coercing Int subexpressions via int→real. Null = skip. */
     private Object asReal(Expression e) {
+        if (isSafeCall(e)) return null   // Phase 422 — its null case isn't modelled here
         if (e instanceof ConstantExpression) {
             Object v = ((ConstantExpression) e).value
             if (v instanceof BigDecimal) return session.realLit(TheoryApi.rationalOf(v))
@@ -5978,7 +6031,9 @@ class Encoder implements TheoryApi {
         if ((op == Types.PLUS || op == Types.MINUS || op == Types.MULTIPLY || op == Types.LEFT_SHIFT) &&
                 (isNamedListOperand(be.leftExpression) || isNamedListOperand(be.rightExpression))) return null
 
-        Object L = translate(be.leftExpression)
+        boolean logical = op == Types.LOGICAL_AND || op == Types.LOGICAL_OR
+        // Phase 422 — a safe call's truth is false on a null receiver (its value's null case is unconstrained)
+        Object L = logical && isSafeCall(be.leftExpression) ? truthy(be.leftExpression, null) : translate(be.leftExpression)
         Object R
         if (op == Types.LOGICAL_AND) {
             // Phase 380 — `A && B` means B only where A holds: A's simple lower bounds (`0 <= i`) fold B's ranges
@@ -5999,12 +6054,12 @@ class Encoder implements TheoryApi {
                     }
                 }
             }
-            try { R = translate(be.rightExpression) } finally {
+            try { R = isSafeCall(be.rightExpression) ? truthy(be.rightExpression, null) : translate(be.rightExpression) } finally {
                 guardLowerBounds.clear(); guardLowerBounds.putAll(prevGuards)
                 guardOrdered.clear(); guardOrdered.addAll(prevOrdered)
             }
         } else {
-            R = translate(be.rightExpression)
+            R = logical && isSafeCall(be.rightExpression) ? truthy(be.rightExpression, null) : translate(be.rightExpression)
         }
         if (L == null || R == null) return null
         // Phase 129 — a String/sequence operand reached the arithmetic/comparison dispatch, which is typed for
@@ -8620,6 +8675,13 @@ class Encoder implements TheoryApi {
      * un-nameable reference) so the caller skips loudly — never a silent pass or a crash.
      */
     private Object truthy(Expression e, Object h) {
+        // Phase 422 — `x?.m()` is null, so false, when x is; else the call's truth
+        if (isSafeCall(e)) {
+            Object recvNull = nullityOfExpr(((MethodCallExpression) e).objectExpression)
+            MethodCallExpression c = unsafeCopy((MethodCallExpression) e)
+            Object inner = recvNull == null ? null : truthy(c, translate(c))
+            return inner == null ? null : session.and([session.not(recvNull), inner])
+        }
         if (h != null && session.isBool(h)) return h                  // already Boolean — nothing to coerce
         // A known sized container is checked first — its value handle may be Int-sorted (a size), which would
         // otherwise be mis-read as integral truth. Groovy truth: non-null ∧ size > 0.

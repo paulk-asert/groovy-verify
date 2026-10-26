@@ -930,6 +930,13 @@ class Reporter {
             "Could not decide receiver non-null", result)
     }
 
+    /** Phase 422 — a safe call's null value used where a null throws (`xs?.size() + 1`: "Cannot execute null+1"). */
+    static String formatNullSafeUse(String receiver, String callText, CheckResult result) {
+        implicit("Possible NullPointerException: ${callText} is null when ${receiver} is, and a null throws where it's used",
+            "${receiver} != null",
+            "Could not decide receiver non-null", result)
+    }
+
     /** Phase 415 — Groovy's message for a property read on null: "Cannot get property 'length' on null object". */
     static String formatNullPropertyRead(String receiver, String property, CheckResult result) {
         implicit("Possible NullPointerException: Cannot get property '${property}' on null object",
