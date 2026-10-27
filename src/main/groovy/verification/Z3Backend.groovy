@@ -1934,6 +1934,19 @@ class Z3Session implements SmtSession {
                 }
             }
         }
+        // Phase 443 — a String sequence's elements the model committed to (`xs[k]`, an Int->String array): a for-in
+        // clause over the element refuted with `f([null])`, the element's value never read back
+        sortedArrays.each { String key, ArrayExpr arr ->
+            com.microsoft.z3.ArraySort srt = (com.microsoft.z3.ArraySort) arr.getSort()
+            if (cachedStringSort == null || srt.getDomain() != ctx.getIntSort() || srt.getRange() != cachedStringSort) return
+            String name = key.substring(0, key.indexOf(':'))
+            Long szL = ce.get(name + '.size')
+            if (szL == null || szL <= 0L || szL > 16L) return
+            for (int k = 0; k < szL; k++) {
+                Expr ev = m.evaluate((Expr) select(arr, ctx.mkInt(k)), false)
+                if (ev != null && ev.isString()) sce[name + '[' + k + ']'] = cleanZ3String(ev.getString())
+            }
+        }
         fpVars.each { String name, Expr var ->   // Phase 440
             String lit = fpLiteral(m, var)
             if (lit != null) sce[name] = lit

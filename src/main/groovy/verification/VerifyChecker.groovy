@@ -3045,6 +3045,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             r.textValues = new LinkedHashMap<String, String>()
             r.sortedCounterexample.each { String k, String v ->
                 if (k != 'result' && currentFpNames.containsKey(k) && (!r.counterexample.containsKey(k))) r.textValues.put(k, v)
+                // Phase 443 — a String element, where an int one would show (a parameter's array or list element)
+                int br = k.indexOf('[')
+                if (br > 0 && k.endsWith(']') && elementArrays.contains(k.substring(0, br)) &&
+                    r.counterexample.get(k.substring(0, br) + '?null') != 1L) {
+                    r.textValues.put(k, groovyStringLiteral(v))
+                }
             }
         }
         // Phase 430 — a boolean's model value is 0/1: shown as the false/true the source would print
@@ -3504,6 +3510,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (elems != null && comp in NUMERIC_COMPONENT_NAMES && elems.any { it != 0L }) {
                 return "[${elems.join(', ')}] as ${comp}[]"
             }
+            List<String> strs = pinnedStrings(p.name, n, sortedCe)   // Phase 443
+            if (strs != null && comp == 'String') return "[${strs.join(', ')}] as String[]"
             return "new ${comp}[${n}]"
         }
         String tn = t?.name
@@ -3537,6 +3545,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             long n = sizeOf(p.name, ce)
             List<Long> elems = pinnedElements(p.name, n, ce)
             if (elems != null && elems.any { it != 0L }) return "[${elems.join(', ')}]"
+            List<String> strs = pinnedStrings(p.name, n, sortedCe)   // Phase 443
+            if (strs != null) return "[${strs.join(', ')}]"
             return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
         }
         // Phase 369 — a non-null object: `new C(…)` with the properties the model fixed (Phase 45's `c$field`), when C
@@ -3612,6 +3622,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Long v = ce.get(name + '[' + k + ']')
             if (v != null) any = true
             out.add(v != null ? v : 0L)
+        }
+        any ? out : null
+    }
+
+    /** Phase 443 — a String sequence's elements as Groovy literals, when the model committed to one: a pinned element
+     *  as its value, any other as {@code ""} (a String parameter's own default) */
+    private static List<String> pinnedStrings(String name, long n, Map<String, String> sortedCe) {
+        if (n <= 0L || sortedCe == null) return null
+        boolean any = false
+        List<String> out = new ArrayList<String>()
+        for (long k = 0; k < n; k++) {
+            String v = sortedCe.get(name + '[' + k + ']')
+            if (v != null) any = true
+            out.add(v != null ? groovyStringLiteral(v) : '""')
         }
         any ? out : null
     }

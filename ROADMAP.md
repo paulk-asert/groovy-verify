@@ -18759,6 +18759,31 @@ invariant failing on entry and one not preserved. Mutation-checked: without the 
 per-element literals come out double-quoted, and without the quoting they're bare, failing the first two cases either
 way.
 
+## Phase 443 — a String element in the failing call  *(shipped — honesty of the message)*
+
+Phase 442 found it: a for-in invariant over a `List<String>`'s element refuted with `fails on: f([null])`, a call
+whose element satisfies the clause (`null != 'q'`). A String list or array is an `Int->String` array in the solver,
+and the model walk read back only `Int->Int` ones, so no String element ever reached the call: a list's were `null`,
+an array's `new String[1]`. A postcondition over `xs[0]` had the same wrong call.
+
+- **Read back**: `refutationFromModel` reads an `Int->String` array's elements the model fixed (`xs[k]`, up to the
+  same 16 an int array's are capped at) into the sorted counterexample.
+- **Passed in the call**: `f(["q"])`, `f(["q"] as String[])`; an element the model left open is `""`, a String
+  parameter's own default.
+- **Shown as an int element is**: an array parameter's (`xs[0] = "q"`, beside `xs[0] = 5` for an `int[]`); a list's
+  isn't, as a `List<Integer>`'s isn't.
+
+**Found, not fixed — a String loop variable's size:** in a for-in loop, `x.size()` on a String element is an int of its
+own, not the string's length: `@Requires({ xs.every { it.size() < 3 } })` with `@Invariant({ x.size() < 3 })` refutes
+(a false alarm, not unsound — the int is unconstrained, so the check only fails more), and its call can't be built.
+`x.length()` there is outside the fragment.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P443 String element witness`, 5 cases: a for-in clause over a list's element and an array's
+(with its counterexample), a postcondition over a list's element and an array's second, and two elements each in its
+place (one fixed by the @Requires, one by the postcondition). Mutation-checked: without the read-back all five fail.
+
 ## Definition of done, per increment
 
 An increment is done when:
