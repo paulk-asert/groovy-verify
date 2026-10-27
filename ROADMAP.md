@@ -18815,6 +18815,45 @@ invariant passing a string that breaks it (`f(["ABC"])`), and a null element nul
 without the for-in type five fail, without the `every` type five fail, and without the nullity read-back the
 null-element case fails.
 
+## Phase 445 — an element's nullity follows its stores  *(shipped — soundness, and reach)*
+
+Phase 444 left three element-nullity findings. Probing them found a fourth, worse one: an element's nullity is a
+per-element flag (`xs$nullElem`, Phase 37) that a `@Requires({ xs[0] != null })` fixes and an `xs[i].m()` obligation
+reads, and nothing else touched it. **Unsound:** `xs[0] = null; xs[0].size()` (and `xs.set(0, null)`) after that
+@Requires compiled clean, as did `xs[0] = z` for a String parameter `z` — the store rebound the contents, never
+the flag. (A loop's write was already safe: a loop
+havocs what it writes.) And the names that hold an element each had a nullity of their own, so a fact about the
+elements never reached them — a false NPE alarm on a for-in's `x`, a `String y = xs[0]`, after `xs.every { it != null }`,
+over `List<@NonNull String>`, and after `xs[0] == 'ab'` (or `s == 'ab'` on a String parameter).
+
+- **The flag follows the contents**: an element store (`xs[i] = v`, `xs.set(i, v)`, a loop body's) stores `v`'s
+  nullity at `i` (unknown when `v`'s is); an append (`add`) stores it at the old size; a havoc of the contents (an
+  unknown update, a may-alias write, a call that writes the array) and a fresh array (a literal, `findAll`, a range,
+  `new T[n]`, a re-assignment) take a fresh flag; an alias (`b = a`, a snapshot, a copy) takes the source's.
+- **An element read carries the element's flag** (`nullityOfExpr` of `xs[i]` / `xs.get(i)`): a for-in's `x = xs[idx]`
+  and `String y = xs[0]` are null when the element is; over a `@NonNull`-element container, never.
+- **An `every` / `any` parameter is the element**: `it != null` inside reads the element's flag at the bound index,
+  so `xs.every { it != null }` is a fact about every element.
+- **Equal to a String literal isn't null**: for an element or a parameter, `s == 'ab'` is `s != null && …`, and
+  `s != 'ab'` is `s == null || …` (Groovy's `null == 'ab'` is false). So `@Requires({ xs[0] == 'ab' })` keeps `xs[0]`
+  non-null, and an NPE's failing call no longer puts `null` there: `f(["ab", null])`, where Phase 444 read
+  `f([null, null])`. Not for a computed value: `result`'s nullity isn't tied to its value (`s.reverse()`,
+  `n.toString()`), and the first gate run failed eight `result == 'cba'` proofs until the rule was narrowed.
+
+**Not changed:** a callee's formal takes no element nullity from its actual (a callee's `@Requires({ xs[0] != null })`
+isn't discharged by the caller's own fact — a false alarm, not unsound); a literal comparison carries nullity only
+for a String, not a boxed number.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P445 element nullity`, 14 cases. Measured at the parent commit: three stores compiled clean
+(unsound — `xs[0] = null`, `xs[0] = z` for a String parameter `z`, `xs.set(0, null)`), eight were false NPE alarms,
+and the loop store and `s != 'ab'` were already refuted (kept as pins). The fourteenth pins the failing call
+`f(["ab", null])`. Mutation-checked, part by part: without the store's nullity, the may-be-null parameter's store and
+the appended literal fail (a literal `null` doesn't translate, so its store havocs the contents, and the havoc's fresh
+flag covers it); without the element read, six fail; without the `every` binding, two; without the literal rule,
+three.
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -1122,6 +1122,7 @@ class Encoder implements TheoryApi {
         session.assertExpr(session.ge(size, session.intLit(0L)))
         sizeEnv.put(name + '.size', size)
         nullEnv.put(name, session.boolVar(name + '?null#ra' + n))
+        freshElementNullity(name)   // Phase 445
         localFactories.remove(name)
     }
 
@@ -1135,6 +1136,7 @@ class Encoder implements TheoryApi {
             freshArray(name)
         } else {
             arrEnv.put(name, arrayFor(src))
+            copyElementNullity(name, src)   // Phase 445
             FactoryContainer f = localFactories.get(src)
             if (f != null) localFactories.put(name, f) else localFactories.remove(name)
         }
@@ -1200,6 +1202,7 @@ class Encoder implements TheoryApi {
     /** Phase 378 — {@code name} now holds {@code from}'s array: its contents, length and nullity; no factory record. */
     void copyOracles(String name, String from) {
         arrEnv.put(name, arrayFor(from))
+        copyElementNullity(name, from)   // Phase 445
         sizeEnv.put(name + '.size', sizeOf(from))
         nullEnv.put(name, nullityOf(from))
         localFactories.remove(name)
@@ -1210,6 +1213,7 @@ class Encoder implements TheoryApi {
     String snapshotArray(String name) {
         String tmp = '$pre$' + name + '#' + (reassignCounter++)
         arrEnv.put(tmp, arrayFor(name))   // the state now, copied: nothing writes the snapshot
+        copyElementNullity(tmp, name)   // Phase 445
         sizeEnv.put(tmp + '.size', sizeOf(name))
         nullEnv.put(tmp, nullityOf(name))
         FactoryContainer f = localFactories.get(name)
@@ -2258,6 +2262,7 @@ class Encoder implements TheoryApi {
     }
 
     private Object havocContents(String name) {
+        freshElementNullity(name)   // Phase 445
         String havocName = name + '$havoc$' + (havocCounter++)
         Object[] sorts = arraySortsFor(name)
         Object kSort = sorts[0], vSort = sorts[1]
@@ -3360,6 +3365,7 @@ class Encoder implements TheoryApi {
                 session.implies(session.and([session.le(zero, k), session.lt(k, size)]), kept), [elem]))
             localFactories.remove(name)
             bindArray(name, arr)
+            freshElementNullity(name)   // Phase 445 — another array's elements
             bindSize(name, size)
             session.assertExpr(session.not(nullityOf(name)))
             return true
@@ -3429,6 +3435,7 @@ class Encoder implements TheoryApi {
             localFactories.remove(name)
             registerListName(name)
             bindArray(name, arr)
+            freshElementNullity(name)   // Phase 445
             bindSize(name, size)
             session.assertExpr(session.not(nullityOf(name)))
             return true
@@ -3533,6 +3540,7 @@ class Encoder implements TheoryApi {
         }
         localFactories.remove(name)
         bindArray(name, arr)
+        freshElementNullity(name)   // Phase 445
         bindSize(name, session.intLit((long) size))
         session.assertExpr(session.not(nullityOf(name)))
         if (immutable) immutableRangeLocals.add(name) else immutableRangeLocals.remove(name)
@@ -3626,6 +3634,7 @@ class Encoder implements TheoryApi {
             Object[] sorts = arraySortsFor(name)
             if (sorts[1] == session.intSort()) {
                 bindArray(name, zeroArray())
+                freshElementNullity(name)   // Phase 445
             } else {
                 havocArray(name)   // Phase 375 — fresh contents (a re-assignment's old ones are another array's)
             }
@@ -4561,6 +4570,14 @@ class Encoder implements TheoryApi {
             e instanceof ClosureExpression) return session.boolLit(false)   // Phase 390 — a closure literal too
         // Phase 414 — nor is an array creation, or an array's clone (on a null one it throws)
         if (e instanceof ArrayExpression || isArrayClone(e)) return session.boolLit(false)
+        // Phase 445 — an element read is null when the element is: a for-in's `x = xs[i]` and a `String y = xs[0]`
+        // carry the flag a `@Requires({ xs[0] != null })` (or a non-null element type) fixes, not a fresh one
+        IndexedNullTarget ind = indexedAccessTarget(e)
+        if (ind != null && (isListTyped(ind.containerName) || isArrayTyped(ind.containerName))) {
+            if (nonNullElementContainers.contains(ind.containerName)) return session.boolLit(false)
+            Object idxH = translate(ind.indexExpr)
+            return idxH == null ? null : session.eq(session.select(elementNullityFor(ind.containerName), idxH), session.intLit(1L))
+        }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
             isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
         // Phase 420 — nor is a String's own method's String (`s.substring(2)`, `s.trim()`; a GDK one, `s.find(re)`, may be)
@@ -4581,6 +4598,37 @@ class Encoder implements TheoryApi {
      * which discharges the implicit per-element NPE obligation at a later {@code xs[i].method()}.
      */
     Object elementNullityFor(String name) { arrayFor(name + '$nullElem') }
+
+    private final Set<BinaryExpression> literalEqInProgress =
+        Collections.newSetFromMap(new IdentityHashMap<BinaryExpression, Boolean>())
+
+    private static boolean isNonNullStringLiteral(Expression e) {
+        e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof String
+    }
+
+    /** Phase 445 — the containers whose elements are declared non-null ({@code List<@NonNull String>}) */
+    Set<String> nonNullElementContainers = Collections.<String>emptySet()
+
+    /** Phase 445 — {@code arr[idx] = value}: the element's nullity is the value's (unknown when that is), so a
+     *  {@code @Requires({ xs[0] != null })} no longer outlives {@code xs[0] = null} */
+    void storeElementNullity(String arr, Object idx, Expression value) {
+        if (idx == null) { freshElementNullity(arr); return }
+        Object nul = value == null ? null : nullityOfExpr(value)
+        Object flag = nul != null ? session.ite(nul, session.intLit(1L), session.intLit(0L)) :
+            session.intVar(arr + '$nullElem$st' + (havocCounter++))
+        arrEnv.put(arr + '$nullElem', session.store(elementNullityFor(arr), idx, flag))
+    }
+
+    /** Phase 445 — {@code arr}'s elements are another array's or unknown: their nullity too */
+    void freshElementNullity(String arr) {
+        if (arr.endsWith('$nullElem')) return
+        arrEnv.put(arr + '$nullElem', session.arrayVar(arr + '$nullElem$fresh' + (havocCounter++)))
+    }
+
+    /** Phase 445 — {@code to} holds {@code from}'s array: its elements' nullity too */
+    void copyElementNullity(String to, String from) {
+        arrEnv.put(to + '$nullElem', elementNullityFor(from))
+    }
 
     /**
      * Translate a Groovy expression to an SMT handle. Returns null
@@ -5995,6 +6043,27 @@ class Encoder implements TheoryApi {
             Object rangeMem = translateIntRangeContains(inRecv, be.leftExpression)
             if (rangeMem == null) rangeMem = translateStringRangeContains(inRecv, be.leftExpression)
             if (rangeMem != null) return sym == 'in' ? rangeMem : session.not(rangeMem)
+        }
+
+        // Phase 445 — a String equal to a String literal isn't null (`null == 'ab'` is false, `null != 'ab'` true): the
+        // comparison carries the other side's nullity, so `@Requires({ xs[0] == 'ab' })` makes `xs[0]` non-null —
+        if ((op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) && !literalEqInProgress.contains(be)) {
+            Expression other = isNonNullStringLiteral(be.rightExpression) ? be.leftExpression :
+                               isNonNullStringLiteral(be.leftExpression) ? be.rightExpression : null
+            // an element or a parameter: names whose nullity a contract states. A computed value's (`result` of
+            // `s.reverse()`) isn't tied to its value, and would make `result == 'cba'` unprovable
+            boolean stated = indexedAccessTarget(other) != null || (other instanceof VariableExpression &&
+                vcMethod?.parameters?.any { it.name == ((VariableExpression) other).name })
+            if (other != null && stated && isStringReceiver(other)) {
+                Object nul = nullityOfExpr(other)
+                if (nul != null) {
+                    Object core
+                    literalEqInProgress.add(be)
+                    try { core = translate(be) } finally { literalEqInProgress.remove(be) }
+                    if (core == null) return null
+                    return op == Types.COMPARE_EQUAL ? session.and([session.not(nul), core]) : session.or([nul, core])
+                }
+            }
         }
 
         // Nullity: x == null / x != null, before we try to translate `null`.
@@ -9041,7 +9110,7 @@ class Encoder implements TheoryApi {
             ClassNode et = listElementTypes.get(xs)
             Map<String, ClassNode> prevTypes = et != null && et.name == 'java.lang.String' ? pushScalarTypes([(pname): et]) : null
             try {
-                return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential)
+                return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential, xs)
             } finally {
                 if (prevTypes != null) popScalarTypes(prevTypes)
             }
@@ -9063,7 +9132,7 @@ class Encoder implements TheoryApi {
      * is the index {@code i} and the body's own {@code (select arr i)} terms become the triggers.
      */
     private Object emitQuantifier(String pname, Object loH, Object hiH, Expression bodyExpr,
-                                  Object elementArr, boolean existential) {
+                                  Object elementArr, boolean existential, String elementOf = null) {
         if (loH == null || hiH == null) return null
         Object iv = session.boundIntVar(pname + '$q' + (quantCounter++))
         List<Object> triggers = new ArrayList<Object>()
@@ -9076,6 +9145,12 @@ class Encoder implements TheoryApi {
         Object prevBinding = env.get(pname)
         List<Object> prevSink = triggerSink
         env.put(pname, binding)
+        // Phase 445 — the parameter is the element: its nullity is the element's (`xs.every { it != null }`)
+        Object prevNull = elementOf != null ? nullEnv.get(pname) : null
+        if (elementOf != null) {
+            nullEnv.put(pname, nonNullElementContainers.contains(elementOf) ? session.boolLit(false) :
+                session.eq(session.select(elementNullityFor(elementOf), iv), session.intLit(1L)))
+        }
         triggerSink = triggers
         // Phase 380 — an index quantifier's variable is at least its range's constant start (so `0..<it` inside ascends)
         Long prevLo = quantLowerBounds.get(pname)
@@ -9093,6 +9168,7 @@ class Encoder implements TheoryApi {
         } finally {
             triggerSink = prevSink
             if (prevBinding == null) env.remove(pname) else env.put(pname, prevBinding)
+            if (elementOf != null) { if (prevNull == null) nullEnv.remove(pname) else nullEnv.put(pname, prevNull) }
             quantDepth--
             if (prevLo == null) quantLowerBounds.remove(pname) else quantLowerBounds.put(pname, prevLo)
         }

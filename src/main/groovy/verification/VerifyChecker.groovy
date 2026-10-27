@@ -397,6 +397,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         MethodNode forWrites = currentMethod
         if (forWrites != null) made.inPlaceWritesSupplier = { -> inPlaceWritesOf(forWrites) }
         made.reversedRanges = currentReversedRanges   // Phase 380
+        made.nonNullElementContainers = currentNonNullElementContainers   // Phase 445
         made.contractedValue = { Expression call -> contractedCallValue(session, made, call) }   // Phase 401
         made.mayShare = arraySharers(currentMethod)   // Phase 404
         made.receiverArrays = receiverArraysOf(currentMethod)   // Phase 413
@@ -5734,7 +5735,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object val = enc.translateInSort(st.value, isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr))
                     if (idx == null || val == null) { if (isMap) enc.havocMap(st.arr) else enc.havocArray(st.arr) }
                     else if (isMap) doMapPut(s, enc, st.arr, idx, val)
-                    else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storedInto(st.arr) }
+                    else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storeElementNullity(st.arr, idx, st.value); enc.storedInto(st.arr) }   // Phase 445
                 } else if (step instanceof FieldAssign) {
                     // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
                     // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
@@ -14260,6 +14261,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             (ClassNode) a.rhs.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE))) {
                         String src = ((VariableExpression) a.rhs).name
                         enc.bindArray(a.name, enc.arrayFor(src))
+                        enc.copyElementNullity(a.name, src)   // Phase 445
                         enc.bindSize(a.name, enc.sizeOf(src))
                         enc.bindNullity(a.name, enc.nullityOf(src))
                     }
@@ -14497,6 +14499,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             session.assertExpr(session.implies(session.not(inRange), session.eq(newSum, oldSum)))
                         }
                         enc.bindArray(st.arr, newA)
+                        enc.storeElementNullity(st.arr, idx, st.value)   // Phase 445
                     }
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
@@ -15178,6 +15181,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object newArr = s.store(oldArr, oldSize, x)
             Object newSize = s.plus(oldSize, one)
             enc.bindArray(name, newArr)
+            enc.storeElementNullity(name, oldSize, args.get(0))   // Phase 445
             enc.bindSize(name, newSize)
             // Phase 38d — invalidate any factory record on the local: post-mutation, the literal
             // args no longer describe xs's contents, and factoryContainerFor lookups should fall
@@ -19979,7 +19983,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object val = enc.translateInSort(st.value, valSort)
                     if (idx != null && val != null) {
                         if (isMap) doMapPut(s, enc, st.arr, idx, val)
-                        else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storedInto(st.arr) }   // Phase 404
+                        else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storeElementNullity(st.arr, idx, st.value); enc.storedInto(st.arr) }   // Phase 404/445
                     }
                 } else if (step instanceof LemmaCall) {
                     Expression lc = ((LemmaCall) step).call
@@ -20728,7 +20732,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object val = enc.translateInSort(be.rightExpression, valSort)
                 if (idx == null || val == null) { havocLocation(enc, name); return true }
                 if (isMap) doMapPut(s, enc, name, idx, val)
-                else { enc.bindArray(name, s.store(enc.arrayFor(name), idx, val)); enc.storedInto(name) }   // Phase 404
+                else { enc.bindArray(name, s.store(enc.arrayFor(name), idx, val)); enc.storeElementNullity(name, idx, be.rightExpression); enc.storedInto(name) }   // Phase 404/445
                 return true
             }
         }
@@ -21239,6 +21243,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String hv = 'havoc$' + callerLoc + '$' + (havocCounter++)
                 enc.bind(callerLoc, s.intVar(hv))     // havoc
                 enc.bindArray(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                enc.freshElementNullity(callerLoc)   // Phase 445 — a write may store null
                 // Phase 406 — the model's value here is one the frame allows, no run's, unless the @Ensures pins it
                 if (!pinnedByEnsures(ensuresAst, loc)) {
                     List<String> ts = new ArrayList<String>()
