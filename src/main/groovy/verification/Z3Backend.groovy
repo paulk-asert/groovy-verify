@@ -1884,6 +1884,8 @@ class Z3Session implements SmtSession {
         // come back as the select term and are skipped, keeping the repro free of irrelevant values.
         arrays.each { String name, ArrayExpr arr ->
             Long szL = ce.get(name + '.size')
+            // Phase 444 — an element-nullity array (`xs$nullElem`) runs over its sequence's elements
+            if (szL == null && name.endsWith('$nullElem')) szL = ce.get(name.substring(0, name.length() - '$nullElem'.length()) + '.size')
             if (szL == null) return
             long sz = szL
             if (sz <= 0L || sz > 16L) return          // cap enumeration; huge/zero sizes stay size-filled

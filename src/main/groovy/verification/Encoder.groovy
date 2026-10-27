@@ -9037,7 +9037,14 @@ class Encoder implements TheoryApi {
         // xs.every|any { it … }  -> element over [0, xs.size); the parameter is the element xs[i]
         if (recv instanceof VariableExpression) {
             String xs = ((VariableExpression) recv).name
-            return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential)
+            // Phase 444 — a String element's parameter is a String: `it.size()` is its length, not an int of its own
+            ClassNode et = listElementTypes.get(xs)
+            Map<String, ClassNode> prevTypes = et != null && et.name == 'java.lang.String' ? pushScalarTypes([(pname): et]) : null
+            try {
+                return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential)
+            } finally {
+                if (prevTypes != null) popScalarTypes(prevTypes)
+            }
         }
 
         return null

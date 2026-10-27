@@ -2487,6 +2487,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     super.visitDeclarationExpression(de)
                 }
+                // Phase 444 — a for-in's String variable, declared (`for (String x : xs)`) or taken from a parameter's
+                // element type (`for (x in xs)`): its `x.size()` is the string's length, not an int of its own
+                @Override
+                void visitForLoop(ForStatement fs) {
+                    Parameter v = fs.variable
+                    if (v != null && v != ForStatement.FOR_LOOP_DUMMY) {
+                        ClassNode t = v.originType ?: v.type
+                        if ((t == null || ClassHelper.isDynamicTyped(t)) && fs.collectionExpression instanceof VariableExpression) {
+                            Parameter src = node.parameters.find { it.name == ((VariableExpression) fs.collectionExpression).name }
+                            t = src == null ? null : src.type.isArray() ? src.type.componentType : isListType(src.type) ? firstGenericOrInt(src.type) : null
+                        }
+                        if (t != null && t.name == 'java.lang.String') out.putIfAbsent(v.name, t)
+                    }
+                    super.visitForLoop(fs)
+                }
             })
         } catch (Throwable ignored) {}
         out
@@ -3510,7 +3525,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (elems != null && comp in NUMERIC_COMPONENT_NAMES && elems.any { it != 0L }) {
                 return "[${elems.join(', ')}] as ${comp}[]"
             }
-            List<String> strs = pinnedStrings(p.name, n, sortedCe)   // Phase 443
+            List<String> strs = pinnedStrings(p.name, n, ce, sortedCe)   // Phase 443
             if (strs != null && comp == 'String') return "[${strs.join(', ')}] as String[]"
             return "new ${comp}[${n}]"
         }
@@ -3545,7 +3560,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             long n = sizeOf(p.name, ce)
             List<Long> elems = pinnedElements(p.name, n, ce)
             if (elems != null && elems.any { it != 0L }) return "[${elems.join(', ')}]"
-            List<String> strs = pinnedStrings(p.name, n, sortedCe)   // Phase 443
+            List<String> strs = pinnedStrings(p.name, n, ce, sortedCe)   // Phase 443
             if (strs != null) return "[${strs.join(', ')}]"
             return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
         }
@@ -3628,14 +3643,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 443 — a String sequence's elements as Groovy literals, when the model committed to one: a pinned element
      *  as its value, any other as {@code ""} (a String parameter's own default) */
-    private static List<String> pinnedStrings(String name, long n, Map<String, String> sortedCe) {
+    private static List<String> pinnedStrings(String name, long n, Map<String, Long> ce, Map<String, String> sortedCe) {
         if (n <= 0L || sortedCe == null) return null
         boolean any = false
         List<String> out = new ArrayList<String>()
         for (long k = 0; k < n; k++) {
             String v = sortedCe.get(name + '[' + k + ']')
             if (v != null) any = true
-            out.add(v != null ? groovyStringLiteral(v) : '""')
+            // Phase 444 — an element the model made null (`xs$nullElem[k]`) is null, whatever string it was given
+            out.add(ce.get(name + '$nullElem[' + k + ']') == 1L ? 'null' : v != null ? groovyStringLiteral(v) : '""')
         }
         any ? out : null
     }

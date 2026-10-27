@@ -18784,6 +18784,37 @@ own, not the string's length: `@Requires({ xs.every { it.size() < 3 } })` with `
 (with its counterexample), a postcondition over a list's element and an array's second, and two elements each in its
 place (one fixed by the @Requires, one by the postcondition). Mutation-checked: without the read-back all five fail.
 
+## Phase 444 — a String element's size  *(shipped — reach)*
+
+Phase 443 found it: a for-in's String variable `x` was no String to the encoder — only parameters, fields and typed
+locals are recorded as one — so `x.size()` was an int of its own, not the string's length. The `it` of an `every`
+over a String list was the same: `@Requires({ xs.every { it.size() < 3 } })` said nothing about the strings, and
+`@Invariant({ x.size() < 3 })` over them refuted (`counterexample: it.size() = 0, x.size() = 3`, `fails on: f([null])`)
+— a false alarm, not unsound. `x.length()` there was outside the fragment.
+
+- **A for-in variable is a String**: declared (`for (String x : xs)`), or untyped over a parameter whose element type
+  is String (`for (x in xs)`), it is recorded beside the typed locals (`collectScalarTypes`).
+- **An `every` / `any` parameter is a String** over a String list or array, while its body translates
+  (`pushScalarTypes`, as Phase 133's carrier formals are).
+- **A null element is null in the call**: the model walk reads an element-nullity array (`xs$nullElem`) over its
+  list's size, and an element flagged null renders `null`. Phase 443 had read the element's string back, so a null
+  element showed as `f([""])`.
+
+**Found, not fixed:**
+- A for-in variable over `List<@NonNull String>` still owes `x != null`; the element annotation reaches `xs[i]`, not
+  the loop variable.
+- `xs.every { it != null }` doesn't constrain element nullity (`xs$nullElem`); only the element annotation does.
+- `@Requires({ xs[0] == 'ab' })` doesn't make `xs[0]` non-null in the model, so an NPE's call can pass `null` where
+  the precondition fixes a string (`f([null, null])`). The same as before Phase 443.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P444 String element size`, 7 cases: an `every` over the strings proving a for-in invariant,
+the same spelled `length()`, an untyped for-in variable, a body assert, an `every` bounding an element read, a refuted
+invariant passing a string that breaks it (`f(["ABC"])`), and a null element null in the call. Mutation-checked:
+without the for-in type five fail, without the `every` type five fail, and without the nullity read-back the
+null-element case fails.
+
 ## Definition of done, per increment
 
 An increment is done when:
