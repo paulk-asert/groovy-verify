@@ -94,6 +94,7 @@ import org.codehaus.groovy.ast.stmt.WhileStatement
 import org.codehaus.groovy.ast.stmt.TryCatchStatement
 import org.codehaus.groovy.ast.stmt.CatchStatement
 import org.codehaus.groovy.control.CompilePhase
+import org.codehaus.groovy.control.Janitor
 import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
@@ -3385,27 +3386,48 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  text it can slice, else double-quoted. A property's, a method's or a map key's name stays as written. */
     static String shownText(Expression e) {
         if (e == null) return null
+        String source = (String) e.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY)
+        List<String> lines = source?.readLines()
+        quoted(e, lines == null ? null : { int n -> n <= lines.size() ? lines[n - 1] : null })
+    }
+
+    /** Phase 441 — {@code e} from a method body (an assertion's condition): its columns are the file's own, so a literal
+     *  is cut from the line {@code su} reads */
+    static String shownText(Expression e, SourceUnit su) {
+        if (e == null) return null
+        if (su == null) return shownText(e)
+        Janitor janitor = new Janitor()
         try {
-            new Quoting(source: (String) e.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY)).transform(e).text
+            quoted(e, { int n -> su.getSample(n, 0, janitor) })
+        } finally {
+            janitor.cleanup()
+        }
+    }
+
+    private static String quoted(Expression e, Closure<String> line) {
+        try {
+            new Quoting(line: line).transform(e).text
         } catch (Throwable ignored) {
             e.text
         }
     }
 
     private static class Quoting implements ExpressionTransformer {
-        String source
+        Closure<String> line
 
-        /** the literal as {@code source} spells it, when the node's columns cut one quoted run out of it */
+        /** the literal as its line spells it, when the node's columns cut one quoted run out of it — and a run that
+         *  isn't the value (a node whose position isn't its own) is not taken */
         private String written(ConstantExpression c) {
-            if (source == null || c.lineNumber < 1 || c.lastLineNumber != c.lineNumber) return null
-            List<String> lines = source.readLines()
-            if (c.lineNumber > lines.size()) return null
-            String line = lines[c.lineNumber - 1]
+            if (line == null || c.lineNumber < 1 || c.lastLineNumber != c.lineNumber) return null
+            String text = line.call(c.lineNumber)
+            if (text == null) return null
             int from = c.columnNumber - 1, to = c.lastColumnNumber - 1
-            if (from < 0 || to > line.length() || to - from < 2) return null
-            String cut = line.substring(from, to)
+            if (from < 0 || to > text.length() || to - from < 2) return null
+            String cut = text.substring(from, to)
             char q = cut.charAt(0)
-            (q == '\'' as char || q == '"' as char) && cut.charAt(cut.length() - 1) == q ? cut : null
+            if (!((q == '\'' as char || q == '"' as char || q == '/' as char) && cut.charAt(cut.length() - 1) == q)) return null
+            String inner = cut.substring(1, cut.length() - 1)
+            inner.contains('\\') || inner == c.value ? cut : null
         }
 
         @Override
@@ -6912,7 +6934,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // 'c' (line n) may block forever — …"), which would paste an English sentence into a contract.
                 String label = (String) asite.node.getNodeMetaData(ASSERT_LABEL_KEY)   // Phase 252 — a synthesized assert's own wording
                 boolean overParam = label == null && referencesParameter(asite.cond, currentMethod)
-                addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : shownText(asite.cond), r, overParam), r, 'AssertionError'), asite.node)
+                addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : shownText(asite.cond, typeCheckingVisitor.typeCheckingContext.source), r, overParam), r, 'AssertionError'), asite.node)
             }
             return
         }

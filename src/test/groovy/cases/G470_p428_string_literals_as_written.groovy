@@ -56,9 +56,9 @@ class G470_p428_string_literals_as_written {
                         static int f(int[] a) { a.length }
                     }''')],
 
-        // An assert's condition is the body's own, not a re-parsed contract: a Groovy literal, escaped
-        [group: "P428 string literals as written", name: "an assertion's literal is quoted and escaped",
-         expect: 'Assertion may not hold: (s == "a\\$b\\"c")',
+        // An assert's condition is the body's own; Phase 441 cuts its literal from the file's line, as written
+        [group: "P428 string literals as written", name: "an assertion's literal is quoted as written",
+         expect: 'Assertion may not hold: (s == \'a$b"c\')',
          src: tc('''class A {
                         static void f(String s) { assert s == 'a$b"c' }
                     }''')],

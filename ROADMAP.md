@@ -18702,8 +18702,8 @@ Found in Phase 439: an FP refutation showed no values. Z3's FP variables weren't
 - **Wrong witness:** `@Ensures({ result == p * 2.0d })` over `d = p; d = d * 2.0d` refutes with `fails on:
   d5(Double.NaN)`, a call whose contract holds at runtime.
 
-Which semantics to model (or whether Groovy's comparison is the bug) is open; the cases here avoid NaN-dependent
-witnesses.
+Waiting on GROOVY-12538, which decides Groovy's NaN semantics; the FP model follows once it lands. Until then the
+cases here avoid NaN-dependent witnesses.
 
 **Changed cases:** none.
 
@@ -18711,6 +18711,30 @@ witnesses.
 beside an int, and a value through a double local. Mutation-checked: not reading the FP variables back fails all three.
 
 ---
+
+## Phase 441 — an assertion's literals as written  *(shipped — honesty of the message)*
+
+Phase 428 kept a contract's string literals as written: a re-parsed contract carries the text it was parsed from, and a
+literal's columns cut its spelling out of it. An assertion's condition is the body's own AST, with no captured text,
+so its literals were re-quoted from their values as double-quoted Groovy literals: `assert s == 'x'` read
+`(s == "x")`, `assert s ==~ /a+/` read `(s ==~ "a+")`, and an escape was re-escaped from the value rather than kept as
+typed (`'\u0041'` read `"A"`).
+
+- **Cut from the file's line**: a body expression's columns are the file's own, so `shownText(e, sourceUnit)` reads the
+  literal's line through the `SourceUnit` and cuts its spelling there, as Phase 428 cuts a contract's.
+- **Slashy too**: a run between `/`s is taken, as are `'` and `"`.
+- **Taken only when it is the value**: the cut run's inside must equal the value, or carry an escape (a backslash), so a
+  node whose position isn't its own never shows another literal's text.
+
+**Not changed:** a literal spanning lines (a triple-quoted string over two lines) has no one line to cut from; it keeps
+Phase 428's double-quoted, escaped form, as does a single-line triple-quoted one (its inside isn't the value).
+
+**Changed cases:** P428's assertion case now reads `(s == 'a$b"c')`, as written, where it read `(s == "a\$b\"c")`.
+
+**Shipped tests:** group `P441 assert literals as written`, 4 cases: a single- and a double-quoted literal side by side,
+escapes kept as typed (`"a\tb"`, `'\u0041'`), a slashy literal, and a multi-line literal left double-quoted.
+Mutation-checked: without the source unit at the assertion site, the three as-written cases and P428's assertion case
+fail.
 
 ## Definition of done, per increment
 
