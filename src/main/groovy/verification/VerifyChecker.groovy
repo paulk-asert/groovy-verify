@@ -2901,6 +2901,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             r.failingCall = null
             if (!r.notes.contains(callNote)) r.notes.add(callNote)
         }
+        // Phase 434 — two parameters of one class the model makes one object (Phase 89's `a$id == b$id`): a call built
+        // from a `new C()` each never fails, so it is withheld, and the sharing is said rather than the identities shown
+        if (r.counterexample != null) {
+            Map<Long, List<String>> byId = new LinkedHashMap<Long, List<String>>()
+            r.counterexample.each { String k, Long v ->
+                if (k.endsWith('$id') && currentObjectParams.containsKey(k - '$id')) byId.computeIfAbsent(v) { new ArrayList<String>() }.add(k - '$id')
+            }
+            for (List<String> same : byId.values()) {
+                if (same.size() < 2) continue
+                List<String> order = currentMethod?.parameters?.collect { it.name } ?: []
+                same.sort { order.indexOf(it) }
+                String names = same.collect { "'${it}'" }.join(' and ')
+                String note = "note: ${names} are one object here".toString()
+                if (!r.notes.contains(note)) r.notes.add(note)
+                if (r.failingCall != null) {
+                    r.failingCall = null
+                    String why = ("no failing call: the failure needs ${names} to be one object, which a call built from a " +
+                        "`new` each never passes").toString()
+                    if (!r.notes.contains(why)) r.notes.add(why)
+                }
+            }
+        }
         // Phase 125 — array names whose Int-valued *elements* are meaningful to print: a parameter or instance
         // field reflects the actual input/entry state. A *local* array's model value is its arbitrary pre-state
         // (e.g. a loop-preservation check picks an unconstrained entry array), which would mislead — so those
@@ -2974,6 +2996,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (k.endsWith('?null') || k.contains('#') || k.startsWith('$')) return
             // Phase 351 — an object receiver's own handle (its fields show as `c$count`) is an internal value
             if (currentObjectParams.containsKey(k) || currentObjectAliases.containsKey(k)) return
+            if (k.endsWith('$id') && currentObjectParams.containsKey(k - '$id')) return   // Phase 434 — its identity: a note says it
             if (k.endsWith(']')) {
                 int br = k.indexOf('[')
                 String base = br >= 0 ? k.substring(0, br) : k
@@ -3023,20 +3046,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * Phase 432 — {@code c.f = v} through a lone object parameter (or its local alias): its primitive int or boolean
      * field takes the value, read back by a later {@code c.f} and the postcondition. Null when stored; otherwise why
      * not, for the skip ({@code ''} when there is nothing more to say). Callers see the write: the frame records a
-     * write through {@code c} (Phase 357). A class with an {@code @Invariant} is declined, its re-proof after the write
-     * being unmodelled; and a setter that isn't the field (Phase 361) is no store at all.
+     * write through {@code c} (Phase 357). A setter that isn't the field (Phase 361) is no store at all.
+     *
+     * <p>Phase 434 — a parameter that shares its class with another (Phase 89) stores into the identity-keyed map
+     * instead, through a local alias too, so the other sees it when they are one object; there only an int field's
+     * write is modelled (a boolean's, read by name, would miss the other). Either way, a class with an {@code @Invariant}
+     * owes it at the exit (Phase 433).
      */
     private String storeParamField(SmtSession session, Encoder enc, PropStore ps, Object val) {
         String obj = currentObjectParams.containsKey(ps.obj) ? ps.obj : currentObjectAliases.get(ps.obj)
         ClassNode t = obj == null ? null : currentObjectParams.get(obj)
         if (t == null) return ''
-        FieldNode f = null
-        for (ClassNode c = t; c != null && f == null; c = c.superClass) f = c.getDeclaredField(ps.field)
-        if (f == null || f.isStatic() || !ClassHelper.isPrimitiveType(f.type)) return ''
-        boolean bool = isBooleanType(f.type)
-        if (!bool && !isIntElement(f.type) || bool != session.isBool(val)) return ''
         String accessor = propertyAccessorReason(t, ps.field, true)
         if (accessor != null) return " — ${accessor}"
+        if (enc.aliasModeled(obj)) {
+            if (!enc.storeField(obj, ps.field, val)) {
+                return " — '${obj}' shares its class with another parameter, which the write must reach when they are one " +
+                       "object, and only an int field's write does"
+            }
+        } else {
+            FieldNode f = null
+            for (ClassNode c = t; c != null && f == null; c = c.superClass) f = c.getDeclaredField(ps.field)
+            if (f == null || f.isStatic() || !ClassHelper.isPrimitiveType(f.type)) return ''
+            boolean bool = isBooleanType(f.type)
+            if (!bool && !isIntElement(f.type) || bool != session.isBool(val)) return ''
+            enc.bind(obj + '$' + ps.field, val)
+        }
         if (!classInvariantTexts(t).isEmpty()) {
             // Phase 433 — re-proved at the exit; a call that is handed `c` meanwhile would assume it where it may not hold
             String call = callHandedParam(currentMethod, obj)
@@ -3046,7 +3081,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             enc.writtenObjectParams.add(obj)
         }
-        enc.bind(obj + '$' + ps.field, val)
         null
     }
 
@@ -14304,7 +14338,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // subsequent read of obj.field (or other.field when other === obj) sees it.
                     PropStore ps = (PropStore) step
                     Object val = enc.translate(ps.value)
-                    String why = val == null ? '' : enc.storeField(ps.obj, ps.field, val) ? null : storeParamField(session, enc, ps, val)
+                    String why = val == null ? '' : storeParamField(session, enc, ps, val)
                     if (why != null) {
                         throw new UnsupportedConstructException(
                             "field write '${ps.obj}.${ps.field} = ${ps.value.text}' is outside fragment${why}")

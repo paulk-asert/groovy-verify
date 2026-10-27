@@ -18519,6 +18519,35 @@ parameter and other reachable state stays the Phase 45 non-goal.
 `@Ensures`, a broken `@Ensures` still named as the postcondition, an intermediate state that needn't meet it, and a
 call handed the parameter declined. Mutation-checked: recording no written parameter fails the two refutations.
 
+## Phase 434 — writes through two parameters of one class  *(shipped — soundness)*
+
+Two parameters of one class read and write an int field through Phase 89's identity-keyed map, so a write through
+`a` reaches `b` when they are one object. Phase 433 re-proved a written parameter's class invariant on Phase 432's
+lone-parameter store only. Measured at Phase 433, three holes:
+
+- **The invariant wasn't re-proved** through the map store: `g(C a, C b, int p) { a.n = p }` under
+  `@Invariant({ n >= 0 })` compiled clean.
+- **A local alias's write was lost** (unsound): `C d = a; d.n = 5` fell to Phase 432's store, which bound `a$n` by name,
+  while `a.n` reads the map — so `@Ensures({ a.n == 0 })` compiled clean and the true `a.n == 5` refuted.
+- **A boolean field's write was bound by name** (unsound): `a.on = true` left `b.on` false even when `a === b`, so
+  `@Ensures({ !b.on })` compiled clean.
+
+Fixed: one store step (`storeParamField`) for both. A parameter that shares its class stores through the map — under
+its own name or a local alias's — and there only an int field's write is modelled; a boolean's is declined (`'a' shares
+its class with another parameter, which the write must reach when they are one object, and only an int field's write
+does`). Both stores check the setter is the field (Phase 361), and both owe the class invariant at the exit (Phase 433).
+
+- **A failure that needs the two to be one object says so**: it showed `counterexample: a$id = 3, b$id = 3` and
+  `fails on: same(new C(), new C())`, a call that never fails. The identities are hidden now, with `note: 'a' and 'b'
+  are one object here`, and the call is withheld (`no failing call: the failure needs 'a' and 'b' to be one object…`).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P434 writes through parameters of one class`, 6 cases: the invariant re-proved and refuted
+(`g(new C(), new C(), -…)`), a failure needing one object, a local alias's write refuting a stale claim and proving the
+written one, and a boolean field's write declined. Measured against Phase 433: five of the six fail there (the
+alias's false claim and `!b.on` compiled clean).
+
 ---
 
 ## Definition of done, per increment

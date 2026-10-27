@@ -491,6 +491,9 @@ class Encoder implements TheoryApi {
     /** Phase 89 — true if {@code name} is an object param whose class is shared by another object param. */
     private boolean isAliasModeled(String name) { aliasModeledParams().contains(name) }
 
+    /** Phase 434 — {@link #isAliasModeled}, for the checker's field-write step. */
+    boolean aliasModeled(String name) { isAliasModeled(name) }
+
     /** Phase 89 — the object identity of an alias-modelled reference: an unconstrained {@code name$id} Int. */
     private Object objId(String name) { varForRaw(name + '$id') }
 
