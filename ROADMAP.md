@@ -18573,6 +18573,36 @@ refuted after a split — every refutable conjunction tried refuted whole first.
 refutation naming one broken conjunct, one naming two, and none named when all break. Mutation-checked: without the
 split, the first is `Could not decide postcondition of f (solver: timeout)` again.
 
+## Phase 436 — booleans in the identity map, and its cells in the call  *(shipped — reach and honesty of the message)*
+
+Two parameters of one class read an int field through Phase 89's identity-keyed map. A boolean field was read by name
+(Phase 431), and Phase 434 declined its write through one of them: a by-name write misses the other when they are one
+object.
+
+- **A boolean field is a 0/1 cell of the map** (`Encoder.mapFieldRead` / `storeField`): stored as `ite(v, 1, 0)`, read
+  as `cell == 1` — in a body read, a contract, and a receiver's invariant alike — so `a.on = true` reaches `b.on` when
+  `a === b` (`@Ensures({ b.on })` proves under `@Requires({ a === b })`, and `!b.on` refutes with Phase 434's
+  one-object note), and leaves it alone when `a !== b`.
+- **A field read through the map is in the counterexample and the call** (found probing this phase, there since
+  Phase 89): a map cell isn't a model variable, so it never showed, and the failing call built `new C()` without it —
+  `intWit(new C(), new C())` for a method requiring `a.n == 5`, a call that breaks its own precondition. Each map is
+  captured at the path's entry (`pinEntryFieldMaps`, before a store or a call's frame rebinds it), and a field read or
+  written shows its entry cell under the lone-parameter name (`a$n`, `displayAs`): `counterexample: a.n = 5`,
+  `fails on: intWit(new C(n: 5), new C())`. An unread cell isn't shown — the model's array filler would print a value
+  nothing constrains.
+
+**Not changed:** a field the other parameter's assumed invariant reads is shown (`b.n = 7719` beside a failure about
+`a`) — constrained by that invariant, so the call still runs, but it is noise.
+
+**Changed cases:** P434's `a boolean field's write is declined` is now `… reaches the other` (a refutation with the
+one-object note); its `… and refutes when the write breaks it` expects `fails on: g(new C(n: 0), new C(` (the entry
+values now in the call).
+
+**Shipped tests:** group `P436 shared-class fields in the identity map`, 5 cases: a boolean field written, read, and
+reaching the other through `a === b`; apart, the other's kept; an int and a boolean field read through the map built
+into the call; and an invariant over a boolean field re-proved after a write. Mutation-checked: refusing the boolean
+store fails the three that write one.
+
 ---
 
 ## Definition of done, per increment

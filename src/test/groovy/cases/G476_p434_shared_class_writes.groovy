@@ -25,7 +25,7 @@ import static cases.CaseDsl.*
  * Fixed with it (unsound before, Phase 432): a boolean field written through such a parameter was bound by name, so
  * `a.on = true` left `b.on` false even when `a === b` and `!b.on` proved; and a write through a local alias of one
  * (`C d = a; d.n = 5`) bound a name its reads, through the map, never saw. The alias's write goes through the map now,
- * and a boolean's is declined. The map store also checks the setter is the field (Phase 361), as the other did.
+ * and a boolean's was declined (Phase 436 maps it too). The map store also checks the setter is the field (Phase 361), as the other did.
  *
  * A failure that needs the two to be one object said `a$id = 3, b$id = 3` and printed `same(new C(), new C())`, a
  * call that never fails: it says `note: 'a' and 'b' are one object here` and withholds the call.
@@ -48,7 +48,7 @@ class G476_p434_shared_class_writes {
 
         // Unchecked before: Phase 433 covered the lone parameter's store only
         [group: "P434 writes through parameters of one class", name: "… and refutes when the write breaks it",
-         expect: ["Cannot prove class invariant of C holds for 'a' at exit of g", "fails on: g(new C(), new C(), -"],
+         expect: ["Cannot prove class invariant of C holds for 'a' at exit of g", "fails on: g(new C(n: 0), new C("],
          src: tc('''class A {
                         @Requires({ a != null && b != null })
                         static void g(C a, C b, int p) { a.n = p }
@@ -87,9 +87,10 @@ class G476_p434_shared_class_writes {
                     }
                     final class C { int n }''')],
 
-        // Unsound before: `a.on = true` was bound by name, so `!b.on` proved though `a === b` makes it true
-        [group: "P434 writes through parameters of one class", name: "a boolean field's write is declined",
-         expect: "field write 'a.on = true' is outside fragment — 'a' shares its class with another parameter",
+        // Unsound before: `a.on = true` was bound by name, so `!b.on` proved though `a === b` makes it true. Declined
+        // here at first; Phase 436 stores it in the identity map, so it refutes on the shared object
+        [group: "P434 writes through parameters of one class", name: "a boolean field's write reaches the other",
+         expect: ["Cannot prove postcondition of boolw", "note: 'a' and 'b' are one object here"],
          src: tc('''class A {
                         @Requires({ a != null && b != null && !b.on })
                         @Ensures({ !b.on })

@@ -504,17 +504,70 @@ class Encoder implements TheoryApi {
     private Object fieldMap(String className, String field) { arrayFor(fieldMapKey(className, field)) }
 
     /**
-     * Phase 89 slice 2 — {@code obj.field = val} for an alias-modelled object's Int field: store into
+     * Phase 89 slice 2 — {@code obj.field = val} for an alias-modelled object's Int (Phase 436: or boolean) field: store into
      * the identity-keyed heap map, so a later read of {@code obj.field} (or {@code other.field} when
      * {@code other === obj}) sees it. Returns false when not applicable (caller then skips loudly).
      */
     boolean storeField(String objName, String field, Object valHandle) {
         if (valHandle == null || !isAliasModeled(objName)) return false
         ClassNode ft = fieldTypeOfObjectParam(objName, field)
-        if (ft == null || !isIntLikeType(ft)) return false
+        if (ft == null) return false
+        Object cell
+        if (isIntLikeType(ft) && !session.isBool(valHandle)) cell = valHandle
+        else if (ClassHelper.isPrimitiveBoolean(ft) && session.isBool(valHandle)) cell = boolCell(valHandle)   // Phase 436
+        else return false
         String key = fieldMapKey(objectParams.get(objName).name, field)
-        bindArray(key, session.store(arrayFor(key), objId(objName), valHandle))
+        showEntryCell(objName, field, ft)
+        bindArray(key, session.store(arrayFor(key), objId(objName), cell))
         true
+    }
+
+    /** Phase 436 — capture every alias-modelled parameter's int and boolean field maps now, at the method's entry,
+     *  before a store or a call's frame rebinds one (a lazy first read could come after either). */
+    void pinEntryFieldMaps() {
+        for (String recv : aliasModeledParams()) {
+            ClassNode t = objectParams.get(recv)
+            if (t?.fields == null) continue
+            for (FieldNode f : t.fields) {
+                if (f.isStatic() || !(isIntLikeType(f.type) || ClassHelper.isPrimitiveBoolean(f.type))) continue
+                String key = fieldMapKey(t.name, f.name)
+                if (!entryFieldMaps.containsKey(key)) entryFieldMaps.put(key, arrayFor(key))   // shown once read (an unread cell's value is the model's filler)
+            }
+        }
+    }
+
+    /** Phase 436 — each identity map as the method entered: its first handle, taken before any store rebinds it. */
+    private final Map<String, Object> entryFieldMaps = new HashMap<String, Object>()
+
+    /**
+     * Phase 436 — show {@code recv.field}'s entry value under {@code recv$field}, the name a lone parameter's field has,
+     * so the counterexample shows it and the failing call builds it ({@code new C(n: 5)}); a map cell isn't a model
+     * variable of its own, so the call was built without it (and could break the method's own @Requires).
+     */
+    private void showEntryCell(String recv, String field, ClassNode ft) {
+        String key = fieldMapKey(objectParams.get(recv).name, field)
+        Object entry = entryFieldMaps.get(key)
+        if (entry == null) { entry = arrayFor(key); entryFieldMaps.put(key, entry) }
+        Object cell = session.select(entry, objId(recv))
+        session.displayAs(recv + '$' + field, ClassHelper.isPrimitiveBoolean(ft) ? session.eq(cell, session.intLit(1L)) : cell)
+    }
+
+    /** Phase 436 — a boolean as its identity-map cell: 1 for true, 0 for false. */
+    private Object boolCell(Object b) { session.ite(b, session.intLit(1L), session.intLit(0L)) }
+
+    /**
+     * Phase 89 — an alias-modelled receiver's field read through the identity-keyed heap map, so {@code a.f} /
+     * {@code b.f} coincide iff {@code id(a) == id(b)}: an int field's cell as stored; Phase 436 — a boolean field's
+     * cell is 1 when true. Null when {@code recv} isn't alias-modelled or the field is neither.
+     */
+    private Object mapFieldRead(String recv, String field) {
+        ClassNode ft = fieldTypeOfObjectParam(recv, field)
+        if (ft == null || !isAliasModeled(recv)) return null
+        if (isIntLikeType(ft) || ClassHelper.isPrimitiveBoolean(ft)) showEntryCell(recv, field, ft)
+        Object cell = session.select(fieldMap(objectParams.get(recv).name, field), objId(recv))
+        if (isIntLikeType(ft)) return cell
+        if (ClassHelper.isPrimitiveBoolean(ft)) return session.eq(cell, session.intLit(1L))
+        null
     }
 
     /** Phase 89 — declared type of {@code field} on object parameter {@code name}, or null. */
@@ -1854,10 +1907,8 @@ class Encoder implements TheoryApi {
             // Phase 89 — when the receiver is alias-modelled, a bare field reference in its assumed
             // invariant must read through the SAME identity-keyed map as an explicit `recv.field` read,
             // or the assumed invariant (`count >= 0`) wouldn't constrain the map read `select(count$, id)`.
-            ClassNode ft = fieldTypeOfObjectParam(receiverPrefix, name)
-            if (isAliasModeled(receiverPrefix) && ft != null && isIntLikeType(ft)) {
-                return session.select(fieldMap(objectParams.get(receiverPrefix).name, name), objId(receiverPrefix))
-            }
+            Object cell = mapFieldRead(receiverPrefix, name)
+            if (cell != null) return cell
             return fieldVar(receiverPrefix + '$' + name)
         }
         // Phase 27 step 9 — a non-Int scalar (String, Enum) parameter/field dispatches to
@@ -4818,10 +4869,8 @@ class Encoder implements TheoryApi {
                     if (fields.contains(prop)) {
                         // Phase 89 — an alias-modelled receiver reads its Int field through the
                         // identity-keyed heap map, so `a.f` / `b.f` coincide iff `id(a) == id(b)`.
-                        ClassNode ft = fieldTypeOfObjectParam(recvName, prop)
-                        if (isAliasModeled(recvName) && ft != null && isIntLikeType(ft)) {
-                            return session.select(fieldMap(objectParams.get(recvName).name, prop), objId(recvName))
-                        }
+                        Object cell = mapFieldRead(recvName, prop)
+                        if (cell != null) return cell
                         return fieldVar(recvName + '$' + prop)
                     }
                 }

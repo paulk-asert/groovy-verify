@@ -3050,7 +3050,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *
      * <p>Phase 434 — a parameter that shares its class with another (Phase 89) stores into the identity-keyed map
      * instead, through a local alias too, so the other sees it when they are one object; there only an int field's
-     * write is modelled (a boolean's, read by name, would miss the other). Either way, a class with an {@code @Invariant}
+     * write is modelled (Phase 436: and a boolean's, as a 0/1 cell). Either way, a class with an {@code @Invariant}
      * owes it at the exit (Phase 433).
      */
     private String storeParamField(SmtSession session, Encoder enc, PropStore ps, Object val) {
@@ -3062,7 +3062,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (enc.aliasModeled(obj)) {
             if (!enc.storeField(obj, ps.field, val)) {
                 return " — '${obj}' shares its class with another parameter, which the write must reach when they are one " +
-                       "object, and only an int field's write does"
+                       "object, and only an int or boolean field's write does"
             }
         } else {
             FieldNode f = null
@@ -14047,6 +14047,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             guardContainerAlias(node)   // Phase 366 — a known alias first, by name
             guardArrayAliasHazard(node, p, postAst)
             Encoder enc = mkEncoder(session)
+            enc.pinEntryFieldMaps()   // Phase 436 — the counterexample's entry values of the identity-mapped fields
             int ssaVersion = 0   // mints fresh versions for re-assigned names (SSA, see the Assign step)
 
             if (reqAst != null) {
