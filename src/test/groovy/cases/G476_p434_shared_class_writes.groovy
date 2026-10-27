@@ -48,7 +48,7 @@ class G476_p434_shared_class_writes {
 
         // Unchecked before: Phase 433 covered the lone parameter's store only
         [group: "P434 writes through parameters of one class", name: "… and refutes when the write breaks it",
-         expect: ["Cannot prove class invariant of C holds for 'a' at exit of g", "fails on: g(new C(n: 0), new C("],
+         expect: ["Cannot prove class invariant of C holds for 'a' at exit of g", "fails on: g(new C(n: 0), new C(), -"], refute: "b.n",
          src: tc('''class A {
                         @Requires({ a != null && b != null })
                         static void g(C a, C b, int p) { a.n = p }

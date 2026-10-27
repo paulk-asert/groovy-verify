@@ -536,6 +536,10 @@ class Encoder implements TheoryApi {
         }
     }
 
+    /** Phase 437 — set while an entry assumption (a parameter's class invariant) is translated: a cell it reads is
+     *  constrained, not part of the failure, so it isn't shown for that read. */
+    boolean assumingCells = false
+
     /** Phase 436 — each identity map as the method entered: its first handle, taken before any store rebinds it. */
     private final Map<String, Object> entryFieldMaps = new HashMap<String, Object>()
 
@@ -563,7 +567,7 @@ class Encoder implements TheoryApi {
     private Object mapFieldRead(String recv, String field) {
         ClassNode ft = fieldTypeOfObjectParam(recv, field)
         if (ft == null || !isAliasModeled(recv)) return null
-        if (isIntLikeType(ft) || ClassHelper.isPrimitiveBoolean(ft)) showEntryCell(recv, field, ft)
+        if (!assumingCells && (isIntLikeType(ft) || ClassHelper.isPrimitiveBoolean(ft))) showEntryCell(recv, field, ft)
         Object cell = session.select(fieldMap(objectParams.get(recv).name, field), objId(recv))
         if (isIntLikeType(ft)) return cell
         if (ClassHelper.isPrimitiveBoolean(ft)) return session.eq(cell, session.intLit(1L))

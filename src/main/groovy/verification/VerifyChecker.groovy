@@ -14624,6 +14624,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     session.evalDisplay(ownGoal) == 'true' : r.status == CheckResult.Status.UNKNOWN && ownGoal == null)) {
                 brokenParamInvs = r.status == CheckResult.Status.REFUTED ?
                     paramInvs.findAll { session.evalDisplay(it[3]) == 'false' } : paramInvs
+                // Phase 437 — a cached verdict brings no model to ask: with no goal of the method's own and one
+                // invariant owed, the failure is that invariant's
+                if (brokenParamInvs.isEmpty() && ownGoal == null && paramInvs.size() == 1) brokenParamInvs = paramInvs
             }
             if (r.status == CheckResult.Status.REFUTED && postAst != null && brokenParamInvs.isEmpty()) {
                 appendOffendingElements(r, enc, session, [postAst])
@@ -18405,9 +18408,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Set<String> fields = new LinkedHashSet<String>()
             List<FieldNode> fs = recvType.fields
             if (fs != null) for (FieldNode f : fs) fields.add(f.name)
-            for (Expression inv : invs) {
-                Object h = enc.translateUnderReceiver(inv, recvName, fields)
-                if (h != null) s.assertExpr(h)
+            enc.assumingCells = true   // Phase 437 — what the assumption reads isn't shown for it
+            try {
+                for (Expression inv : invs) {
+                    Object h = enc.translateUnderReceiver(inv, recvName, fields)
+                    if (h != null) s.assertExpr(h)
+                }
+            } finally {
+                enc.assumingCells = false
             }
         }
     }

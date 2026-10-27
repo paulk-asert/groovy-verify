@@ -80,7 +80,7 @@ class G478_p436_shared_class_booleans {
 
         // An invariant over a boolean field, re-proved after a write through the map (Phase 434)
         [group: "P436 shared-class fields in the identity map", name: "a boolean field in the invariant",
-         expect: ["Cannot prove class invariant of C holds for 'a' at exit of g", "fails on: g(new C(n: 0, on: false), new C("],
+         expect: ["Cannot prove class invariant of C holds for 'a' at exit of g", "fails on: g(new C(n: 0, on: false), new C())"], refute: "b.n",
          src: tc('''class A {
                         @Requires({ a != null && b != null })
                         static void f(C a, C b) { a.n = 1; a.on = true }

@@ -18592,7 +18592,7 @@ object.
   nothing constrains.
 
 **Not changed:** a field the other parameter's assumed invariant reads is shown (`b.n = 7719` beside a failure about
-`a`) — constrained by that invariant, so the call still runs, but it is noise.
+`a`) — constrained by that invariant, so the call still runs, but it is noise (Phase 437 leaves it out).
 
 **Changed cases:** P434's `a boolean field's write is declined` is now `… reaches the other` (a refutation with the
 one-object note); its `… and refutes when the write breaks it` expects `fails on: g(new C(n: 0), new C(` (the entry
@@ -18602,6 +18602,31 @@ values now in the call).
 reaching the other through `a === b`; apart, the other's kept; an int and a boolean field read through the map built
 into the call; and an invariant over a boolean field re-proved after a write. Mutation-checked: refusing the boolean
 store fails the three that write one.
+
+## Phase 437 — an assumed cell is no part of the failure  *(shipped — honesty of the message)*
+
+Phase 436 shows a field read through the identity map at its entry value, so the failing call builds it. The other
+parameter's class invariant, assumed at entry (Phase 45), reads that parameter's fields too, so a failure about `a`
+showed `b.n = 7719` and called `g(new C(n: 0), new C(n: 7719), -1)` — a call that runs (the invariant constrains the
+value), but `b` has nothing to do with the failure.
+
+- **A cell read only by an entry assumption isn't shown** (`Encoder.assumingCells`, set while
+  `assumeForeignReceiverInvariants` translates): `fails on: g(new C(n: 0), new C(), -1)`. A cell the body, a contract,
+  or the exit's invariant re-proof (Phase 433) reads is shown as before (`b.n = 0` for `return a.n + b.n`).
+
+- **A cached verdict no longer loses Phase 433's attribution** (found by this phase's full gate, the one case passing
+  alone): a query identical to an earlier one is answered from the solver cache, with no model, so the per-invariant
+  evaluation found nothing broken and the failure fell to the generic `Cannot prove class invariant of g holds at method
+  exit`, without its invariant. With no goal of the method's own and one invariant owed, the failure is that invariant's.
+  Phase 435's `broken conjunct:` note is likewise absent on a cache hit — a missing note, never a wrong one.
+
+**Changed cases:** P434's `… and refutes when the write breaks it` and P436's `a boolean field in the invariant` expect
+the exact call again, `new C()` for the other, and refute `b.n`.
+
+**Shipped tests:** group `P437 assumed cells unshown`, 2 cases: the other's invariant-only field left out of the
+counterexample and the call (its source is P434's, so in a run with that group it is a cache hit), and a field the
+body reads still shown. Mutation-checked: never setting the flag fails the two tightened P434/P436 cases; without the
+cache fallback, `-Pcases=P43` fails the first.
 
 ---
 
