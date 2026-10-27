@@ -29,6 +29,7 @@ import com.microsoft.z3.DatatypeSort
 import com.microsoft.z3.Constructor
 import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
+import com.microsoft.z3.RatNum
 import java.math.BigInteger
 import com.microsoft.z3.Model
 import com.microsoft.z3.SeqExpr
@@ -651,7 +652,38 @@ class Z3Session implements SmtSession {
     private FPSort fp(boolean isDouble) { isDouble ? ctx.mkFPSortDouble() : ctx.mkFPSortSingle() }
     @Override Object fpSort(boolean isDouble) { fp(isDouble) }
     @Override Object fpLit(double v, boolean isDouble) { ctx.mkFP(v, fp(isDouble)) }
-    @Override Object fpVar(String name, boolean isDouble) { ctx.mkConst(name, fp(isDouble)) }
+    @Override Object fpVar(String name, boolean isDouble) {
+        Expr v = ctx.mkConst(name, fp(isDouble))
+        fpVars.putIfAbsent(name, v)   // Phase 440 — read back for the counterexample
+        v
+    }
+
+    /** Phase 440 — the FP variables declared, by name, so a refutation can show their values. */
+    private final Map<String, Expr> fpVars = new LinkedHashMap<String, Expr>()
+
+    /**
+     * Phase 440 — {@code v}'s model value as the Groovy literal that builds it: {@code 1.5d} / {@code 1.5f},
+     * {@code -0.0d}, {@code Double.NaN}, {@code Float.NEGATIVE_INFINITY}. Exact: the value is read through
+     * {@code fp.to_real}, a dyadic rational, and is representable in the variable's precision. Null when the model
+     * leaves it open.
+     */
+    private String fpLiteral(Model m, Expr v) {
+        boolean isDouble = ((FPSort) v.getSort()).getSBits() == 53
+        String box = isDouble ? 'Double' : 'Float'
+        String suffix = isDouble ? 'd' : 'f'
+        Expr mv = m.evaluate(v, false)
+        if (!(mv instanceof FPExpr) || !mv.isNumeral()) return null
+        FPExpr fv = (FPExpr) mv
+        if (m.evaluate(ctx.mkFPIsNaN(fv), true).isTrue()) return "${box}.NaN".toString()
+        boolean neg = m.evaluate(ctx.mkFPIsNegative(fv), true).isTrue()
+        if (m.evaluate(ctx.mkFPIsInfinite(fv), true).isTrue()) return "${box}.${neg ? 'NEGATIVE' : 'POSITIVE'}_INFINITY".toString()
+        if (m.evaluate(ctx.mkFPIsZero(fv), true).isTrue()) return (neg ? '-0.0' : '0.0') + suffix
+        Expr r = m.evaluate(ctx.mkFPToReal(fv), true)
+        if (!(r instanceof RatNum)) return null
+        java.math.BigDecimal exact = new java.math.BigDecimal(((RatNum) r).getBigIntNumerator())
+            .divide(new java.math.BigDecimal(((RatNum) r).getBigIntDenominator()))   // a power of two: terminates
+        (isDouble ? Double.toString(exact.doubleValue()) : Float.toString(exact.floatValue())) + suffix
+    }
     @Override Object fpAdd(Object a, Object b) { ctx.mkFPAdd(rne(), (FPExpr) a, (FPExpr) b) }
     @Override Object fpSub(Object a, Object b) { ctx.mkFPSub(rne(), (FPExpr) a, (FPExpr) b) }
     @Override Object fpMul(Object a, Object b) { ctx.mkFPMul(rne(), (FPExpr) a, (FPExpr) b) }
@@ -1901,6 +1933,10 @@ class Z3Session implements SmtSession {
                     break
                 }
             }
+        }
+        fpVars.each { String name, Expr var ->   // Phase 440
+            String lit = fpLiteral(m, var)
+            if (lit != null) sce[name] = lit
         }
         CheckResult r = CheckResult.refuted(ce)
         r.sortedCounterexample = sce

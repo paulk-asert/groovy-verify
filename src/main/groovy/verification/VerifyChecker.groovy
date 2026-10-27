@@ -3039,6 +3039,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         r.counterexample = display
+        // Phase 440 — a double/float source name's value, as the literal that builds it
+        if (r.sortedCounterexample != null) {
+            r.textValues = new LinkedHashMap<String, String>()
+            r.sortedCounterexample.each { String k, String v ->
+                if (k != 'result' && currentFpNames.containsKey(k) && (!r.counterexample.containsKey(k))) r.textValues.put(k, v)
+            }
+        }
         // Phase 430 — a boolean's model value is 0/1: shown as the false/true the source would print
         r.booleanKeys = new LinkedHashSet<String>(display.keySet().findAll { String k -> isBooleanShown(k) })
         r
@@ -3489,6 +3496,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return (v != null && v == 1L) ? 'true' : 'false'
         }
         if (nulled) return 'null'
+        // Phase 440 — a double/float: the literal the model's value is (`1.5d`, `Double.NaN`), its zero when left open
+        if (tn in ['double', 'float', 'java.lang.Double', 'java.lang.Float']) {
+            String lit = sortedCe?.get(p.name)
+            return lit ?: (tn.toLowerCase().endsWith('double') ? '0.0d' : '0.0f')
+        }
         if (tn == 'java.lang.String') {
             String modelVal = sortedCe?.get(p.name)
             return modelVal != null ? groovyStringLiteral(modelVal) : '""'

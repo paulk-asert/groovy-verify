@@ -691,6 +691,9 @@ class CheckResult {
     Map<String, String> sortedCounterexample = [:]
     /** Phase 430 — the {@link #counterexample} keys that name a boolean, its 0/1 model value shown as false/true. */
     Set<String> booleanKeys = new LinkedHashSet<String>()
+    /** Phase 440 — counterexample values shown as text beside {@link #counterexample}'s numbers: a {@code double}'s
+     *  Groovy literal ({@code p = -0.0d}, {@code p = Double.NaN}). Display only. */
+    Map<String, String> textValues = new LinkedHashMap<String, String>()
     /** Free-text reason, populated on UNKNOWN. */
     String reason
     /**
@@ -714,6 +717,7 @@ class CheckResult {
             sortedCounterexample: sortedCounterexample == null ? null : new LinkedHashMap<String, String>(sortedCounterexample),
             notes: notes == null ? null : new ArrayList<String>(notes),
             booleanKeys: new LinkedHashSet<String>(booleanKeys),
+            textValues: new LinkedHashMap<String, String>(textValues),
             taints: new LinkedHashSet<String>(taints))
     }
 

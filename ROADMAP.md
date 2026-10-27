@@ -18680,6 +18680,36 @@ char refuting as `'\u0000'`, double/float locals written, re-read (in arithmetic
 unwritten double refuting as `0.0`, and a parameter's value through a double local refuting. Mutation-checked: without
 the FP version the three double cases skip again; without the code point the two char cases do.
 
+## Phase 440 — floating-point values in a counterexample  *(shipped — honesty of the message)*
+
+Found in Phase 439: an FP refutation showed no values. Z3's FP variables weren't read back from the model, so
+`d2(double p) { double d = p; return d }` against `result > 0.0d` refuted with neither `counterexample:` nor
+`fails on:`.
+
+- **A double or float shows its model value as the Groovy literal that builds it** (`Z3Session.fpLiteral`): exact,
+  through `fp.to_real` (a dyadic rational, so the decimal terminates), with NaN, the infinities and the signed zeros from
+  Z3's predicates — `p = 1.5d`, `p = -1.6777216E7f`, `-0.0d`, `Double.NaN`, `Float.POSITIVE_INFINITY`,
+  `-2.196005486525424E-243d`. Shown beside the int values (`CheckResult.textValues`, display only) and passed in the
+  failing call: `fails on: d3(1.5d)`.
+
+**Found, not fixed — Groovy's NaN is not IEEE's** (measured on Groovy 4.0.27, 5.1.3 and 6.0.0, dynamic and
+`@CompileStatic` alike): `NaN > 0.0d` is **true** in Groovy (`compareTo` order, NaN above everything; Java says false);
+`p == p` in a method body is false for NaN, but in a contract closure (boxed operands) `NaN == NaN` is **true**. Phase
+73 models IEEE (every NaN comparison false), so:
+
+- **Unsound:** `@Requires({ p > 0.0d }) @Ensures({ result }) static boolean f(double p) { return p == p }` verifies,
+  while `f(Double.NaN)` passes the precondition and violates the postcondition at runtime.
+- **Wrong witness:** `@Ensures({ result == p * 2.0d })` over `d = p; d = d * 2.0d` refutes with `fails on:
+  d5(Double.NaN)`, a call whose contract holds at runtime.
+
+Which semantics to model (or whether Groovy's comparison is the bug) is open; the cases here avoid NaN-dependent
+witnesses.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P440 floating-point counterexample`, 3 cases: a double parameter's value and call, a float
+beside an int, and a value through a double local. Mutation-checked: not reading the FP variables back fails all three.
+
 ---
 
 ## Definition of done, per increment
