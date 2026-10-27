@@ -18492,6 +18492,33 @@ back, and through an alias) proving, a wrong claim refuting on `g(new C())`, a c
 (`c.n (after a call) = 1`), and the `@Invariant` and overridable-setter declines. Mutation-checked: declining every
 store fails the first two (the caller's case rests on the frame, not the store).
 
+## Phase 433 — a written parameter owes its class invariant  *(shipped — soundness and reach)*
+
+Phase 432 declined a write through an object parameter whose class declares an `@Invariant`: the invariant is assumed
+of the parameter at entry (Phase 45), and by every method later handed it, and nothing re-proved it after the write.
+A method with no `@Ensures` (and no invariant of its own) never reached the postcondition path, so there the write
+broke the invariant silently — `static void h(C c, int p) { c.n = p }` under `@Invariant({ n >= 0 })` compiled clean.
+
+- **The invariant is an exit obligation of every path that wrote through the parameter** (`Encoder.writtenObjectParams`,
+  translated under the receiver as Phase 45 assumes it), `@Ensures` or not: `writesThroughInvariantParam` brings such
+  a method onto the postcondition path. Only the exit owes it — `c.n = -1; c.n = 3` proves.
+- **Reported as its own** when the model keeps the method's own goal: `Cannot prove class invariant of C holds for
+  'c' at exit of h, after a write through it`, with the invariant, the counterexample and `fails on: h(new C(n: 0),
+  -2147483648)`. A broken `@Ensures` is still the postcondition's failure. (`evalDisplay` renders a Bool now, to tell
+  which part of the goal the model breaks.)
+- **A call handed the parameter is declined** — as receiver or argument, anywhere in the body (`println(c)`): it would
+  assume the invariant where the write may have broken it.
+
+**Not changed:** Phase 89's two-of-a-class store (the identity-keyed map) re-proves nothing yet. Aliasing between the
+parameter and other reachable state stays the Phase 45 non-goal.
+
+**Changed cases:** P432's `a class with an @Invariant is declined` is now `… is re-proved` and passes clean.
+
+**Shipped tests:** group `P433 a written parameter owes its invariant`, 6 cases: writes that keep a two-field invariant
+(with and without `@Ensures`), a breaking write in a method with no `@Ensures`, the invariant named beside a kept
+`@Ensures`, a broken `@Ensures` still named as the postcondition, an intermediate state that needn't meet it, and a
+call handed the parameter declined. Mutation-checked: recording no written parameter fails the two refutations.
+
 ---
 
 ## Definition of done, per increment

@@ -563,6 +563,8 @@ class Z3Session implements SmtSession {
             if (v == null) return null
             if (v.isString()) return '"' + cleanZ3String(v.getString()) + '"'
             if (v instanceof IntNum) return Long.toString(clampInt64((IntNum) v))
+            if (v.isTrue()) return 'true'    // Phase 433 — which part of a goal the model breaks
+            if (v.isFalse()) return 'false'
             return null
         } catch (Throwable ignored) {
             return null

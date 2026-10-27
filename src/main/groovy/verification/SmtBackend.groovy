@@ -218,7 +218,7 @@ interface SmtSession extends AutoCloseable {
     boolean isSeq(Object handle)                       // true if the term has the String/sequence sort
     boolean isBool(Object handle)                      // true if the term has the Boolean sort
     /** Phase 126 — evaluate {@code handle} in the most recent SAT model and render it for display
-     *  (Int → number, String/Seq → quoted text), or null if there's no model / unsupported sort. */
+     *  (Int → number, String/Seq → quoted text, Bool → true/false), or null if there's no model / unsupported sort. */
     String evalDisplay(Object handle)
 
     /** Phase 311 — show {@code term}'s model value as {@code name} in a counterexample: a source variable whose value

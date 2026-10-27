@@ -24,8 +24,8 @@ import static cases.CaseDsl.*
  * by a later `c.n` and by the postcondition. Callers already saw the write: the frame records a write through `c`
  * (Phase 357), and the caller havocs `c.n` at the call — shown now as `c.n (after a call)`, not the encoder's `c$n`.
  *
- * Declined, loudly with the reason: a class with an `@Invariant` (the write isn't re-proved against it), and a class
- * whose setter may not be the field (Phase 361).
+ * Declined, loudly with the reason: a class whose setter may not be the field (Phase 361). A class with an `@Invariant`
+ * was declined too until Phase 433, which re-proves it at the exit.
  */
 class G474_p432_param_field_write {
 
@@ -76,8 +76,9 @@ class G474_p432_param_field_write {
                     }
                     final class C { int n }''')],
 
-        [group: "P432 field write through a parameter", name: "a class with an @Invariant is declined",
-         expect: "field write 'c.n = 1' is outside fragment — 'C' declares an @Invariant, which a write through 'c' isn't re-proved against",
+        // Phase 433 — declined here at first; the invariant is re-proved at the exit now
+        [group: "P432 field write through a parameter", name: "a class with an @Invariant is re-proved",
+         ok: true,
          src: tc('''class A {
                         @Requires({ c != null })
                         @Ensures({ c.n == 1 })

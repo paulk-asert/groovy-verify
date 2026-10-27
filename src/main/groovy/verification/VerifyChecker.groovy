@@ -3038,10 +3038,70 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String accessor = propertyAccessorReason(t, ps.field, true)
         if (accessor != null) return " — ${accessor}"
         if (!classInvariantTexts(t).isEmpty()) {
-            return " — '${t.nameWithoutPackage}' declares an @Invariant, which a write through '${ps.obj}' isn't re-proved against"
+            // Phase 433 — re-proved at the exit; a call that is handed `c` meanwhile would assume it where it may not hold
+            String call = callHandedParam(currentMethod, obj)
+            if (call != null) {
+                return " — '${t.nameWithoutPackage}' declares an @Invariant, which the call '${call}' would assume of '${ps.obj}' " +
+                       "while the write may have broken it"
+            }
+            enc.writtenObjectParams.add(obj)
         }
         enc.bind(obj + '$' + ps.field, val)
         null
+    }
+
+    /** Phase 433 — the names that are object parameter {@code obj}: itself and its local aliases. */
+    private Set<String> namesOfParam(String obj) {
+        Set<String> names = new HashSet<String>([obj])
+        currentObjectAliases.each { String a, String target -> if (target == obj) names.add(a) }
+        names
+    }
+
+    /** Phase 433 — the text of a call in {@code node}'s body with object parameter {@code obj} (or an alias of it) as its
+     *  receiver or an argument, or null. */
+    private String callHandedParam(MethodNode node, String obj) {
+        Statement body = (Statement) node?.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: node?.code
+        if (body == null) return null
+        Set<String> names = namesOfParam(obj)
+        String found = null
+        Closure<Boolean> named = { Expression e -> e instanceof VariableExpression && names.contains(((VariableExpression) e).name) }
+        Closure<Boolean> inArgs = { Expression args ->
+            args instanceof TupleExpression && ((TupleExpression) args).expressions.any { named(it) } }
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (found == null && (named(mce.objectExpression) || inArgs(mce.arguments))) found = clip(mce.text)
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                if (found == null && inArgs(sce.arguments)) found = clip(sce.text)
+                super.visitStaticMethodCallExpression(sce)
+            }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {
+                if (found == null && inArgs(cce.arguments)) found = clip(cce.text)
+                super.visitConstructorCallExpression(cce)
+            }
+        })
+        found
+    }
+
+    /** Phase 433 — whether {@code node}'s body writes a field through an object parameter whose class declares an
+     *  {@code @Invariant} (or a local alias of one): its exit owes that invariant, @Ensures or not. */
+    private boolean writesThroughInvariantParam(MethodNode node) {
+        Statement body = (Statement) node?.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: node?.code
+        if (body == null || currentObjectParams.isEmpty()) return false
+        boolean found = false
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (!found && Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof PropertyExpression &&
+                        ((PropertyExpression) be.leftExpression).objectExpression instanceof VariableExpression) {
+                    String o = ((VariableExpression) ((PropertyExpression) be.leftExpression).objectExpression).name
+                    String p = currentObjectParams.containsKey(o) ? o : currentObjectAliases.get(o)
+                    if (p != null && !classInvariantTexts(currentObjectParams.get(p)).isEmpty()) found = true
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        found
     }
 
     /** Phase 430 — whether a displayed counterexample key ({@code b}, {@code b (after the loop)}, {@code c.on}) names a boolean. */
@@ -12230,7 +12290,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 363 — an @Ensures this method only INHERITS (a source ancestor's, Phase 123, or a precompiled one's
         // skeleton) is its postcondition too: callers assume it through the ancestor, so the override must prove it
         boolean inheritedEns = ens == null && node.code != null && findContractText(node, 'ensures') != null
-        if (ens == null && !inheritedEns && classInvs.isEmpty() && !nnReturn) return
+        if (ens == null && !inheritedEns && classInvs.isEmpty() && !nnReturn && !writesThroughInvariantParam(node)) return
         if (node.code == null) return
 
         Expression postAst = (ens != null || inheritedEns) ? contractAstFor(node, 'ensures') : null
@@ -14471,6 +14531,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object h = enc.translate(inv)
                 if (h != null) conjuncts.add(h)
             }
+            Object ownGoal = conjuncts.isEmpty() ? null : conjuncts.size() == 1 ? conjuncts.get(0) : session.and(conjuncts)
+            // Phase 433 — an object parameter written through owes its class invariant at the exit (assumed at entry,
+            // Phase 45, and by every later method handed it)
+            List<Object[]> paramInvs = new ArrayList<Object[]>()
+            for (String obj : enc.writtenObjectParams) {
+                ClassNode t = currentObjectParams.get(obj)
+                Set<String> fields = new LinkedHashSet<String>()
+                if (t.fields != null) for (FieldNode f : t.fields) fields.add(f.name)
+                List<Expression> invs = classInvariantTexts(t)
+                List<Object> hs = new ArrayList<Object>()
+                for (Expression inv : invs) {
+                    Object h = enc.translateUnderReceiver(inv, obj, fields)
+                    if (h == null) {
+                        throw new UnsupportedConstructException(
+                            "the invariant '${shownText(inv)}' of '${t.nameWithoutPackage}', owed by '${obj}' after a write through it, is outside fragment")
+                    }
+                    hs.add(h)
+                }
+                Object h = hs.size() == 1 ? hs.get(0) : session.and(hs)
+                conjuncts.add(h)
+                paramInvs.add([obj, t, invs.collect { shownText(it) }.join(' && '), h] as Object[])
+            }
             if (conjuncts.isEmpty()) return   // nothing to prove on this path
 
             Object goal = conjuncts.size() == 1 ?
@@ -14490,7 +14572,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult witnessed = node.getNodeMetaData(REDUCER_LAW_KEY) != null ?
                 refuteAtFpWitnesses(session, enc, node) : null
             CheckResult r = witnessed != null ? witnessed : session.check()
-            if (r.status == CheckResult.Status.REFUTED && postAst != null) {
+            // Phase 433 — the parameter invariants the model breaks, when the method's own goal holds in it: reported
+            // as theirs (an UNKNOWN with no goal of the method's own is theirs too)
+            List<Object[]> brokenParamInvs = new ArrayList<Object[]>()
+            if (!paramInvs.isEmpty() && (r.status == CheckResult.Status.REFUTED ? ownGoal == null ||
+                    session.evalDisplay(ownGoal) == 'true' : r.status == CheckResult.Status.UNKNOWN && ownGoal == null)) {
+                brokenParamInvs = r.status == CheckResult.Status.REFUTED ?
+                    paramInvs.findAll { session.evalDisplay(it[3]) == 'false' } : paramInvs
+            }
+            if (r.status == CheckResult.Status.REFUTED && postAst != null && brokenParamInvs.isEmpty()) {
                 appendOffendingElements(r, enc, session, [postAst])
             }
             boolean prevExact = exactWitness
@@ -14565,6 +14655,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String[] rgConf = (String[]) node.getNodeMetaData(RG_CONF_KEY)
             if (rgConf != null) {
                 addStaticTypeError(Reporter.formatGuaranteeConformanceFailure(rgConf[0], rgConf[1], rgConf[2], r), anchor)
+                return
+            }
+            if (!brokenParamInvs.isEmpty()) {
+                for (Object[] pi : brokenParamInvs) {
+                    addStaticTypeError(Reporter.formatParamInvariantViolation(node.name, (String) pi[0],
+                        ((ClassNode) pi[1]).nameWithoutPackage, (String) pi[2], r), anchor)
+                }
                 return
             }
             if (r.status == CheckResult.Status.UNKNOWN && postAst != null) {

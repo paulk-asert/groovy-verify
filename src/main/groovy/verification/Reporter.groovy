@@ -314,6 +314,23 @@ class Reporter {
         sb.toString()
     }
 
+    /** Phase 433 — an object parameter written through doesn't meet its class's invariant at the method's exit. */
+    static String formatParamInvariantViolation(String methodName, String paramName, String className,
+                                                String invariantText, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        if (result.status == CheckResult.Status.UNKNOWN) {
+            sb.append("Could not decide class invariant of ").append(className).append(" for '").append(paramName)
+              .append("' at exit of ").append(methodName).append(" (solver: ").append(result.reason).append(")")
+            if (invariantText) sb.append("\n    invariant: ").append(invariantText)
+            return sb.toString()
+        }
+        sb.append("Cannot prove class invariant of ").append(className).append(" holds for '").append(paramName)
+          .append("' at exit of ").append(methodName).append(", after a write through it")
+        if (invariantText) sb.append("\n    invariant: ").append(invariantText)
+        appendModel(sb, result)
+        sb.toString()
+    }
+
     static String formatClassInvariantSkipped(String methodName, String invariantText) {
         "Skipped class invariant for ${methodName} (invariant '${invariantText}' is outside fragment). " +
         "The clause is not assumed at entry nor proved at exit; other obligations on the method " +

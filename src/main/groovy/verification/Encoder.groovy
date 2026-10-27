@@ -1884,6 +1884,10 @@ class Encoder implements TheoryApi {
         return varForRaw(name)
     }
 
+    /** Phase 433 — the object parameters this path wrote a field through ({@code c.n = v}), whose class invariant is
+     *  re-proved at its exit. */
+    final Set<String> writtenObjectParams = new LinkedHashSet<String>()
+
     /** Phase 431 — an object parameter's field {@code c$f}: Bool when the field is a boolean, Int otherwise. */
     private Object fieldVar(String name) {
         if (!booleanLocals.contains(name)) return varForRaw(name)
