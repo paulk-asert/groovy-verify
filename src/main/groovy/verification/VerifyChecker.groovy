@@ -343,6 +343,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code intVar}, avoiding the {@code eq(intFresh, boolRhs)} sort-mismatch crash.
      */
     private Set<String> currentBooleanLocals = new HashSet<String>()
+    /** Phase 439 — the method's {@code char} names: a one-character literal written to one is its code point. */
+    private Set<String> currentCharNames = new HashSet<String>()
     /** Phase 424 — names declared a boxed integer or boolean ({@code Integer n}): Int- or Bool-sorted, but their value may be null. */
     private Set<String> currentBoxedNames = new HashSet<String>()
     /**
@@ -3138,6 +3140,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         found
     }
 
+    /** Phase 439 — {@code 'a'} written to a {@code char}: its code point, as the int the model holds a char as. Null
+     *  for anything else (a {@code char} value already translates as an int). */
+    private static Expression charLiteralAsInt(Expression e) {
+        Expression x = e instanceof CastExpression ? ((CastExpression) e).expression : e
+        if (!(x instanceof ConstantExpression)) return null
+        Object v = ((ConstantExpression) x).value
+        if (v instanceof Character) return new ConstantExpression((int) ((Character) v).charValue())
+        if (v instanceof String && ((String) v).length() == 1) return new ConstantExpression((int) ((String) v).charAt(0))
+        null
+    }
+
     /** Phase 430 — whether a displayed counterexample key ({@code b}, {@code b (after the loop)}, {@code c.on}) names a boolean. */
     private boolean isBooleanShown(String key) {
         int paren = key.indexOf(' (')
@@ -4631,6 +4644,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentDecimalNames = collectDecimalNames(node)
         currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
+        currentCharNames = collectNamesOfType(node) { ClassNode t -> ClassHelper.isPrimitiveChar(t) }
         currentBoxedNames = collectNamesOfType(node) { ClassNode t -> (isIntElement(t) || isBooleanType(t)) && !ClassHelper.isPrimitiveType(t) }
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
@@ -5020,6 +5034,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentDecimalNames = new HashSet<String>()
             currentFpNames = new HashMap<String, Boolean>()
             currentBooleanLocals = new HashSet<String>()
+            currentCharNames = new HashSet<String>()
             currentBoxedNames = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
         }
@@ -14259,7 +14274,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // @Ensures. No-op for everything else; the call paths still see `rhsE`.
                     Expression rhsE = carrierOperatorCall(a.rhs, node)
                     assertSurvivalFacts(session, enc, a.rhs, node)   // Phase 222 — executed call ⟹ no arm held
-                    Object rhs = isDecimal ? enc.asRealValue(a.rhs) : enc.translate(a.rhs)
+                    Boolean fpDouble = enc.fpPrecisionOf(a.name)   // Phase 439 — a double/float local
+                    Expression charLit = currentCharNames.contains(a.name) ? charLiteralAsInt(a.rhs) : null
+                    Object rhs = isDecimal ? enc.asRealValue(a.rhs) : fpDouble != null ? enc.asFp(a.rhs) :
+                        enc.translate(charLit ?: a.rhs)
                     // Phase 146 — a decimal local read out of a carrier chain (`BigDecimal v = km(1).plus(mile(1)).value`):
                     // hoist the chain call to a temp carrier local so the `.value` read resolves, then retry the Real path.
                     if (rhs == null && isDecimal) {
@@ -14275,6 +14293,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object fresh
                     if (isDecimal) {
                         fresh = session.realVar(a.name + '#' + (++ssaVersion))
+                    } else if (fpDouble != null) {
+                        fresh = session.fpVar(a.name + '#' + (++ssaVersion), fpDouble)
                     } else if (declaredType != null && !isIntElement(declaredType)) {
                         fresh = session.varOfSort(a.name + '#' + (++ssaVersion), enc.sortForType(declaredType))
                     } else if (currentBooleanLocals.contains(a.name)) {

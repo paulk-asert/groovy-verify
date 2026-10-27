@@ -413,6 +413,9 @@ class BodyEncoder {
         if (ClassHelper.isPrimitiveBoolean(t)) return ConstantExpression.FALSE
         if (ClassHelper.isPrimitiveInt(t) || ClassHelper.isPrimitiveLong(t) ||
             ClassHelper.isPrimitiveShort(t) || ClassHelper.isPrimitiveByte(t)) return new ConstantExpression(0)
+        if (ClassHelper.isPrimitiveChar(t)) return new ConstantExpression(0)   // Phase 439 — '\u0000', an int to the model
+        if (ClassHelper.isPrimitiveDouble(t)) return new ConstantExpression(Double.valueOf(0.0d))
+        if (ClassHelper.isPrimitiveFloat(t)) return new ConstantExpression(Float.valueOf(0.0f))
         null
     }
 

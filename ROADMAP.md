@@ -18656,6 +18656,30 @@ recovered model. Phase 437's one-invariant fallback stays, for a recovery the so
 cache hit: both name the broken conjunct, and both name the parameter (`'a'`, not `'b'`) whose invariant breaks among
 two owed. Mutation-checked: without the recovery both fail.
 
+## Phase 439 — char and floating-point locals  *(shipped — reach)*
+
+Phase 429 gave a local declared without a value Groovy's default, but not a `char`, `float` or `double` one. Probing
+why: those locals were off the postcondition path even when written — `char c = 'a'` skipped with `internal: Sorts Int
+and String are incompatible` (the literal reaches the model as a one-character String), and a `double` local was minted
+an Int, so `double d = p` skipped with `Sorts Int and (_ FloatingPoint 11 53)` and `double d = 1.5d` with `assignment
+'d = 1.5' is outside fragment`.
+
+- **A `char` literal written to a `char` is its code point** (`charLiteralAsInt`, for the method's `char` names): the
+  model holds a char as an int, so `char c = 'a'; return c` proves `result == 97`.
+- **A `double`/`float` local is an IEEE-754 value** (Phase 73's theory): the write's right side goes through `asFp` and
+  its SSA version is an FP variable of the local's precision, re-read by a later `d * 2.0d` or `if (d > 3.0d)`.
+- **An unwritten one holds Groovy's default** — `'\u0000'` (0) or `0.0` — completing Phase 429.
+
+**Not changed:** an FP refutation shows no counterexample values (as for an FP parameter). `result == p * 2.0d` through a
+local refutes on NaN, as IEEE equality does.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P439 char and floating-point locals`, 5 cases: a char written and defaulted, an unwritten
+char refuting as `'\u0000'`, double/float locals written, re-read (in arithmetic and a guard) and defaulted, an
+unwritten double refuting as `0.0`, and a parameter's value through a double local refuting. Mutation-checked: without
+the FP version the three double cases skip again; without the code point the two char cases do.
+
 ---
 
 ## Definition of done, per increment

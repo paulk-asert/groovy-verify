@@ -5183,6 +5183,9 @@ class Encoder implements TheoryApi {
         null
     }
 
+    /** Phase 439 — an FP name's precision ({@code true} = double), or null when {@code name} isn't one. */
+    Boolean fpPrecisionOf(String name) { fpNames.get(name) }
+
     /** Translate {@code e} into the FP sort. Pure FP only (FP names/literals + `+ - * /`, unary minus);
      *  an int operand or anything else returns null → loud skip (no silent int↔fp coercion). */
     Object asFp(Expression e) {
