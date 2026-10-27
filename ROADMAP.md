@@ -18358,7 +18358,7 @@ starting and ending above `' '`, which is regular-expression membership, and Z3 
   Z3's own spelling, `f("\u{1}")`), then escaped (`groovyStringLiteral`: a quote, backslash, `$`, a control character).
 
 **Not changed:** `strip()` (Unicode whitespace) is unmodelled. `!result.startsWith(" ") && !result.endsWith(" ")` in
-one claim times out, loudly ("could not decide"), where each proves alone. Found while testing, and before this
+one claim times out, loudly ("could not decide"), where each proves alone (Phase 435 asks it part by part). Found while testing, and before this
 phase: the `ensured:` line drops a string literal's quotes (`ensured: (result ==  a)` for `result == " a"`,
 `!(result.endsWith( ))`) — a message bug to take next.
 
@@ -18547,6 +18547,31 @@ does`). Both stores check the setter is the field (Phase 361), and both owe the 
 (`g(new C(), new C(), -…)`), a failure needing one object, a local alias's write refuting a stale claim and proving the
 written one, and a boolean field's write declined. Measured against Phase 433: five of the six fail there (the
 alias's false claim and `!b.on` compiled clean).
+
+## Phase 435 — an @Ensures conjunction, part by part  *(shipped — reach and honesty of the message)*
+
+An `@Ensures` conjunction is checked as one goal. Phase 427 recorded the cost: `!result.startsWith(" ") &&
+!result.endsWith(" ")` over a trim was `Could not decide postcondition of f (solver: timeout)` though each half proves
+alone. And a refuted conjunction showed the whole claim, leaving the reader to find which part the counterexample
+breaks.
+
+- **An undecided conjunction is asked conjunct by conjunct** (`topConjuncts`, on the same path, under `held`): the
+  path proves when every conjunct does, and otherwise reports each failing conjunct's own diagnostic (a refutation, or
+  a `Could not decide` naming the conjunct alone). Only on UNKNOWN — a decided goal is never re-asked, so verdicts,
+  messages and solver counts elsewhere don't move; a conjunct outside the fragment alone leaves the whole's verdict.
+  Not for a law lemma (its own wording), a catch witness's re-check, or a conjunct (no nesting).
+- **A refuted conjunction names the conjuncts the model breaks** — `broken conjunct: !(result.endsWith('x'))` beside
+  `fails on: f("x")`, `broken conjuncts: (result > 0), (result > 1)` — when not all of them (then `ensured:` says it).
+  Each top-level part is translated beside the goal and evaluated in the model (`evalDisplay`'s Bool, Phase 433).
+
+**Not changed:** a conjunct that is itself a disjunction or quantifier isn't split further. No case pins a conjunct
+refuted after a split — every refutable conjunction tried refuted whole first.
+
+**Changed cases:** none (docLint: 59/59 quoted diagnostics unchanged).
+
+**Shipped tests:** group `P435 conjuncts`, 4 cases: the trim's prefix-and-suffix claim proving part by part, a
+refutation naming one broken conjunct, one naming two, and none named when all break. Mutation-checked: without the
+split, the first is `Could not decide postcondition of f (solver: timeout)` again.
 
 ---
 

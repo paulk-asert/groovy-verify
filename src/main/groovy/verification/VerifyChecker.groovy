@@ -14553,6 +14553,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // combined check keeps the body-replay cost flat; refutation diagnostic picks
             // the message based on which obligations are in play.
             List<Object> conjuncts = new ArrayList<Object>()
+            // Phase 435 — a conjunction's parts, to name the ones a refuting model breaks
+            List<Object[]> postParts = new ArrayList<Object[]>()
             if (postAst != null) {
                 Object post = enc.translateGoal(postAst)
                 if (post == null) {
@@ -14560,6 +14562,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         "postcondition '${postAst.text}' is outside fragment")
                 }
                 conjuncts.add(post)
+                List<Expression> parts = topConjuncts(postAst)
+                if (parts.size() >= 2) {
+                    for (Expression part : parts) {
+                        Object ph = enc.translateGoal(part)
+                        if (ph == null) { postParts.clear(); break }
+                        postParts.add([part, ph] as Object[])
+                    }
+                }
             }
             for (Expression inv : classInvs) {
                 Object h = enc.translate(inv)
@@ -14616,12 +14626,42 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (r.status == CheckResult.Status.REFUTED && postAst != null && brokenParamInvs.isEmpty()) {
                 appendOffendingElements(r, enc, session, [postAst])
+                // Phase 435 — which conjuncts the model breaks, when not all of them
+                if (!postParts.isEmpty()) {
+                    List<String> broken = postParts.findAll { session.evalDisplay(it[1]) == 'false' }
+                        .collect { shownText((Expression) it[0]) }
+                    if (!broken.isEmpty() && broken.size() < postParts.size()) {
+                        r.notes.add(0, ((broken.size() == 1 ? "broken conjunct: " : "broken conjuncts: ") + broken.join(', ')).toString())
+                    }
+                }
             }
             boolean prevExact = exactWitness
             exactWitness = auxPathCheck
             try { r = shown(r) } finally { exactWitness = prevExact }
             if (r.status == CheckResult.Status.VERIFIED) return
             if (auxPathCheck) auxPathCall = r.failingCall
+            // Phase 435 — an undecided conjunction is asked conjunct by conjunct: each may decide where the whole times
+            // out (a string's prefix and suffix in one claim), and a failure names the conjunct it is
+            if (r.status == CheckResult.Status.UNKNOWN && postAst != null && !auxPathCheck && !splittingConjuncts &&
+                    !hasLawMetadata(node)) {
+                List<Expression> parts = topConjuncts(postAst)
+                if (parts.size() >= 2) {
+                    List<Object[]> errs = new ArrayList<Object[]>()
+                    boolean split = true
+                    splittingConjuncts = true
+                    try {
+                        for (Expression part : parts) {
+                            Object[] h = held({ -> checkPath(node, p, part, reqAst, classInvs); true })
+                            for (Object[] e : (List<Object[]>) h[0]) if (!errs.any { it[0] == e[0] }) errs.add(e)
+                        }
+                    } catch (UnsupportedConstructException ignored) {
+                        split = false   // a conjunct alone outside the fragment: the whole's verdict stands
+                    } finally {
+                        splittingConjuncts = false
+                    }
+                    if (split) { emitHeld(errs); return }
+                }
+            }
             // Phase 387 — a path through a catch enters it in any state the try block may leave, so the model's call
             // need not throw there at all (`f(-2147483648)` for a catch only `d == 0` reaches): the call is sought
             // along the exact ways in, and withheld when none fails
@@ -14722,6 +14762,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentBcountKExprs = Collections.<Expression> emptyList()
             try { session.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /** Phase 435 — set while a path's conjuncts are checked one by one (no conjunct is split again). */
+    private boolean splittingConjuncts = false
+
+    /** Phase 435 — whether {@code node} is a synthesized law lemma, reported in its own words, never split. */
+    private static boolean hasLawMetadata(MethodNode node) {
+        node.getNodeMetaData(REDUCER_LAW_KEY) != null || node.getNodeMetaData(MONADIC_LAW_KEY) != null ||
+            node.getNodeMetaData(RG_LAW_KEY) != null || node.getNodeMetaData(RG_CONF_KEY) != null
+    }
+
+    /** Phase 435 — the top-level {@code &&} operands of {@code e}, left to right, each carrying the contract's source
+     *  text (so its literals show as written, Phase 428); {@code [e]} when it is no conjunction. */
+    private static List<Expression> topConjuncts(Expression e) {
+        List<Expression> out = new ArrayList<Expression>()
+        Object src = e.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY)
+        Closure walk
+        walk = { Expression x ->
+            if (x instanceof BinaryExpression && ((BinaryExpression) x).operation.type == Types.LOGICAL_AND) {
+                walk(((BinaryExpression) x).leftExpression)
+                walk(((BinaryExpression) x).rightExpression)
+            } else {
+                if (src != null && x.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY) == null) {
+                    x.putNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY, src)
+                }
+                out.add(x)
+            }
+        }
+        walk(e)
+        out
     }
 
     /** Phase 387 — set while a catch witness's path is re-checked ({@link #catchWitnessPaths}); the call it shows. */
