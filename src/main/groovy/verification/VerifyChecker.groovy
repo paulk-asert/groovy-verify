@@ -14563,7 +14563,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         "postcondition '${postAst.text}' is outside fragment")
                 }
                 conjuncts.add(post)
-                List<Expression> parts = topConjuncts(postAst)
+                List<Expression> parts = hasLawMetadata(node) ? [postAst] : topConjuncts(postAst)   // a law speaks in its own words
                 if (parts.size() >= 2) {
                     for (Expression part : parts) {
                         Object ph = enc.translateGoal(part)

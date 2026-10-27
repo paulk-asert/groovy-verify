@@ -556,7 +556,40 @@ class Z3Session implements SmtSession {
     @Override boolean isBool(Object handle) { ((Expr) handle).getSort().equals(ctx.getBoolSort()) }
     @Override void displayAs(String name, Object term) { if (name != null && term != null) displayAliases[name] = (Expr) term }
 
+    /** Phase 438 — the cached refutation this session's last check was answered with: it carries no model, and one
+     *  is recovered (pinned to its counterexample) only when {@link #evalDisplay} needs it. */
+    private CheckResult cachedRefutation
+
+    /**
+     * Phase 438 — a model for a refutation answered from the VC cache, agreeing with the cached counterexample on every
+     * variable it pins (so a note read from it — a broken conjunct, a parameter's invariant — is about the failure shown,
+     * not another one): the pins are asserted in a scope popped after the solve. Null when the solver can't give one.
+     */
+    private Model recoverModel() {
+        CheckResult c = cachedRefutation
+        cachedRefutation = null
+        if (c?.counterexample == null) return null
+        solver.push()
+        try {
+            c.counterexample.each { String k, Long v ->
+                IntExpr iv = vars.get(k)
+                BoolExpr bv = boolVars.get(k)
+                if (iv != null) solver.add(ctx.mkEq(iv, ctx.mkInt(v)))
+                else if (bv != null) solver.add(v == 1L ? bv : ctx.mkNot(bv))
+            }
+            long t0 = System.nanoTime()
+            Status st = solver.check()
+            Z3Backend.recordSolverCheck((long) ((System.nanoTime() - t0) / 1_000_000L), false)
+            return st == Status.SATISFIABLE ? solver.getModel() : null
+        } catch (Throwable ignored) {
+            return null
+        } finally {
+            solver.pop()
+        }
+    }
+
     @Override String evalDisplay(Object handle) {
+        if (lastModel == null && cachedRefutation != null) lastModel = recoverModel()
         if (lastModel == null || handle == null) return null
         try {
             Expr v = lastModel.evaluate((Expr) handle, true)
@@ -1629,8 +1662,11 @@ class Z3Session implements SmtSession {
         if (cached != null) {
             Z3Backend.recordVCCacheHit()
             result = cached.copy()
+            lastModel = null
+            cachedRefutation = result.status == CheckResult.Status.REFUTED ? cached : null   // Phase 438 — a model on demand
         } else {
             Z3Backend.recordVCCacheMiss()
+            cachedRefutation = null
             result = computeCheck()
             Z3Backend.vcCache.put(key, result.copy())
         }

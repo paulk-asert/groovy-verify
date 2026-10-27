@@ -18618,7 +18618,8 @@ value), but `b` has nothing to do with the failure.
   alone): a query identical to an earlier one is answered from the solver cache, with no model, so the per-invariant
   evaluation found nothing broken and the failure fell to the generic `Cannot prove class invariant of g holds at method
   exit`, without its invariant. With no goal of the method's own and one invariant owed, the failure is that invariant's.
-  Phase 435's `broken conjunct:` note is likewise absent on a cache hit — a missing note, never a wrong one.
+  Phase 435's `broken conjunct:` note is likewise absent on a cache hit — a missing note, never a wrong one (Phase 438
+  recovers the model).
 
 **Changed cases:** P434's `… and refutes when the write breaks it` and P436's `a boolean field in the invariant` expect
 the exact call again, `new C()` for the other, and refute `b.n`.
@@ -18627,6 +18628,33 @@ the exact call again, `new C()` for the other, and refute `b.n`.
 counterexample and the call (its source is P434's, so in a run with that group it is a cache hit), and a field the
 body reads still shown. Mutation-checked: never setting the flag fails the two tightened P434/P436 cases; without the
 cache fallback, `-Pcases=P43` fails the first.
+
+## Phase 438 — a cached refutation's model  *(shipped — honesty of the message)*
+
+Phase 437's full gate found it: a check identical to an earlier one is answered from the VC cache (Phase 34), which
+keeps the verdict and the counterexample but no model. Every note read from the model went missing on a hit —
+Phase 435's `broken conjunct:`, Phase 433's naming of the parameter whose invariant broke (Phase 437 patched only the
+one-invariant case), Phase 126's offending elements — so one failure read differently by what was checked first.
+
+- **A model is recovered on demand** (`Z3Session.recoverModel`): a cache hit on a refutation remembers it, and the
+  first `evalDisplay` re-solves the query with the cached counterexample's int and boolean values pinned (in a
+  `push`/`pop` scope), so the note describes the failure shown, not another model's. Nothing re-solves unless a note
+  asks; a fresh check clears it.
+
+- **A law lemma names no conjunct** (found by this phase's gate): Phase 435 split no law lemma but still named its
+  broken conjuncts, in the lemma's synthesized text — `broken conjunct: (this.m__MonoidOp(0, a) == a)` under `Cannot
+  prove Monoid identity for combiner m`. Hidden until now because those checks were cache hits, with no model; the
+  recovered model showed it. A law (Phase 130/291's `@Reducer`/carrier lemmas, monadic, rely-guarantee) speaks in its
+  own words only.
+
+**Not changed:** a counterexample value outside the pinned variables (a String literal, an array cell) may differ in the
+recovered model. Phase 437's one-invariant fallback stays, for a recovery the solver can't give.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P438 a cached refutation's model`, 2 cases, each two identical methods so the second is a
+cache hit: both name the broken conjunct, and both name the parameter (`'a'`, not `'b'`) whose invariant breaks among
+two owed. Mutation-checked: without the recovery both fail.
 
 ---
 
