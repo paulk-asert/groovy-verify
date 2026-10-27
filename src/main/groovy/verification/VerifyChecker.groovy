@@ -16671,7 +16671,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Split each invariant into top-level conjuncts first, so a mixed `s >= 0 && x >= 0` separates
         // its accumulator clause (inductive, loop-head) from its per-element clause (over the element).
         List<Expression> conjuncts = new ArrayList<Expression>()
-        for (Expression inv : site.spec.invariants) splitConjuncts(inv, conjuncts)
+        for (Expression inv : site.spec.invariants) {
+            int from = conjuncts.size()
+            splitConjuncts(inv, conjuncts)
+            // Phase 442 — each clause keeps the invariant's source text, so its literals show as written
+            Object src = inv.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY)
+            if (src != null) {
+                for (Expression c : conjuncts.subList(from, conjuncts.size())) {
+                    if (c.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY) == null) {
+                        c.putNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY, src)
+                    }
+                }
+            }
+        }
         List<Expression> perElement = new ArrayList<Expression>()
         List<Expression> xFree = new ArrayList<Expression>()
         for (Expression c : conjuncts) {
@@ -16702,7 +16714,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, perElement)))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                String text = perElement.collect { it.text }.join(' && ')
+                String text = perElement.collect { shownText(it) }.join(' && ')   // Phase 442 — quoted, as written
                 addStaticTypeError(Reporter.formatLoopPerElement(node.name, text, r), site.loopStmt)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }

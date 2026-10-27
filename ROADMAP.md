@@ -18736,6 +18736,29 @@ escapes kept as typed (`"a\tb"`, `'\u0041'`), a slashy literal, and a multi-line
 Mutation-checked: without the source unit at the assertion site, the three as-written cases and P428's assertion case
 fail.
 
+## Phase 442 — a loop invariant's literals  *(shipped — honesty of the message)*
+
+Phase 441 asked whether a loop `@Invariant` has the assertion's problem. On entry and preservation it doesn't: a loop
+invariant is a re-parsed contract, so Phase 428 already keeps its literals as written. But a for-in invariant's
+per-element clauses (Phase 65) were shown by their bare `.text`, never quoted: `@Invariant({ x != 'q' && x != "r" })`
+read `invariant: (x != q) && (x != r)`.
+
+- **Quoted, as written**: the per-element text goes through `shownText`, and `partitionForInPerElement` gives each
+  clause it splits off the invariant's source text, as Phase 435's `topConjuncts` does, so `'q'` stays single-quoted,
+  `"r"` double and `/s/` slashy.
+
+**Found, not fixed — the per-element witness:** that refutation's failing call is `f([null])`, a list whose one
+element satisfies every clause (`null != 'q'`). The element's model value isn't read back into the call, so it is
+filled with `null`. The witness is wrong, but the verdict isn't: `x == 'q'` does break the clause.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P442 loop invariant literals`, 4 cases: per-element clauses with a single-quoted, a
+double-quoted and a slashy literal; a per-element clause split from an x-free one; and, already as written, an
+invariant failing on entry and one not preserved. Mutation-checked: without the source text on each clause the
+per-element literals come out double-quoted, and without the quoting they're bare, failing the first two cases either
+way.
+
 ## Definition of done, per increment
 
 An increment is done when:
