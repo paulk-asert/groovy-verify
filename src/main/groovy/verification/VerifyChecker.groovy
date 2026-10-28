@@ -14576,9 +14576,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // return e.g. `[sum, product]` and have `@Ensures({ result[0] == … && result[1] == … })`
                 // resolve, where a bare scalar handle couldn't. No scalar result binding is needed.
                 if (enc.tryRecordFactoryAssign('result', p.result) ||
-                    enc.tryRecordSetBinopAssign('result', p.result)) {
+                    enc.tryRecordSetBinopAssign('result', p.result) ||
+                    listCallsHoisted(p.result, enc, session, node)) {
                     // result registered as a factory or a set binop — fall through to the check.
                 } else {
+                    // Phase 455 — a list return over the method's own call that a measure would bind: say so (Phase 452)
+                    if (!isCallExpr(p.result)) requireDecreasesFor(p.result, node) { listCallsHoisted(p.result, enc, session, node) }
                     // Phase 61 — a BigDecimal-valued return narrowed into a non-decimal result (e.g.
                     // `int f() { a / b }`, Groovy truncating the quotient) can't be bound as a Real
                     // without a sort mismatch; skip loudly, as the bare-`/` int case always has.
@@ -19844,6 +19847,34 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         } as ExpressionTransformer
                         Expression rewritten = tr.transform(e0)
                         return hoistedAny[0] ? rewritten : null
+    }
+
+    /**
+     * Phase 455 — a list return built over a list-valued call (`f(n - 1) + [n]`, `[n, *f(n - 1)]`): each such call becomes
+     * a list local carrying its @Ensures, as `List<Integer> r = f(n - 1)` does (Phase 225/323), and the return is bound
+     * as that concatenation. Before, the call had no list value and the postcondition was skipped. A bare call is the
+     * return path's own (its @Ensures renamed to result); false where nothing was hoisted or the rewrite doesn't bind.
+     */
+    private boolean listCallsHoisted(Expression ret, Encoder enc, SmtSession session, MethodNode node) {
+        if (isCallExpr(ret) || !exprContainsCall(ret)) return false
+        boolean[] hoisted = [false] as boolean[]
+        ExpressionTransformer tr = null
+        tr = { Expression e ->
+            if (e instanceof ClosureExpression) return e
+            if (isCallExpr(e) && calleeReturnsList(e, node)) {
+                String ln = 'ret$call$list$' + (++hoistSeq)
+                if (listLocalFromCall(session, enc, ln, e, node)) {
+                    hoisted[0] = true
+                    VariableExpression v = new VariableExpression(ln)
+                    v.setSourcePosition(e)
+                    return v
+                }
+                return e
+            }
+            return e.transformExpression(tr)
+        } as ExpressionTransformer
+        Expression rewritten = tr.transform(ret)
+        hoisted[0] && enc.tryRecordFactoryAssign('result', rewritten)
     }
 
     private static boolean exprContainsCall(Expression e) {

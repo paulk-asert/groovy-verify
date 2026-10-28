@@ -19110,6 +19110,28 @@ skipped (an if needing the hypothesis, its refuted twin, the one without a measu
 proved (Phase 92 hoists a return's self-call), and the measure and the precondition at the condition's call were
 already checked.
 
+## Phase 455 — a list return built on a call  *(shipped — reach)*
+
+Phase 453 noted a list-returning recursion has no inductive hypothesis, with or without a @Decreases. Measured, it was
+narrower: a list-valued call bound to a local (`List<Integer> r = f(n - 1); return r + [n]`, Phase 225) or returned
+bare already carried its @Ensures. One inside the return expression (`return f(n - 1) + [n]`, `[n, *f(n - 1)]`) didn't,
+recursive or not (`g(n) + [n]`): a list return is bound through the factory route (`tryRecordFactoryAssign`), which
+models the concatenation (Phase 323) only over named lists, and Phase 92's hoist mints scalar handles.
+
+- **Each list-valued call in a list return becomes a list local** (`listCallsHoisted`, through Phase 225's
+  `listLocalFromCall`) when the return doesn't bind as written, and the rewritten return is bound as the
+  concatenation. A recursive call's @Ensures is assumed under the method's @Decreases, checked at it (Phase 453).
+- **Without a @Decreases the skip asks for one** where that binds the return (Phase 452's retry).
+
+**Not changed:** a ternary of lists (`n == 0 ? [] : f(n - 1) + [n]`) has no list value at all, recursive or not; the
+`if (n == 0) return []` form proves.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P455 a list return built on a call`, 8 cases. Measured at the parent commit: seven skipped (an
+append, a spread, the element it adds, another method's call, a size and an element claim refuted now, the one without
+a measure); the measure at it was already checked (Phase 453).
+
 ## Definition of done, per increment
 
 An increment is done when:
