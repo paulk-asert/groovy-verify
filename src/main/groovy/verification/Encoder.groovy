@@ -6611,11 +6611,16 @@ class Encoder implements TheoryApi {
                 'frame read off its body []: a subclass compiled elsewhere must write no more')
             VerifyChecker.recordFrameReliance(cm, Collections.<String> emptySet())   // Phase 364
         }
-        List<String> formals = (List<String>) c[0]
-        Expression ensuresExpr = (Expression) c[1]
-        // Phase 450 — a named or literal argument is spliced into the @Ensures (`s != null` over `g(a)` reads a's nullity),
-        // any other is bound by value under a formal shadowed while it translates: by value alone, `s != null` read the
-        // CALLER's `s` — `if (g(a)) s.size()` proved, `s` unconstrained
+        return translateInstantiated((Expression) c[1], (List<String>) c[0], args)
+    }
+
+    /**
+     * {@code expr[formals:=args]}: a callee's contract clause read at a call. Phase 450 — a named or literal argument is
+     * spliced into the clause (`s != null` over `g(a)` reads a's nullity), any other is bound by value under a formal
+     * shadowed while it translates: by value alone, `s != null` read the CALLER's `s` — `if (g(a)) s.size()` proved,
+     * `s` unconstrained. Null when an argument or the clause doesn't translate.
+     */
+    Object translateInstantiated(Expression ensuresExpr, List<String> formals, List<Expression> args) {
         Map<String, Expression> sub = new HashMap<String, Expression>()
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
         for (int i = 0; i < formals.size(); i++) {

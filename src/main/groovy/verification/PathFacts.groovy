@@ -20,12 +20,16 @@ import groovy.transform.TupleConstructor
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.control.SourceUnit
+import org.codehaus.groovy.syntax.Types
 
 /**
  * One fact harvested from an enclosing {@code if} statement.
@@ -95,7 +99,27 @@ class PathFacts extends ClassCodeVisitorSupport {
         // condition as call sites, so the implicit-obligation checks in
         // VerifyChecker are path-sensitive too.
         recordFacts(be)
+        // Phase 451 — a short-circuit's right operand runs only under its left (`n >= 0 && isq(n) > 2`): its call's
+        // precondition was checked without it, a false alarm wherever the left is what makes the call legal
+        int op = be.operation.type
+        if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+            be.leftExpression.visit(this)
+            stack.push(new IfFact(new BooleanExpression(be.leftExpression), op == Types.LOGICAL_AND))
+            try { be.rightExpression.visit(this) } finally { stack.pop() }
+            return
+        }
         super.visitBinaryExpression(be)
+    }
+
+    @Override
+    void visitTernaryExpression(TernaryExpression te) {
+        // Phase 451 — and a ternary's arms under its test (an Elvis's falsy arm is a value's truth: walked as before)
+        if (te instanceof ElvisOperatorExpression) { super.visitTernaryExpression(te); return }
+        te.booleanExpression.visit(this)
+        stack.push(new IfFact(te.booleanExpression, true))
+        try { te.trueExpression.visit(this) } finally { stack.pop() }
+        stack.push(new IfFact(te.booleanExpression, false))
+        try { te.falseExpression.visit(this) } finally { stack.pop() }
     }
 
     @Override

@@ -446,13 +446,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression reqAst = findRequires(callee) != null ? contractAstFor(callee, 'requires') : null
         Object guard = null
         if (reqAst != null) {
-            Map<String, Object> b = new LinkedHashMap<String, Object>()
-            for (int i = 0; i < callee.parameters.length; i++) {
-                Object h = enc.translate(actuals.get(i))
-                if (h == null) return null
-                b.put(callee.parameters[i].name, h)
-            }
-            guard = enc.translateWith(reqAst, b)
+            // Phase 451 — the arguments spliced in, as a combiner's are (Phase 450): bound by translated value, a list
+            // argument has none, so `if (g(xs))` under `@Requires({ ys != null })` lost its @Ensures
+            List<String> formals = new ArrayList<String>()
+            for (Parameter p : callee.parameters) formals.add(p.name)
+            guard = enc.translateInstantiated(reqAst, formals, actuals)
             if (guard == null) return null
         }
         ClassNode rt = callee.returnType
@@ -5832,7 +5830,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         assumeClassInvariants(s, enc)
         for (IfFact f : pf.factsAt(site)) {
             Object c = enc.translate(f.condition)
-            if (c == null) continue   // an unencodable fact just weakens the assumption set — safe
+            if (c == null || !s.isBool(c)) continue   // an unencodable fact just weakens the assumption set — safe
             s.assertExpr(f.inThenBranch ? c : s.not(c))
         }
     }
@@ -19458,7 +19456,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Collections.<IfFact>emptyList()
             for (IfFact f : facts) {
                 Object condExpr = enc.translate(f.condition)
-                if (condExpr == null) {
+                if (condExpr == null || !session.isBool(condExpr)) {   // Phase 451 — a value's truth (`s && …`) is no term
                     // A fact we can't encode just becomes an unknown
                     // — drop it. Safe (it weakens our assumption set),
                     // and the spike stays honest.

@@ -19017,6 +19017,30 @@ alarms (an if and a ternary on an equational @Ensures, an implication's @Ensures
 (unsound — the inlined `s != null` reading the caller's `s`), and the implication's twin already refuted.
 Mutation-checked: without the splice the if-on-a-call fails; without the condition value three fail.
 
+## Phase 451 — a @Requires callee in a condition  *(shipped — reach)*
+
+Phase 450 left it: a callee with a @Requires in a condition (`if (g(xs)) return xs[0]` under `@Requires({ ys != null })`)
+still didn't carry its @Ensures. Phase 401's condition value assumes the @Ensures only under the @Requires, read with
+the formals bound to the arguments' translated values — and a list argument has none, so the call had no value and its
+guard was dropped. Measuring it showed a second false alarm beside it: a call's own precondition was checked without
+the short-circuit or ternary operand guarding it (`n >= 0 && clip(n) > 4`, `n >= 0 ? clip(n) : 0`), since the path
+facts at a call were its enclosing `if`s only.
+
+- **The @Requires guard reads the arguments spliced in** (`Encoder.translateInstantiated`, Phase 450's combiner
+  substitution, now shared): a named or literal argument replaces its formal, any other is bound by value under a
+  shadowed formal.
+- **A short-circuit's right operand and a ternary's arms carry their guard as a path fact** (`PathFacts`): `&&`'s left
+  holds, `||`'s fails, a ternary's test holds or fails. An Elvis's arms are walked as before (its test is a value's
+  truth), and a fact that translates to no boolean (`s && nonEmpty(s)`) is left unassumed at both readers, as a guard
+  already was (Phase 447).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P451 a @Requires callee in a condition`, 11 cases. Measured at the parent commit: six false
+alarms (an if, an implication and a ternary on a @Requires callee; a precondition under `&&`, `||` and a ternary's
+test); the five refutations (an @Ensures too weak, an unmet @Requires, an `&&` too weak, a ternary's other arm, a
+value's truth) already refuted.
+
 ## Definition of done, per increment
 
 An increment is done when:
