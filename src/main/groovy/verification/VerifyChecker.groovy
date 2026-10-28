@@ -439,8 +439,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String name = ((MethodCall) call).methodAsString
         List<Expression> actuals = collectArgumentExpressions((MethodCall) call)
         if (name == null || actuals == null) return null
-        MethodNode callee = resolveContractedCallee(currentMethod, name, actuals.size(), false, staticOwnerType(call), null, call)
-        if (callee == null || callee.is(currentMethod) || findEnsures(callee) == null) return null
+        // Phase 454 — the method itself in its own condition (`if (f(n - 1) > 5)`), as the inductive hypothesis: under its
+        // @Decreases, which Phase 453 checks at a guard's call too. Not from a pure helper's body: a call there is in
+        // another method's, where this method's measure isn't checked
+        boolean self = currentMethod != null && !enc.inPureBody() && hasDecreases(currentMethod)
+        MethodNode callee = resolveContractedCallee(currentMethod, name, actuals.size(), self, staticOwnerType(call), null, call)
+        if (callee == null || (callee.is(currentMethod) && !self) || findEnsures(callee) == null) return null
         Set<String> w = modifiedNames(callee)
         if (w == null || !w.isEmpty()) return null
         Expression reqAst = findRequires(callee) != null ? contractAstFor(callee, 'requires') : null
@@ -460,7 +464,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Object fresh = sort != null ? s.varOfSort(nm, sort) : s.intVar(nm)
         if (guard != null) s.pushAssertGuard(guard)
         try {
-            return assumeCalleeEnsures(s, enc, call, currentMethod, fresh, false) ? fresh : null
+            return assumeCalleeEnsures(s, enc, call, currentMethod, fresh, self) ? fresh : null
         } finally {
             if (guard != null) s.popAssertGuard()
         }
@@ -14226,6 +14230,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Guard g = (Guard) step
                     Object c = enc.translateCondition(g.cond)   // Phase 450
                     if (c == null) {
+                        requireDecreasesFor(g.cond, node) { enc.translateCondition(g.cond) != null }   // Phase 454
                         throw new UnsupportedConstructException(
                             "guard '${g.cond.text}' is outside fragment")
                     }

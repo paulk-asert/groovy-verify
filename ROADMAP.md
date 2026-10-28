@@ -19090,6 +19090,26 @@ compiled clean though they never end (a return, a ternary's arm, a product, a pr
 to add a measure; a local's call was already checked, and the four guarded recursions (factorial, gcd, `&&`, `||`)
 already proved. Mutation-checked: without the guards those four fail on the measure.
 
+## Phase 454 — a recursive call in its own condition  *(shipped — reach)*
+
+Phase 453 left it: a recursive method's call to itself in an `if` condition (`if (f(n - 1) < 0) return -1`) skipped
+the postcondition, with a @Decreases or without one, as `guard '…' is outside fragment`. Phase 450's condition value
+(Phase 401's `contractedCallValue`) excluded the method itself, which in an assignment or a return is the inductive
+hypothesis under a @Decreases (Phase 92).
+
+- **The method's own call in a condition is its @Ensures' value under its @Decreases**, assumed where its @Requires
+  holds, as any callee's there. Phase 453 checks the measure at a guard's call, so the hypothesis rests on a checked
+  measure. Not from a pure helper's body: a call there is in another method's body, where this method's measure isn't
+  checked.
+- **Without a @Decreases the guard's skip asks for one** (Phase 452's message, retried as if the method had one).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P454 a recursive call in its own condition`, 6 cases. Measured at the parent commit: three
+skipped (an if needing the hypothesis, its refuted twin, the one without a measure); a returned ternary's test already
+proved (Phase 92 hoists a return's self-call), and the measure and the precondition at the condition's call were
+already checked.
+
 ## Definition of done, per increment
 
 An increment is done when:

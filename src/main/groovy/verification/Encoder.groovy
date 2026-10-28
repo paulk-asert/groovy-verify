@@ -325,6 +325,8 @@ class Encoder implements TheoryApi {
      *  @Ensures), or null; and how deep the translation is in such bodies. */
     Closure<Object> contractedValue = null
     private int pureBodyDepth = 0
+    /** Phase 454 — is the translation inside a pure helper's body (where {@link #contractedValue} also applies)? */
+    boolean inPureBody() { pureBodyDepth > 0 }
     /**
      * Per-*term* unfolding depth for the defining-equation expansion (Phase 8a). A {@code f#(args)} term
      * asserts its equation and unfolds its body's recursive calls to {@code depth - 1}, restoring the
