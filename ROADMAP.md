@@ -18885,6 +18885,48 @@ call; a callee writing null). Mutation-checked, part by part: without the formal
 crashes again; without the precondition tie four fail; without the @Ensures sharing two; without the restore the
 collision compiles clean again.
 
+## Phase 447 — a callee's formal names are its own  *(shipped — soundness)*
+
+Phase 446 found a written collection formal taking the place of a caller's same-named list. The audit for other
+kinds found the general hole: a callee's contract is read in the caller's encoder, where a name's oracles — its
+nullity, size, contents, set, map — are keyed by the name. A formal's *value* went through bindings, but those oracles
+didn't, so a formal named like one of the caller's variables read that variable's. **Unsound**, each compiled clean:
+
+- `@Ensures({ s != null })` on a formal `s` (an argument `a`) made the caller's own `s` non-null: `g(a); s.size()`.
+- A caller's `@Requires({ s != null })` discharged `g(a)`'s `@Requires({ s != null })` — about `a`. A set likewise.
+- A written set or map formal's @Ensures (`s.contains(5)`, `m.containsKey('k')`) held of the caller's `s` / `m`.
+
+Probing those found two silent drops:
+
+- A written String-keyed map was havocked with an Int-sorted key-set (sets likewise), so a later `a.containsKey('zz')`
+  threw — and the implicit-obligation pass ran under `catch (Throwable ignored) {}`: the throw dropped every check left
+  in the method without a word, and the assertion "proved".
+- With that catch made loud, the suite showed two more methods whose checks had been silently dropped: a map local's
+  `m.get("b")` reached the array-bounds check with a String index (`Map.of(…)` — only parameters and fields were known
+  maps there), and `m.get(5) ?: 0`'s guard (an Integer's truth) was asserted as a boolean.
+
+- **A formal's oracles are its own**: while a callee's contract is read — its @Requires at the call, its @Ensures
+  after — each formal's name gets fresh oracles (`shadowName`), in the formal's own sorts (its list element, set and
+  map types are registered for the read), restored after. A name an actual mentions keeps the caller's (translating
+  that actual reads it); a formal passed its own same-named variable (`g(s)`) is that variable.
+- **Then tied to the actual's**: a set or map formal is the actual set or map — at the precondition, and for the
+  @Ensures (a written one, the caller's post-havoc set or map, as Phase 229's lists are).
+- **Havocs keep their sorts**: `havocSet` / `havocMap` mint in the set's or map's own sorts, and a call's framing uses them.
+- **Loud, not silent**: an internal error in the implicit-obligation pass is reported (`Skipped the implicit safety
+  checks of f (an internal error: …)`); the map local has no bounds obligation; a guard that isn't a boolean term is
+  left unassumed.
+
+**Not changed:** a formal whose name an actual mentions at another position (`g(s, a)` into `g(a, s)`) still reads the
+caller's name — found, not fixed.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P447 formal name collisions`, 8 cases. Measured at the parent commit: six compiled clean
+(unsound — the nullity @Ensures and @Requires, a set @Requires, a written set and map, and `a.containsKey('zz')`), one
+was a false alarm (a caller's set discharging a callee's @Requires), and one passed only because its assertion was
+silently dropped. Mutation-checked: without the @Ensures shadow one fails, without the @Requires shadow two, with the
+Int-sorted map havoc three, without the written-map binding one.
+
 ## Definition of done, per increment
 
 An increment is done when:

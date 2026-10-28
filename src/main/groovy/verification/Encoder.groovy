@@ -2101,7 +2101,8 @@ class Encoder implements TheoryApi {
     /** Phase 323 — the list oracles bound under {@code name} (contents, size, nullity), for a save/restore around a
      *  temporary alias; {@link #restoreListOracles} puts them back, removing any the name didn't have. */
     Object[] saveListOracles(String name) {
-        [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name), arrEnv.get(name + '$nullElem')] as Object[]   // Phase 446 — and its elements' nullity
+        [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name), arrEnv.get(name + '$nullElem'),   // Phase 446
+         setEnv.get(name), arrEnv.get(mapValsKey(name)), setEnv.get(mapKeysKey(name))] as Object[]           // Phase 447
     }
 
     void restoreListOracles(String name, Object[] saved) {
@@ -2109,6 +2110,11 @@ class Encoder implements TheoryApi {
         if (saved[1] != null) sizeEnv.put(name + '.size', saved[1]) else sizeEnv.remove(name + '.size')
         if (saved[2] != null) nullEnv.put(name, saved[2]) else nullEnv.remove(name)
         if (saved.length > 3) { if (saved[3] != null) arrEnv.put(name + '$nullElem', saved[3]) else arrEnv.remove(name + '$nullElem') }
+        if (saved.length > 6) {   // Phase 447
+            if (saved[4] != null) setEnv.put(name, saved[4]) else setEnv.remove(name)
+            if (saved[5] != null) arrEnv.put(mapValsKey(name), saved[5]) else arrEnv.remove(mapValsKey(name))
+            if (saved[6] != null) setEnv.put(mapKeysKey(name), saved[6]) else setEnv.remove(mapKeysKey(name))
+        }
     }
 
     /**
@@ -2255,6 +2261,25 @@ class Encoder implements TheoryApi {
     /** Phase 404 — the arrays whose contents were made unknown only because they may be an array written: a failure
      *  reading one needs the two to be one array, which the witness's fresh arguments never are. */
     final Set<String> aliasHavocked = new HashSet<String>()
+
+    /** Phase 447 — a callee formal's name while its contract is read at a call: every oracle under it (nullity, size,
+     *  contents and their nullity, set, map) a fresh symbol, so a formal named like one of the caller's variables reads
+     *  nothing of that variable's (`@Ensures({ s != null })` on a formal `s` made the caller's own `s` non-null) */
+    void shadowName(String name) {
+        int n = havocCounter++
+        nullEnv.put(name, session.boolVar(name + '?null#sh' + n))
+        havocSize(name)
+        havocContents(name)
+        setEnv.put(name, freshSetLike(name, name + '#sh' + n))
+        setEnv.put(mapKeysKey(name), freshSetLike(mapKeysKey(name), mapKeysKey(name) + '#sh' + n))
+        havocContents(mapValsKey(name))
+    }
+
+    /** A fresh set of the element sort {@code key}'s own would have ({@link #setFor}), under the symbol {@code sym} */
+    private Object freshSetLike(String key, String sym) {
+        Object elemSort = setKeySortForKey(key)
+        elemSort == session.intSort() ? session.setVar(sym) : session.arrayVarOfSort(sym, elemSort, session.intSort())
+    }
 
     /** Array analogue of {@link #havoc}: re-bind {@code name}'s contents to a fresh, unconstrained array — and, being
      *  "{@code name} may have been written", those of any array that may be it (Phase 404). */
@@ -2944,6 +2969,22 @@ class Encoder implements TheoryApi {
 
     void popListElementTypes(Map<String, ClassNode> prev) {
         prev.each { String k, ClassNode v -> if (v == null) listElementTypes.remove(k) else listElementTypes.put(k, v) }
+    }
+
+    /** Phase 447 — temporarily register set and map names' types (a callee's formals while its contract is read at a
+     *  call), so `s.contains(5)` / `m.containsKey('k')` on a formal is a set / map operation in its own sorts; the
+     *  prior bindings, for {@link #popCollectionTypes}. */
+    Object[] pushCollectionTypes(Map<String, ClassNode> sets, Map<String, ClassNode[]> maps) {
+        Map<String, ClassNode> prevSets = new LinkedHashMap<String, ClassNode>()
+        Map<String, ClassNode[]> prevMaps = new LinkedHashMap<String, ClassNode[]>()
+        sets.each { String k, ClassNode v -> prevSets.put(k, setElementTypes.get(k)); setElementTypes.put(k, v) }
+        maps.each { String k, ClassNode[] v -> prevMaps.put(k, mapTypes.get(k)); mapTypes.put(k, v) }
+        [prevSets, prevMaps] as Object[]
+    }
+
+    void popCollectionTypes(Object[] prev) {
+        ((Map<String, ClassNode>) prev[0]).each { String k, ClassNode v -> if (v == null) setElementTypes.remove(k) else setElementTypes.put(k, v) }
+        ((Map<String, ClassNode[]>) prev[1]).each { String k, ClassNode[] v -> if (v == null) mapTypes.remove(k) else mapTypes.put(k, v) }
     }
 
     /** Restore the type registry saved by {@link #pushScalarTypes}. */
@@ -3930,15 +3971,17 @@ class Encoder implements TheoryApi {
 
     /** Set analogue of {@link #havocArray}: re-bind a set name's contents to a fresh, unconstrained set. */
     Object havocSet(String key) {
-        Object v = session.setVar(key + '$havoc$' + (havocCounter++))
+        Object v = freshSetLike(key, key + '$havoc$' + (havocCounter++))   // Phase 447 — a String set's String-sorted
         setEnv.put(key, v)
         v
     }
 
     /** Map analogue of {@link #havocArray}: re-bind a map name's value array and key-set to fresh ones. */
     void havocMap(String name) {
-        putMapVals(name, session.arrayVar(mapValsKey(name) + '$havoc$' + (havocCounter++)))
-        putMapKeys(name, session.setVar(mapKeysKey(name) + '$havoc$' + (havocCounter++)))
+        // Phase 447 — in the map's own sorts: a String-keyed map's Int-sorted fresh key-set left `m.containsKey('k')`
+        // untranslatable after a call, and the assertion over it was dropped
+        havocContents(mapValsKey(name))
+        putMapKeys(name, freshSetLike(mapKeysKey(name), mapKeysKey(name) + '$havoc$' + (havocCounter++)))
     }
 
     /** True iff {@code n} is a known map-typed name (so a subscript store on it is a map put, not an

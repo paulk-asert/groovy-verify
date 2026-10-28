@@ -4984,7 +4984,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 try {
                     if (!sites.isEmpty()) verifyLoopObligations(node, sites)
                     else verifyImplicitObligations(node)
-                } catch (Throwable ignored) {
+                } catch (Throwable t) {
+                    // Phase 447 — loudly: a failure here dropped every obligation left in the method (an assert, an NPE,
+                    // a bound) without a word — a String-keyed map's Int-sorted havoc made `a.containsKey('zz')` throw,
+                    // and the assertion over it "proved"
+                    addStaticTypeError(Reporter.formatObligationsAborted(node.name, t.message ?: t.class.simpleName), node)
                 }
 
                 try {
@@ -5207,6 +5211,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     "the method body is outside the value-flow fragment (${bail.message ?: 'a re-assignment or loop'})".toString()), as)
             }
         }
+    }
+
+    /** Phase 447 — register {@code formals}' set and map types in {@code enc} (see {@link Encoder#pushCollectionTypes}) */
+    private static Object[] pushFormalCollectionTypes(Encoder enc, Parameter[] formals) {
+        Map<String, ClassNode> sets = new LinkedHashMap<String, ClassNode>()
+        Map<String, ClassNode[]> maps = new LinkedHashMap<String, ClassNode[]>()
+        for (Parameter fp : formals) {
+            if (isSetType(fp.type)) sets.put(fp.name, firstGenericOrInt(fp.type))
+            else if (isMapType(fp.type)) maps.put(fp.name, twoGenericsOrInt(fp.type))
+        }
+        enc.pushCollectionTypes(sets, maps)
+    }
+
+    /** Phase 447 — {@link #pushFormalCollectionTypes} and the formals' list element types (Phase 446), for
+     *  {@link #popFormalTypes} */
+    private static Object[] pushFormalTypes(Encoder enc, Parameter[] formals) {
+        Map<String, ClassNode> elems = new LinkedHashMap<String, ClassNode>()
+        for (Parameter fp : formals) {
+            ClassNode et = isListType(fp.type) ? firstGenericOrInt(fp.type) : fp.type?.isArray() ? fp.type.componentType : null
+            if (et != null && !isIntElement(et)) elems.put(fp.name, et)
+        }
+        [pushFormalCollectionTypes(enc, formals), enc.pushListElementTypes(elems)] as Object[]
+    }
+
+    private static void popFormalTypes(Encoder enc, Object[] saved) {
+        enc.popListElementTypes((Map<String, ClassNode>) saved[1])
+        enc.popCollectionTypes((Object[]) saved[0])
     }
 
     /** Phase 404 — a statement expression that writes one target, as [the target, the value it gets]: `t = v`, `t op= v`
@@ -5758,7 +5789,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
-                    if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+                    // Phase 447 — a guard on a value's truth (`m.get(5) ?: 0`) is no boolean term: left unassumed (it threw)
+                    if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))
                     assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
@@ -6983,6 +7015,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             IndexSite ix = (IndexSite) site
             // m[k] on a map is a key lookup, not a bounds-checked array index — no obligation.
             if (currentMapTypes.containsKey(ix.receiver)) return
+            // Phase 447 — nor on a map LOCAL (`Map<String, Integer> m = Map.of(…)`; only parameters and fields are in
+            // currentMapTypes): its String key reached the bounds check and threw, which dropped the method's checks
+            Expression ixRecv = ix.node instanceof MethodCallExpression ? ((MethodCallExpression) ix.node).objectExpression :
+                ix.node instanceof BinaryExpression ? ((BinaryExpression) ix.node).leftExpression : null
+            ClassNode ixType = declaredTypeOf(ixRecv) ?: (ClassNode) ixRecv?.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+            if (ixType != null && isMapType(ixType)) return
             // Phase 242 — first()/head() on a CHANNEL is a receive: it BLOCKS until an element
             // arrives (delivery is the assumed structural half), it never throws on "empty", and
             // the type has no size() — the collection non-empty obligation would be factually
@@ -19595,6 +19633,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             //    asking: is there a model where the path is satisfiable
             //    AND the precondition fails? If yes, that model is the
             //    counterexample we report.
+            // Phase 447 — the callee's formals read none of the caller's same-named variables: a formal `s` whose
+            // `@Requires({ s != null })` is about the actual `a` was discharged by the caller's own `s != null`. Not a
+            // name an actual mentions (its oracles are the actual's, read below by that name)
+            Set<String> actualNames = new HashSet<String>()
+            for (Expression ae : argExprs) actualNames.addAll(freeNames(ae))
+            Object[] savedCollTypes = pushFormalCollectionTypes(enc, formals)   // (popped once the contract is read)
             formalBindings.each { name, handle -> enc.bind(name, handle) }
             // Phase 45 — cross-class precondition discharge. If the call is {@code b.method(...)}
             // for a class-typed parameter {@code b}, translate the callee's @Requires under the
@@ -19649,6 +19693,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
             Map<String, ClassNode> savedElems = enc.pushListElementTypes(elemReg)
+            // (the shadows once every formal type is registered: a `List<String>` formal's contents are Int->String)
+            for (Parameter fp : formals) if (!actualNames.contains(fp.name)) enc.shadowName(fp.name)
             Object contractSmt
             try {
                 contractSmt = crossClassRecv != null ?
@@ -19657,6 +19703,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } finally {
                 enc.popListElementTypes(savedElems)
                 enc.popScalarTypes(savedTypes)
+                enc.popCollectionTypes(savedCollTypes)
             }
             if (contractSmt == null) {
                 addStaticTypeError(
@@ -19694,6 +19741,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // or a store) discharges the callee's `ys[0] != null`
                 if (enc.peekArray(formalName + '$nullElem') != null) {
                     session.assertExpr(session.eq(enc.elementNullityFor(formalName), enc.elementNullityFor(actualName)))
+                }
+                // Phase 447 — a set or map formal is the actual set or map (its own oracles are fresh, shadowed)
+                Parameter fpar = formals.find { it.name == formalName }
+                if (fpar != null && isSetType(fpar.type) && currentSetElementTypes.containsKey(actualName) &&
+                        firstGenericOrInt(fpar.type).name == currentSetElementTypes.get(actualName).name) {
+                    Object[] ct = pushFormalCollectionTypes(enc, [fpar] as Parameter[])
+                    try { session.assertExpr(session.eq(enc.setFor(formalName), enc.setFor(actualName))) } finally { enc.popCollectionTypes(ct) }
+                }
+                if (fpar != null && isMapType(fpar.type) && currentMapTypes.containsKey(actualName) &&
+                        twoGenericsOrInt(fpar.type)*.name == currentMapTypes.get(actualName)*.name) {
+                    Object[] ct = pushFormalCollectionTypes(enc, [fpar] as Parameter[])
+                    try {
+                        session.assertExpr(session.eq(enc.mapValsFor(formalName), enc.mapValsFor(actualName)))
+                        session.assertExpr(session.eq(enc.mapKeysFor(formalName), enc.mapKeysFor(actualName)))
+                    } finally { enc.popCollectionTypes(ct) }
                 }
             }
             formalKnownNullity.each { String formalName, Object knownNull ->
@@ -21060,6 +21122,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // a self-call's formal `log` IS the caller's `log`, so aliasing it to the actual (`log.drop(1)`) must not
         // outlive the call.
         Map<String, Object[]> savedListOracles = new LinkedHashMap<String, Object[]>()
+        // Phase 447 — the callee's formals read none of the caller's same-named variables while its @Ensures is assumed:
+        // `@Ensures({ s != null })` on a formal `s` made the caller's own `s` non-null. Restored after, with the rest;
+        // not a name an actual mentions (translating that actual reads the caller's)
+        Set<String> actualNames = new HashSet<String>()
+        for (Expression ae : actuals) actualNames.addAll(freeNames(ae))
+        Object[] shadowTypes = pushFormalTypes(enc, formals)   // the shadows in the formals' own sorts
+        for (Parameter fp : formals) {
+            if (actualNames.contains(fp.name)) continue
+            if (!savedListOracles.containsKey(fp.name)) savedListOracles.put(fp.name, enc.saveListOracles(fp.name))
+            enc.shadowName(fp.name)
+        }
+        popFormalTypes(enc, shadowTypes)
         for (int i = 0; i < formals.length; i++) {
             ClassNode ft = formals[i].type
             // Phase 390 — a closure literal has no value to bind; a contract that reads the formal isn't assumed
@@ -21116,6 +21190,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // otherwise routes the formal to the whole-array count UF, which never unifies)
                 if (!arrayFormal) enc.registerListName(formals[i].name)
                 if (h == null) h = enc.varFor(formals[i].name)   // placeholder scalar; the oracles carry the facts
+            }
+            // Phase 447 — a read-only set or map formal bound to a named one of the caller's is that set or map
+            if (located != null && located != formals[i].name && !(modSet != null && formals[i].name in modSet)) {
+                if (currentSetElementTypes.containsKey(located)) enc.bindSet(formals[i].name, enc.setFor(located))
+                if (currentMapTypes.containsKey(located)) {
+                    enc.putMapVals(formals[i].name, enc.mapValsFor(located))
+                    enc.putMapKeys(formals[i].name, enc.mapKeysFor(located))
+                }
             }
             if (h == null) {   // can't faithfully substitute → don't assume
                 savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }
@@ -21270,14 +21352,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // set the callee may mutate is unchanged, and the callee's `old.s` reframes from the call.
                 if (currentSetElementTypes.containsKey(callerLoc)) {
                     enc.bindSet(oldKey, enc.setFor(callerLoc))
-                    enc.bindSet(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                    enc.havocSet(callerLoc)   // Phase 447 — in its own element sort
+                    // Phase 447 — a written set formal is the caller's (post-havoc) set for its @Ensures, as a list is
+                    if (isFormal && loc != callerLoc) {
+                        if (!savedListOracles.containsKey(loc)) savedListOracles.put(loc, enc.saveListOracles(loc))
+                        enc.bindSet(loc, enc.setFor(callerLoc))
+                    }
                 }
                 // A modified map field — both value array and key-set — likewise snapshotted and havoced.
                 if (currentMapTypes.containsKey(callerLoc)) {
                     enc.putMapVals(oldKey, enc.mapValsFor(callerLoc))
                     enc.putMapKeys(oldKey, enc.mapKeysFor(callerLoc))
-                    enc.putMapVals(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
-                    enc.putMapKeys(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                    enc.havocMap(callerLoc)   // Phase 447 — in its own key/value sorts
+                    if (isFormal && loc != callerLoc) {   // Phase 447 — and a written map formal the caller's map
+                        if (!savedListOracles.containsKey(loc)) savedListOracles.put(loc, enc.saveListOracles(loc))
+                        enc.putMapVals(loc, enc.mapValsFor(callerLoc))
+                        enc.putMapKeys(loc, enc.mapKeysFor(callerLoc))
+                    }
                 }
                 // Phase 349 — a bodied callee that may RESIZE a collection (`xs << v`, `add`, `clear`, an unknown
                 // method on it) havocs the caller's size oracle too, with `old.<loc>.size()` pinned at the call. A
@@ -21357,6 +21448,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         enc.bindNullity('result', resultNull)
         enc.lastCallResultNullity = resultNull
         Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
+        Object[] savedCollTypes = pushFormalTypes(enc, formals)   // Phase 447
         Object post
         List<Object> effectTerms = new ArrayList<Object>()
         try {
@@ -21382,6 +21474,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
         } finally {
+            popFormalTypes(enc, savedCollTypes)
             enc.popScalarTypes(savedTypes)
             enc.restoreNullity('result', savedResultNull)
         }

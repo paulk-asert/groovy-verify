@@ -998,6 +998,12 @@ class Reporter {
             "Could not decide ${kindWord} stays in ${width}-bit range", result)
     }
 
+    /** Phase 447 — the implicit-obligation pass stopped on an internal error: what it hadn't reached is unchecked. */
+    static String formatObligationsAborted(String methodName, String reason) {
+        "Skipped the implicit safety checks of ${methodName} (an internal error: ${reason}). Its assertions, null " +
+        "dereferences and bounds may not all have been checked; the method is allowed to proceed unchecked."
+    }
+
     static String formatImplicitSkipped(String kind, String reason) {
         "Skipped ${kind} safety check (${reason}). The expression is outside the " +
         "spike's supported fragment (linear int arithmetic, comparisons, " +
