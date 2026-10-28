@@ -3565,8 +3565,9 @@ class Encoder implements TheoryApi {
     /**
      * Phase 458 — {@code src - n} and {@code src - ys} ({@code List.minus}: every occurrence removed, the rest kept in
      * order) bound to {@code name} as a fresh non-null list: {@code 0 <= size <= src.size()}; each element is one of
-     * {@code src}'s, null exactly when that one is, and not removed; the size is {@code src.size()} exactly when nothing in {@code src} is removed, smaller otherwise. Not
-     * modelled, so not claimable: which of {@code src}'s kept elements appear where (completeness and order). Either
+     * {@code src}'s, null exactly when that one is, and not removed; the size is {@code src.size()} exactly when nothing
+     * in {@code src} is removed, smaller otherwise. Phase 460 — the result's sources ({@code idx}) increase, and for
+     * {@code src - n} each element of {@code src} not removed is in the result. Either
      * operand being null throws, so a point after it has both non-null.
      */
     private boolean tryRecordListMinusAssign(String name, BinaryExpression e) {
@@ -3605,6 +3606,20 @@ class Encoder implements TheoryApi {
                 session.assertExpr(session.forallMultiPattern([k, j],
                     session.implies(inR, session.not(removed(rk, j))), [rk, session.select(ysArr, j)]))
             }
+            // Phase 460 — in order (idx increasing), and for n complete: each element of src not removed is at pos(i),
+            // whose source is i. Not for ys: with "removed" witnessed there (a skolem hit(i), or a nested ∃), a false
+            // claim's counterexample search no longer finishes, and `xs - ys` may empty it was refuted
+            Object k2 = session.boundIntVar('minus$k2' + n)
+            Object idx2 = session.applyUF('minusIdx$' + n, [k2], session.intSort())
+            session.assertExpr(session.forallMultiPattern([k, k2], session.implies(
+                session.and([session.le(zero, k), session.lt(k, k2), session.lt(k2, size)]), session.lt(idx, idx2)), [idx, idx2]))
+            Object ci = session.boundIntVar('minus$ci' + n)
+            Object sci = session.select(srcArr, ci)
+            Object pos = session.applyUF('minusPos$' + n, [ci], session.intSort())
+            Object kept = session.and([session.le(zero, pos), session.lt(pos, size), session.eq(session.select(arr, pos), sci),
+                session.eq(session.applyUF('minusIdx$' + n, [pos], session.intSort()), ci)])
+            if (ys == null) session.assertExpr(session.forall([ci], session.implies(session.and([session.le(zero, ci), session.lt(ci, srcSize)]),
+                session.or([removed(sci, null), kept])), [sci]))
             // the size drops exactly when something is removed: a witness w (and wj) when it does
             Object i = session.boundIntVar('minus$i' + n)
             Object si = session.select(srcArr, i)

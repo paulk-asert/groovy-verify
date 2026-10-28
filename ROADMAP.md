@@ -19221,6 +19221,28 @@ refutations) and one false NPE (a repetition joined to an element, into a local)
 `*` are unchanged. Mutation-checked: unrolled to one copy, the six cases that count copies fail. A refutation over a
 named list's copies answers "could not decide" (its elements are quantified), so the shipped one repeats a literal.
 
+## Phase 460 — a removal keeps the rest, in order  *(shipped — reach)*
+
+Phase 458 modelled `xs - n` and `xs - ys` by what the result can't hold (anything removed, anything not from `xs`) and
+its size, not by what it must: every element of `xs` that isn't removed, in `xs`'s order. A kept element still
+contained, a kept head still in front, a sorted list still sorted: each was a false alarm with a counterexample (one a
+timeout).
+
+- **In order:** the result's source indices increase (`idx(k) < idx(k2)` for `k < k2`, a two-variable multi-pattern
+  on the `idx` terms), for both forms.
+- **Complete, for `xs - n`:** each element of `xs` other than `n` is at `pos(i)` in the result, and its source is
+  `i` (`idx(pos(i)) == i`).
+- **Not for `xs - ys`:** there "not removed" is a universal over `ys`, and witnessing it (a skolem `hit(i)`, or a
+  nested `∃` with a trigger) left P458's refutation "removing a list may empty it" undecided even at 60 s. A kept
+  element of `xs - ys` isn't known to be there: "could not decide", not a pass.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P460 a removal keeps the rest, in order`, 8 cases. Measured at the parent commit: four false
+alarms with a counterexample (an element kept, a head in front, a sorted `xs - ys`, an element moved up to its exact
+place) and a timeout (a sorted `xs - n`); the limit case was a false alarm then (its claim is true) and undecided now;
+two refutations unchanged. Mutation-checked: without the order fact four cases fail, without completeness three.
+
 ## Definition of done, per increment
 
 An increment is done when:
