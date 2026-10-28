@@ -165,6 +165,15 @@ class UnsupportedConstructException extends RuntimeException {
 }
 
 /**
+ * Phase 452 — the body's recursive call has no @Ensures to stand on: one is assumed of a self-call only under a
+ * @Decreases measure (the inductive hypothesis needs the recursion to end), and the method declares none.
+ */
+@CompileStatic
+class RecursionNeedsDecreasesException extends UnsupportedConstructException {
+    RecursionNeedsDecreasesException(String message) { super(message) }
+}
+
+/**
  * Enumerates the execution paths of a method body for postcondition
  * checking. It forks at each {@code if} and threads a per-path step list,
  * so no join-point merge (and no {@code ite}) is ever needed: each path is

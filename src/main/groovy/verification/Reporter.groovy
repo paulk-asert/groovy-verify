@@ -413,6 +413,17 @@ class Reporter {
         "linear int arithmetic). The method is allowed to proceed unchecked."
     }
 
+    /**
+     * Phase 452 — the postcondition skipped at a recursive call, the method having no @Decreases: the generic skip blamed
+     * the return expression ("outside fragment"), which was fine — the missing measure was the reason.
+     */
+    static String formatRecursionNeedsDecreases(String methodName) {
+        "Skipped verification of postcondition for ${methodName} (it calls itself, and a recursive call's @Ensures is " +
+        "assumed only when a @Decreases measure shows the recursion ends). Add one: an int expression over the " +
+        "parameters that each recursive call makes smaller and that never goes below zero, such as " +
+        "@Decreases({ n }) for a call on n - 1. The method is allowed to proceed unchecked."
+    }
+
     // ---- Parallel interference (Phase 240) ----
 
     /**

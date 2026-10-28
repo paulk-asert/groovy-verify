@@ -19041,6 +19041,27 @@ alarms (an if, an implication and a ternary on a @Requires callee; a preconditio
 test); the five refutations (an @Ensures too weak, an unmet @Requires, an `&&` too weak, a ternary's other arm, a
 value's truth) already refuted.
 
+## Phase 452 — a recursive call without @Decreases  *(shipped — message)*
+
+The item queued as "`gcd(b, a % b)`'s precondition, `%`'s sign" was misdiagnosed: `%`'s sign is modelled (`a % b >= 0`
+proves under `a >= 0 && b > 0`). The false alarm was the ternary's test missing from the call's path facts
+(`b == 0 ? a : gcd(b, a % b)` was checked at `b == 0`), and Phase 451 closed it — the `if (b == 0) return a` form proved
+before it. What remained was the postcondition, skipped as `return expression '((b == 0)) ? a : A.gcd(b, (a % b))' is
+outside fragment`: the expression was fine. A self-call's @Ensures is assumed (Phase 92's inductive hypothesis) only
+under a @Decreases measure, and the method declared none; with `@Decreases({ b })` it proves.
+
+- **The skip names the missing measure** (`Reporter.formatRecursionNeedsDecreases`): an untranslated return expression,
+  or a local's assignment, that calls the method itself, in a method without @Decreases, is skipped as "it calls itself,
+  and a recursive call's @Ensures is assumed only when a @Decreases measure shows the recursion ends", with what a
+  measure is and an example. A call inside a closure in it isn't this body's, and doesn't count.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P452 a recursive call without @Decreases`, 7 cases. Measured at the parent commit: the four
+skips (a ternary, a return, a local, a call inside `n * fact(n - 1)`) gave the old "outside fragment" text; with the
+measure gcd proves and a false `result > 0` is refuted at `gcd(0, 0)`, and a call to another, uncontracted method is
+any value (refuted, not asked for a measure) — as before.
+
 ## Definition of done, per increment
 
 An increment is done when:

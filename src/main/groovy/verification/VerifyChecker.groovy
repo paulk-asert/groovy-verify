@@ -12454,6 +12454,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Path p : paths) {
                 checkPath(node, p, postAst, reqAst, classInvs)
             }
+        } catch (RecursionNeedsDecreasesException e) {
+            addStaticTypeError(Reporter.formatRecursionNeedsDecreases(node.name), node)   // Phase 452
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
@@ -14433,6 +14435,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // A self-recursive call is the inductive hypothesis, enabled only when
                         // the method declares a @Decreases measure (termination checked separately).
                     } else {
+                        requireDecreasesFor(rhsE, node)   // Phase 452
                         throw new UnsupportedConstructException(
                             "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                     }
@@ -14633,6 +14636,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.bindNullity('result', session.boolLit(false))
                     } else {
                         if (resHandle == null) {
+                            requireDecreasesFor(p.result, node)   // Phase 452
                             throw new UnsupportedConstructException(
                                 "return expression '${p.result.text}' is outside fragment")
                         }
@@ -19961,6 +19965,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** True if the method carries a method-level {@code @Decreases} termination measure. */
     private boolean hasDecreases(MethodNode node) {
         contractAstFor(node, 'decreases') != null
+    }
+
+    /**
+     * Phase 452 — an expression that didn't translate and calls {@code node} itself, where {@code node} has no @Decreases:
+     * the self-call's @Ensures went unassumed for want of the measure, so say that, not "outside fragment".
+     */
+    private void requireDecreasesFor(Expression e, MethodNode node) {
+        if (e == null || hasDecreases(node)) return
+        boolean[] self = [false] as boolean[]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (isSelfCall(mce, node)) self[0] = true
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                if (isSelfCall(sce, node)) self[0] = true
+                super.visitStaticMethodCallExpression(sce)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) { }   // a closure's call isn't this body's
+        })
+        if (self[0]) throw new RecursionNeedsDecreasesException("${node.name} calls itself without a @Decreases")
     }
 
     /** True if {@code expr} is a (direct, same-class) recursive call to {@code node} — by name + arity. */
