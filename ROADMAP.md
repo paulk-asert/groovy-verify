@@ -18854,6 +18854,37 @@ the appended literal fail (a literal `null` doesn't translate, so its store havo
 flag covers it); without the element read, six fail; without the `every` binding, two; without the literal rule,
 three.
 
+## Phase 446 — element nullity across calls  *(shipped — reach, and soundness)*
+
+Phase 445 left it: a callee's formal had element-nullity flags of its own at a call site, so a caller's
+`@Requires({ xs[0] != null })` (or `xs.every { it != null }`, or a store `xs[0] = 'a'`) never discharged the callee's
+`@Requires({ ys[0] != null })`, and a callee's `@Ensures({ ys[0] != null })` never reached the caller's `xs` — false
+alarms. Probing it found two more:
+
+- **A crash:** a `List<String>` formal was no String list in the caller's encoder, so Phase 225's tie of the formal's
+  contents to the actual's equated an `Int->Int` array with an `Int->String` one: `Z3Exception: Sorts (Array Int Int)
+  and (Array Int String) are incompatible` (`g(xs)` with both sides' `@Requires` an `every { it != null }`).
+- **Unsound:** a callee that writes a collection formal has it bound to the caller's array while its @Ensures is
+  assumed (Phase 229), and nothing restored it. A formal named like one of the caller's own lists took that list's
+  place: `fill(xs)` with `@Ensures({ ys[0] != null })` on its formal `ys` made the caller's unrelated `ys[0]` non-null,
+  and `ys[0].size()` compiled clean.
+
+- **A formal takes its element type** while the callee's contract translates (`pushListElementTypes`, beside
+  Phase 133's carrier types).
+- **Its flags are the actual's**: at the precondition check, a formal's minted element flags are tied to the actual's;
+  for the @Ensures, the written formal shares the caller's (post-havoc) flags.
+- **Restored after**: a written collection formal's oracles are saved and restored, as an array formal's were
+  (Phase 407); `saveListOracles` now carries the element flags too.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P446 element nullity across calls`, 9 cases. Measured at the parent commit: four false
+alarms (a non-null element over a list, an array and after a store; a callee's @Ensures), the `every` crash, and the
+formal-name collision compiling clean (unsound); three teeth already refuted (no fact; a may-be-null store before the
+call; a callee writing null). Mutation-checked, part by part: without the formal's element type the `every` case
+crashes again; without the precondition tie four fail; without the @Ensures sharing two; without the restore the
+collision compiles clean again.
+
 ## Definition of done, per increment
 
 An increment is done when:

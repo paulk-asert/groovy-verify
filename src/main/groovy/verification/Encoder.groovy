@@ -2100,12 +2100,15 @@ class Encoder implements TheoryApi {
 
     /** Phase 323 — the list oracles bound under {@code name} (contents, size, nullity), for a save/restore around a
      *  temporary alias; {@link #restoreListOracles} puts them back, removing any the name didn't have. */
-    Object[] saveListOracles(String name) { [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name)] as Object[] }
+    Object[] saveListOracles(String name) {
+        [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name), arrEnv.get(name + '$nullElem')] as Object[]   // Phase 446 — and its elements' nullity
+    }
 
     void restoreListOracles(String name, Object[] saved) {
         if (saved[0] != null) arrEnv.put(name, saved[0]) else arrEnv.remove(name)
         if (saved[1] != null) sizeEnv.put(name + '.size', saved[1]) else sizeEnv.remove(name + '.size')
         if (saved[2] != null) nullEnv.put(name, saved[2]) else nullEnv.remove(name)
+        if (saved.length > 3) { if (saved[3] != null) arrEnv.put(name + '$nullElem', saved[3]) else arrEnv.remove(name + '$nullElem') }
     }
 
     /**
@@ -2929,6 +2932,18 @@ class Encoder implements TheoryApi {
         Map<String, ClassNode> prev = new LinkedHashMap<String, ClassNode>()
         add.each { String k, ClassNode v -> prev.put(k, scalarTypes.get(k)); scalarTypes.put(k, v) }
         prev
+    }
+
+    /** Phase 446 — temporarily register list/array names' element types (a callee's formals while its contract
+     *  translates at a call site), so a `List<String>` formal's elements are Strings; for {@link #popListElementTypes}. */
+    Map<String, ClassNode> pushListElementTypes(Map<String, ClassNode> add) {
+        Map<String, ClassNode> prev = new LinkedHashMap<String, ClassNode>()
+        add.each { String k, ClassNode v -> prev.put(k, listElementTypes.get(k)); listElementTypes.put(k, v) }
+        prev
+    }
+
+    void popListElementTypes(Map<String, ClassNode> prev) {
+        prev.each { String k, ClassNode v -> if (v == null) listElementTypes.remove(k) else listElementTypes.put(k, v) }
     }
 
     /** Restore the type registry saved by {@link #pushScalarTypes}. */

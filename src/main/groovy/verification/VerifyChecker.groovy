@@ -19640,13 +19640,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
             for (Parameter fp : formals) if (Encoder.isCarrier(fp.type)) typeReg.put(fp.name, fp.type)
+            // Phase 446 — a list/array formal's element type, as the caller's own names have theirs: a `List<String>`
+            // formal minted Int->Int contents, and tying them to the actual's Int->String ones crashed Z3
+            Map<String, ClassNode> elemReg = new LinkedHashMap<String, ClassNode>()
+            for (Parameter fp : formals) {
+                ClassNode et = isListType(fp.type) ? firstGenericOrInt(fp.type) : fp.type?.isArray() ? fp.type.componentType : null
+                if (et != null && !isIntElement(et)) elemReg.put(fp.name, et)
+            }
             Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
+            Map<String, ClassNode> savedElems = enc.pushListElementTypes(elemReg)
             Object contractSmt
             try {
                 contractSmt = crossClassRecv != null ?
                     enc.translateUnderReceiver(contractAst, crossClassRecv, crossClassFields) :
                     enc.translate(contractAst)
             } finally {
+                enc.popListElementTypes(savedElems)
                 enc.popScalarTypes(savedTypes)
             }
             if (contractSmt == null) {
@@ -19680,6 +19689,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     session.assertExpr(session.eq(formalArr, actualArr))
                 } else if (formalArr == null && actualArr != null) {
                     enc.bindArray(formalName, actualArr)
+                }
+                // Phase 446 — and its elements' nullity: a caller's `xs[0] != null` (or `xs.every { it != null }`,
+                // or a store) discharges the callee's `ys[0] != null`
+                if (enc.peekArray(formalName + '$nullElem') != null) {
+                    session.assertExpr(session.eq(enc.elementNullityFor(formalName), enc.elementNullityFor(actualName)))
                 }
             }
             formalKnownNullity.each { String formalName, Object knownNull ->
@@ -21289,7 +21303,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // implicit size stability is a true, load-bearing fact.
                 for (int fi = 0; fi < formals.length; fi++) {
                     if (isFormal && formals[fi].name == loc && specSimple(formals[fi].type.name) in ['Collection', 'List']) {
+                        // Phase 446 — the formal's flags are the caller's only for the @Ensures: restored after
+                        if (loc != callerLoc && !savedListOracles.containsKey(loc)) savedListOracles.put(loc, enc.saveListOracles(loc))
                         enc.bindArray(loc, enc.arrayFor(callerLoc))
+                        enc.copyElementNullity(loc, callerLoc)   // Phase 446 — an @Ensures over its elements' nullity
                         enc.bindSize(loc, enc.sizeOf(callerLoc))
                         enc.bindNullity(loc, enc.nullityOf(callerLoc))
                         enc.registerListName(loc)
@@ -21299,6 +21316,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (isFormal && formals[fi].name == loc && formals[fi].type.isArray() && enc.isArrayTyped(callerLoc) && loc != callerLoc) {
                         if (!savedListOracles.containsKey(loc)) savedListOracles.put(loc, enc.saveListOracles(loc))
                         enc.bindArray(loc, enc.arrayFor(callerLoc))
+                        enc.copyElementNullity(loc, callerLoc)   // Phase 446
                         enc.bindSize(loc, enc.sizeOf(callerLoc))
                         enc.bindNullity(loc, enc.nullityOf(callerLoc))
                     }
