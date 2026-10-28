@@ -18989,6 +18989,34 @@ internal error: injected)`.
 **Changed cases:** none. **Shipped tests:** none — no pass throws on any input the suite knows; a test needs a crash
 to exist (the injection was run once and removed).
 
+## Phase 450 — a call's @Ensures in a condition  *(shipped — reach, and soundness)*
+
+Phase 448 left it: a contracted call in a condition (`if (g(a)) return a.size()`, `g(a) ? a.size() : 0`) didn't carry
+its @Ensures. A statement's call is hoisted to a local and replayed (`boolean ok = g(a)` worked), but a condition's was
+translated in place, where a contracted call outside a pure helper's body has no value: the guard was dropped. Two
+routes, each with its own fault:
+
+- **An equational @Ensures** (`result == E`) is Phase 116's combiner, inlined as `E` with the formals bound by value
+  only — so `s != null` in `E` read the null flag of a name `s`: none of the argument's (a false alarm), or the
+  CALLER's own `s` when it has one. **Unsound:** `if (g(a)) return s.size()` compiled clean, `s` unconstrained.
+- **Any other** (`!result || s != null`) had no route at all: a false alarm.
+
+- **A combiner's named or literal argument is spliced into `E`** (`PureEvaluator.substitute`, closure-hygienic), so
+  `s != null` over `g(a)` is `a != null`; any other argument is bound by value under a shadowed formal (Phase 448's).
+- **A condition's contracted call is its @Ensures' value** (`translateCondition`: a ternary's test and every path
+  guard), as one in a pure helper's body already was (Phase 401). The first try made every call so, and broke 13
+  cases whose statement calls the replay already frames (result nullity, loop bodies, helpers): conditions only.
+
+**Not changed:** a callee with a @Requires in a condition (`if (g(xs))` under `@Requires({ ys != null })`) still
+doesn't carry its @Ensures there.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P450 a call's @Ensures in a condition`, 6 cases. Measured at the parent commit: four false
+alarms (an if and a ternary on an equational @Ensures, an implication's @Ensures, a size guard), one compiled clean
+(unsound — the inlined `s != null` reading the caller's `s`), and the implication's twin already refuted.
+Mutation-checked: without the splice the if-on-a-call fails; without the condition value three fail.
+
 ## Definition of done, per increment
 
 An increment is done when:

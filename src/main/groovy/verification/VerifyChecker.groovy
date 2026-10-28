@@ -5760,7 +5760,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
-                    Object c = enc.translate(g.cond)
+                    Object c = enc.translateCondition(g.cond)   // Phase 450
                     // Phase 447 — a guard on a value's truth (`m.get(5) ?: 0`) is no boolean term: left unassumed (it threw)
                     if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))
                     assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
@@ -14224,7 +14224,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
-                    Object c = enc.translate(g.cond)
+                    Object c = enc.translateCondition(g.cond)   // Phase 450
                     if (c == null) {
                         throw new UnsupportedConstructException(
                             "guard '${g.cond.text}' is outside fragment")
@@ -20027,7 +20027,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Object step : preceding) {
                 if (step instanceof Guard) {
                     Guard g = (Guard) step
-                    Object c = enc.translate(g.cond)
+                    Object c = enc.translateCondition(g.cond)   // Phase 450
                     if (c != null) s.assertExpr(g.positive ? c : s.not(c))
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step

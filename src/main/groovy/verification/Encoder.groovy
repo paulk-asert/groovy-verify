@@ -2281,6 +2281,15 @@ class Encoder implements TheoryApi {
         setEnv.remove(mapKeysKey(name))
     }
 
+    /** Phase 450 — while above 0, a contracted call is its @Ensures' value (see {@link #translateCondition}) */
+    private int conditionDepth = 0
+
+    /** Phase 450 — {@code cond} as a branch's condition: a contracted call in it is its @Ensures' value */
+    Object translateCondition(Expression cond) {
+        conditionDepth++
+        try { return translate(cond) } finally { conditionDepth-- }
+    }
+
     /** Phase 448 — the shadowed names' symbol suffixes (see {@link #shadowName}) */
     private final Map<String, String> shadowSuffix = new HashMap<String, String>()
 
@@ -4889,7 +4898,7 @@ class Encoder implements TheoryApi {
             // cond ? a : b  ->  (ite cond a b). Also the shape an unfolded pure
             // function takes (e.g. pow2's `n == 0 ? 1 : ...`), see translateCall.
             TernaryExpression te = (TernaryExpression) expr
-            Object c = translate(te.booleanExpression)
+            Object c = translateCondition(te.booleanExpression)
             Object t = translate(te.trueExpression)
             Object f = translate(te.falseExpression)
             if (c == null || t == null || f == null) return null
@@ -6604,13 +6613,27 @@ class Encoder implements TheoryApi {
         }
         List<String> formals = (List<String>) c[0]
         Expression ensuresExpr = (Expression) c[1]
+        // Phase 450 — a named or literal argument is spliced into the @Ensures (`s != null` over `g(a)` reads a's nullity),
+        // any other is bound by value under a formal shadowed while it translates: by value alone, `s != null` read the
+        // CALLER's `s` — `if (g(a)) s.size()` proved, `s` unconstrained
+        Map<String, Expression> sub = new HashMap<String, Expression>()
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
         for (int i = 0; i < formals.size(); i++) {
-            Object h = translate(args.get(i))
+            Expression a = args.get(i)
+            if (a instanceof VariableExpression || a instanceof ConstantExpression) { sub.put(formals.get(i), a); continue }
+            Object h = translate(a)
             if (h == null) return null
             bindings.put(formals.get(i), h)
         }
-        translateWith(ensuresExpr, bindings)
+        Expression inst = sub.isEmpty() ? ensuresExpr : PureEvaluator.substitute(ensuresExpr, sub)
+        if (inst == null) return null
+        Map<String, Object[]> saved = new LinkedHashMap<String, Object[]>()
+        for (String f : bindings.keySet()) { saved.put(f, saveListOracles(f)); shadowName(f) }
+        try {
+            return translateWith(inst, bindings)
+        } finally {
+            saved.each { String k, Object[] v -> restoreListOracles(k, v) }
+        }
     }
 
     /**
@@ -7939,7 +7962,9 @@ class Encoder implements TheoryApi {
             // Phase 401 — inside a pure helper's body a CONTRACTED call (no pure function itself) is its @Ensures'
             // value (`viaLiteral() { isqrt(5) }`): the body failed to translate, so the helper's own symbol was left
             // unconstrained, whatever its callee promised
-            if (pureBodyDepth > 0 && contractedValue != null) return contractedValue.call(e)
+            // Phase 450 — and in a condition (`g(a) ? a.size() : 0`, `if (g(a))`): a statement's call is hoisted to a
+            // local and replayed, but a condition's wasn't, so its @Ensures was never read
+            if ((pureBodyDepth > 0 || conditionDepth > 0) && contractedValue != null) return contractedValue.call(e)
             return null   // not a same-class call — outside the fragment
         }
 

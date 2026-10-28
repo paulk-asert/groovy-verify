@@ -456,7 +456,8 @@ class PureEvaluator {
      * the whole unfold is REFUSED (null → the call stays uninterpreted, a sound over-approximation) when
      * such a shorthand's actual is any other expression shape.
      */
-    private static Expression substitute(Expression e, Map<String, Expression> sub) {
+    /** (Phase 450 — also the Encoder's, for an equational combiner's inlining) */
+    static Expression substitute(Expression e, Map<String, Expression> sub) {
         boolean[] refuse = [false]
         ExpressionTransformer t = new ExpressionTransformer() {
             private Map<String, Expression> active = sub
