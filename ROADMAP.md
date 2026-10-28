@@ -18927,6 +18927,38 @@ was a false alarm (a caller's set discharging a callee's @Requires), and one pas
 silently dropped. Mutation-checked: without the @Ensures shadow one fails, without the @Requires shadow two, with the
 Int-sorted map havoc three, without the written-map binding one.
 
+## Phase 448 — swapped formal names  *(shipped — soundness)*
+
+Phase 447 left it, found not fixed: a callee's formal kept the caller's oracles when an actual mentions its name, so
+translating that actual would read the caller's. That is every swap — `g(s, a)` into `g(String a, String s)`, the
+shape of a recursive `gcd(b, a % b)` — and the formal `a` then read the caller's `a`, though its actual is `s`.
+**Unsound**, each compiled clean: a caller's `a != null` discharged `g`'s `@Requires({ a != null })` (about `s`); a
+caller's `a.size() > 0` and `a.contains(5)` likewise; and `g(b, a)`'s `@Ensures({ a.contains(5) })` (about `b`) held
+of the caller's `a`.
+
+- **Every formal is its own** but one passed its own same-named variable (`g(s)`, which *is* the caller's `s`).
+- **An actual is read in the caller's view**: while it is translated, and while its oracles are captured for the
+  formal's ties, the shadowed names have the caller's oracles back (`callerView`); the formal is bound after.
+- **The shadow is lazy** (`shadowName`): a shadowed name's oracles are dropped and its solver symbols take a suffix, so
+  one is minted fresh — in the sorts registered when the contract reads it — only if the contract reads it. Eager
+  shadows gave every formal every oracle, and the ties then minted oracles the caller never had.
+- **A reference formal has its named actual's nullity** for the @Ensures (a call can't make the caller's variable
+  null), and a read-only list formal its elements' nullity (Phase 446's flags).
+- **A written swap isn't assumed**: a written location whose caller-side name is a shadowed formal's (`g(b, a)` writing
+  its `b`, the caller's `a`) would have its framing havoc land in the shadow and be lost on restore, so the call's
+  @Ensures isn't assumed and the caller havocs what it may write — sound, and a false alarm where the @Ensures would
+  have proved the caller's claim. A receiver's field (`c$v`) isn't such a name: the bail maps it as the framing does.
+
+**Not changed:** a call in an `if` condition doesn't carry its @Ensures' nullity (`if (g(s, a)) a.size()`), swapped or
+not; `gcd(b, a % b)`'s precondition `a >= 0 && b >= 0` was a false alarm before and after (`%`'s sign, not the swap).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P448 swapped formal names`, 6 cases. Measured at the parent commit: four compiled clean
+(unsound — a swapped @Requires over nullity, size and a set, and a swapped @Ensures); the swapped @Requires discharged
+by the right argument and an identity pass (`g(s)`) were already right. Mutation-checked: with Phase 447's
+"not a name an actual mentions" rule back, the @Requires side fails three, the @Ensures side one.
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -2102,7 +2102,8 @@ class Encoder implements TheoryApi {
      *  temporary alias; {@link #restoreListOracles} puts them back, removing any the name didn't have. */
     Object[] saveListOracles(String name) {
         [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name), arrEnv.get(name + '$nullElem'),   // Phase 446
-         setEnv.get(name), arrEnv.get(mapValsKey(name)), setEnv.get(mapKeysKey(name))] as Object[]           // Phase 447
+         setEnv.get(name), arrEnv.get(mapValsKey(name)), setEnv.get(mapKeysKey(name)),                       // Phase 447
+         shadowSuffix.get(name)] as Object[]                                                                    // Phase 448
     }
 
     void restoreListOracles(String name, Object[] saved) {
@@ -2115,6 +2116,7 @@ class Encoder implements TheoryApi {
             if (saved[5] != null) arrEnv.put(mapValsKey(name), saved[5]) else arrEnv.remove(mapValsKey(name))
             if (saved[6] != null) setEnv.put(mapKeysKey(name), saved[6]) else setEnv.remove(mapKeysKey(name))
         }
+        if (saved.length > 7) { if (saved[7] != null) shadowSuffix.put(name, (String) saved[7]) else shadowSuffix.remove(name) }
     }
 
     /**
@@ -2266,13 +2268,30 @@ class Encoder implements TheoryApi {
      *  contents and their nullity, set, map) a fresh symbol, so a formal named like one of the caller's variables reads
      *  nothing of that variable's (`@Ensures({ s != null })` on a formal `s` made the caller's own `s` non-null) */
     void shadowName(String name) {
-        int n = havocCounter++
-        nullEnv.put(name, session.boolVar(name + '?null#sh' + n))
-        havocSize(name)
-        havocContents(name)
-        setEnv.put(name, freshSetLike(name, name + '#sh' + n))
-        setEnv.put(mapKeysKey(name), freshSetLike(mapKeysKey(name), mapKeysKey(name) + '#sh' + n))
-        havocContents(mapValsKey(name))
+        // Phase 448 — lazily: the name's oracles are dropped and its symbols take a suffix, so one is minted fresh, in
+        // the sorts registered when it's read, only if the contract reads it (an eager shadow gave every formal every
+        // oracle, and a tie to the actual's then minted ones the caller never had)
+        shadowSuffix.put(name, '#sh' + (havocCounter++))
+        nullEnv.remove(name)
+        sizeEnv.remove(name + '.size')
+        arrEnv.remove(name)
+        arrEnv.remove(name + '$nullElem')
+        setEnv.remove(name)
+        arrEnv.remove(mapValsKey(name))
+        setEnv.remove(mapKeysKey(name))
+    }
+
+    /** Phase 448 — the shadowed names' symbol suffixes (see {@link #shadowName}) */
+    private final Map<String, String> shadowSuffix = new HashMap<String, String>()
+
+    /** Phase 448 — the solver symbol for an oracle key: the key, or a shadowed name's own fresh one */
+    private String symFor(String key) {
+        if (shadowSuffix.isEmpty()) return key
+        String base = key.endsWith('.size') ? key.substring(0, key.length() - 5) :
+            key.endsWith('$nullElem') ? key.substring(0, key.length() - '$nullElem'.length()) :
+            key.startsWith('map$vals$') || key.startsWith('map$keys$') ? key.substring(9) : key
+        String suf = shadowSuffix.get(base)
+        suf == null ? key : key + suf
     }
 
     /** A fresh set of the element sort {@code key}'s own would have ({@link #setFor}), under the symbol {@code sym} */
@@ -2318,7 +2337,7 @@ class Encoder implements TheoryApi {
         String key = recv + '.size'
         Object cached = sizeEnv.get(key)
         if (cached != null) return cached
-        Object v = session.intVar(key)
+        Object v = session.intVar(symFor(key))
         // Java's collection contract: 0 ≤ size ≤ Integer.MAX_VALUE. The upper bound (Phase 44c)
         // closes a subtle math-int unsoundness without opt-in: index arithmetic like {@code i + 1}
         // for {@code i ∈ [0, size)} cannot overflow into a wrap-around index under the model,
@@ -2372,8 +2391,8 @@ class Encoder implements TheoryApi {
         Object[] sorts = arraySortsFor(name)
         Object kSort = sorts[0], vSort = sorts[1]
         Object v = (kSort == session.intSort() && vSort == session.intSort()) ?
-            session.arrayVar(name) :
-            session.arrayVarOfSort(name, kSort, vSort)
+            session.arrayVar(symFor(name)) :
+            session.arrayVarOfSort(symFor(name), kSort, vSort)
         arrEnv.put(name, v)
         v
     }
@@ -2491,8 +2510,8 @@ class Encoder implements TheoryApi {
         if (cached != null) return cached
         Object elemSort = setKeySortForKey(key)
         Object v = (elemSort == session.intSort()) ?
-            session.setVar(key) :
-            session.arrayVarOfSort(key, elemSort, session.intSort())
+            session.setVar(symFor(key)) :
+            session.arrayVarOfSort(symFor(key), elemSort, session.intSort())
         setEnv.put(key, v)
         assertEnumDomainAxioms(key, v)
         v
@@ -4588,7 +4607,7 @@ class Encoder implements TheoryApi {
     Object nullityOf(String recv) {
         Object cached = nullEnv.get(recv)
         if (cached != null) return cached
-        Object v = session.boolVar(recv + '?null')
+        Object v = session.boolVar(symFor(recv) + '?null')
         nullEnv.put(recv, v)
         v
     }

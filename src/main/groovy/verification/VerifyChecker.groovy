@@ -19634,10 +19634,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             //    AND the precondition fails? If yes, that model is the
             //    counterexample we report.
             // Phase 447 — the callee's formals read none of the caller's same-named variables: a formal `s` whose
-            // `@Requires({ s != null })` is about the actual `a` was discharged by the caller's own `s != null`. Not a
-            // name an actual mentions (its oracles are the actual's, read below by that name)
-            Set<String> actualNames = new HashSet<String>()
-            for (Expression ae : argExprs) actualNames.addAll(freeNames(ae))
+            // `@Requires({ s != null })` is about the actual `a` was discharged by the caller's own `s != null`.
+            // Phase 448 — every formal but one passed its own same-named variable, a swap too (`g(s, a)` into `g(a, s)`):
+            // an actual's oracles are read below in the caller's view of the names
+            Set<String> shadowedPre = new LinkedHashSet<String>()
+            for (int i = 0; i < formals.length; i++) {
+                if (!(argExprs[i] instanceof VariableExpression && ((VariableExpression) argExprs[i]).name == formals[i].name)) {
+                    shadowedPre.add(formals[i].name)
+                }
+            }
+            Map<String, Object[]> callerPre = new LinkedHashMap<String, Object[]>()
+            Closure<Object> callerView = { Closure<Object> read ->
+                Map<String, Object[]> sh = new LinkedHashMap<String, Object[]>()
+                for (String n : callerPre.keySet()) { sh.put(n, enc.saveListOracles(n)); enc.restoreListOracles(n, callerPre.get(n)) }
+                try {
+                    return read.call()
+                } finally {
+                    for (String n : sh.keySet()) { callerPre.put(n, enc.saveListOracles(n)); enc.restoreListOracles(n, sh.get(n)) }
+                }
+            }
             Object[] savedCollTypes = pushFormalCollectionTypes(enc, formals)   // (popped once the contract is read)
             formalBindings.each { name, handle -> enc.bind(name, handle) }
             // Phase 45 — cross-class precondition discharge. If the call is {@code b.method(...)}
@@ -19694,7 +19709,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
             Map<String, ClassNode> savedElems = enc.pushListElementTypes(elemReg)
             // (the shadows once every formal type is registered: a `List<String>` formal's contents are Int->String)
-            for (Parameter fp : formals) if (!actualNames.contains(fp.name)) enc.shadowName(fp.name)
+            for (String n : shadowedPre) { callerPre.put(n, enc.saveListOracles(n)); enc.shadowName(n) }
             Object contractSmt
             try {
                 contractSmt = crossClassRecv != null ?
@@ -19720,18 +19735,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             oracleActuals.each { String formalName, String actualName ->
                 if (enc.hasSizeOracle(formalName)) {
                     session.assertExpr(session.eq(
-                        enc.sizeOf(formalName), enc.sizeOf(actualName)))
+                        enc.sizeOf(formalName), callerView { enc.sizeOf(actualName) }))
                 }
                 if (enc.hasNullityOracle(formalName)) {
                     session.assertExpr(session.eq(
-                        enc.nullityOf(formalName), enc.nullityOf(actualName)))
+                        enc.nullityOf(formalName), callerView { enc.nullityOf(actualName) }))
                 }
                 // Phase 225 — tie the ELEMENT CONTENTS too: a contract quantifying over a list/array
                 // formal (`list.indices.every { list[it - 1] <= list[it] }` — Collections#binarySearch's
                 // sortedness) reads the formal's element array, which without this stays a fresh
                 // unconstrained function and the caller's own sortedness can never discharge it.
                 Object formalArr = enc.peekArray(formalName)
-                Object actualArr = enc.peekArray(actualName)
+                Object actualArr = callerView { enc.peekArray(actualName) }
                 if (formalArr != null && actualArr != null) {
                     session.assertExpr(session.eq(formalArr, actualArr))
                 } else if (formalArr == null && actualArr != null) {
@@ -19740,21 +19755,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 446 — and its elements' nullity: a caller's `xs[0] != null` (or `xs.every { it != null }`,
                 // or a store) discharges the callee's `ys[0] != null`
                 if (enc.peekArray(formalName + '$nullElem') != null) {
-                    session.assertExpr(session.eq(enc.elementNullityFor(formalName), enc.elementNullityFor(actualName)))
+                    session.assertExpr(session.eq(enc.elementNullityFor(formalName), callerView { enc.elementNullityFor(actualName) }))
                 }
                 // Phase 447 — a set or map formal is the actual set or map (its own oracles are fresh, shadowed)
                 Parameter fpar = formals.find { it.name == formalName }
                 if (fpar != null && isSetType(fpar.type) && currentSetElementTypes.containsKey(actualName) &&
                         firstGenericOrInt(fpar.type).name == currentSetElementTypes.get(actualName).name) {
                     Object[] ct = pushFormalCollectionTypes(enc, [fpar] as Parameter[])
-                    try { session.assertExpr(session.eq(enc.setFor(formalName), enc.setFor(actualName))) } finally { enc.popCollectionTypes(ct) }
+                    try { session.assertExpr(session.eq(enc.setFor(formalName), callerView { enc.setFor(actualName) })) } finally { enc.popCollectionTypes(ct) }
                 }
                 if (fpar != null && isMapType(fpar.type) && currentMapTypes.containsKey(actualName) &&
                         twoGenericsOrInt(fpar.type)*.name == currentMapTypes.get(actualName)*.name) {
                     Object[] ct = pushFormalCollectionTypes(enc, [fpar] as Parameter[])
                     try {
-                        session.assertExpr(session.eq(enc.mapValsFor(formalName), enc.mapValsFor(actualName)))
-                        session.assertExpr(session.eq(enc.mapKeysFor(formalName), enc.mapKeysFor(actualName)))
+                        session.assertExpr(session.eq(enc.mapValsFor(formalName), callerView { enc.mapValsFor(actualName) }))
+                        session.assertExpr(session.eq(enc.mapKeysFor(formalName), callerView { enc.mapKeysFor(actualName) }))
                     } finally { enc.popCollectionTypes(ct) }
                 }
             }
@@ -21123,19 +21138,43 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // outlive the call.
         Map<String, Object[]> savedListOracles = new LinkedHashMap<String, Object[]>()
         // Phase 447 — the callee's formals read none of the caller's same-named variables while its @Ensures is assumed:
-        // `@Ensures({ s != null })` on a formal `s` made the caller's own `s` non-null. Restored after, with the rest;
-        // not a name an actual mentions (translating that actual reads the caller's)
-        Set<String> actualNames = new HashSet<String>()
-        for (Expression ae : actuals) actualNames.addAll(freeNames(ae))
+        // `@Ensures({ s != null })` on a formal `s` made the caller's own `s` non-null. Restored after, with the rest.
+        // Phase 448 — every formal but one passed its own same-named variable (`g(s)`), so a swap (`g(s, a)` into
+        // `g(a, s)`) too: an actual is read in the caller's view of the names (`callerView`), the formal bound after
+        Set<String> shadowed = new LinkedHashSet<String>()
+        for (int i = 0; i < formals.length; i++) {
+            Expression ai = actuals.get(i)
+            if (!(ai instanceof VariableExpression && ((VariableExpression) ai).name == formals[i].name)) shadowed.add(formals[i].name)
+        }
+        // Phase 448 — a written location whose caller-side name is a shadowed formal's (`g(b, a)` writing its `b`, the
+        // caller's `a`): its framing havoc would land in the shadow and be lost on restore — not assumed (the caller then
+        // havocs what the call may write)
+        if (modSet != null) for (String loc0 : modSet) {
+            String fieldOf0 = shadowedField(loc0)
+            String loc1 = fieldOf0 ?: loc0
+            boolean isFormal1 = fieldOf0 == null && formals.any { Parameter fp -> fp.name == loc1 }
+            String cl = fieldOf0 != null ? loc1 : callerSideLocation(loc1, formals, actuals)
+            if (crossRecv != null && cl == loc1 && !isFormal1) cl = crossRecv + '$' + loc1   // as the framing maps it
+            if (cl != null && shadowed.contains(cl)) return false
+        }
         Object[] shadowTypes = pushFormalTypes(enc, formals)   // the shadows in the formals' own sorts
-        for (Parameter fp : formals) {
-            if (actualNames.contains(fp.name)) continue
-            if (!savedListOracles.containsKey(fp.name)) savedListOracles.put(fp.name, enc.saveListOracles(fp.name))
-            enc.shadowName(fp.name)
+        for (String n : shadowed) {
+            if (!savedListOracles.containsKey(n)) savedListOracles.put(n, enc.saveListOracles(n))
+            enc.shadowName(n)
         }
         popFormalTypes(enc, shadowTypes)
+        Closure<Object> callerView = { Closure<Object> read ->
+            Map<String, Object[]> sh = new LinkedHashMap<String, Object[]>()
+            for (String n : shadowed) { sh.put(n, enc.saveListOracles(n)); enc.restoreListOracles(n, savedListOracles.get(n)) }
+            try {
+                return read.call()
+            } finally {
+                for (String n : shadowed) { savedListOracles.put(n, enc.saveListOracles(n)); enc.restoreListOracles(n, sh.get(n)) }
+            }
+        }
         for (int i = 0; i < formals.length; i++) {
             ClassNode ft = formals[i].type
+            Expression actual = actuals.get(i)
             // Phase 390 — a closure literal has no value to bind; a contract that reads the formal isn't assumed
             if (literalAt.contains(i)) {
                 if (mentionedName(ensuresAst, [formals[i].name] as Set<String>) != null) {
@@ -21146,23 +21185,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             // A decimal (BigDecimal) actual needs the Real path — plain translate is Int-oriented and returns null
             // (this blocked a `km(2.0)`-style factory call with a decimal argument).
-            Object h
-            if (enc.sortForType(ft) == s.realSort()) {
-                h = enc.asRealValue(actuals.get(i))
-            } else {
-                h = enc.translate(actuals.get(i))
-                // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))`): model it.
-                if (h == null && Encoder.isCarrier(ft)) h = carrierValueOf(s, enc, actuals.get(i), caller)
+            Object h = callerView {
+                Object v
+                if (enc.sortForType(ft) == s.realSort()) {
+                    v = enc.asRealValue(actual)
+                } else {
+                    v = enc.translate(actual)
+                    // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))`): model it.
+                    if (v == null && Encoder.isCarrier(ft)) v = carrierValueOf(s, enc, actual, caller)
+                }
+                v
             }
             // Phase 425 — a reference actual whose nullity alone is known (`g(new StringBuilder())`), where the @Ensures
             // reads only that: an opaque value, and the formal takes its nullity while the @Ensures is translated
-            if (h == null && !ClassHelper.isPrimitiveType(ft) && knownLiteralNullity(enc, actuals.get(i)) &&
-                    (ensuresAst == null || onlyShapeUses(ensuresAst, formals[i].name, false))) {
-                h = s.varOfSort('$lit' + (havocCounter++) + '#arg', enc.sortForType(ft))
-                if (!savedListOracles.containsKey(formals[i].name)) {
-                    savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
+            if (h == null && !ClassHelper.isPrimitiveType(ft) && (ensuresAst == null || onlyShapeUses(ensuresAst, formals[i].name, false))) {
+                Object litNull = callerView { knownLiteralNullity(enc, actual) ? enc.nullityOfExpr(actual) : null }
+                if (litNull != null) {
+                    h = s.varOfSort('$lit' + (havocCounter++) + '#arg', enc.sortForType(ft))
+                    if (!savedListOracles.containsKey(formals[i].name)) {
+                        savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
+                    }
+                    enc.bindNullity(formals[i].name, litNull)
                 }
-                enc.bindNullity(formals[i].name, enc.nullityOfExpr(actuals.get(i)))
             }
             // Phase 226 — a collection-typed formal bound to a NAMED list actual: the contract reads the
             // formal's list oracles (`coll.every { … }`, `coll.count(o)`), so alias them to the actual's —
@@ -21171,7 +21215,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // pin the spec's post-state ensures to the stale array.
             // Phase 375 — and an array formal bound to a named array: `a.length`, `a[i]`, `a.sum()` in the contract are
             // the actual's (they read the formal's own oracles, which nothing tied to the caller's array)
-            String located = namedLocation(actuals.get(i))   // Phase 376 — `this.data` names the field too
+            String located = namedLocation(actual)   // Phase 376 — `this.data` names the field too
             boolean arrayFormal = ft?.isArray() && located != null && enc.isArrayTyped(located)
             if ((specSimple(ft.name) in ['Collection', 'List'] || arrayFormal) &&
                     !(modSet != null && formals[i].name in modSet) &&
@@ -21182,21 +21226,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 // sizeOf/arrayFor/nullityOf MINT on demand (a lazy peek misses oracles the session
                 // hasn't touched yet), so the formal is aliased to the actual's canonical oracles
-                enc.bindArray(formals[i].name, enc.arrayFor(an))
-                enc.bindSize(formals[i].name, enc.sizeOf(an))
-                enc.bindNullity(formals[i].name, enc.nullityOf(an))
+                Object[] ah = (Object[]) callerView {
+                    [enc.arrayFor(an), enc.sizeOf(an), enc.nullityOf(an), enc.elementNullityFor(an)] as Object[]
+                }
+                enc.bindArray(formals[i].name, ah[0])
+                enc.bindSize(formals[i].name, ah[1])
+                enc.bindNullity(formals[i].name, ah[2])
+                enc.bindArray(formals[i].name + '$nullElem', ah[3])   // Phase 448 — its elements' nullity too
                 // Phase 228 — and REGISTER it as a list name: `c.count(o)` in the spec must take the
                 // same bounded-bcount encoding as the caller's `xs.count(5)` (the name-set dispatch
                 // otherwise routes the formal to the whole-array count UF, which never unifies)
                 if (!arrayFormal) enc.registerListName(formals[i].name)
                 if (h == null) h = enc.varFor(formals[i].name)   // placeholder scalar; the oracles carry the facts
             }
+            // Phase 448 — a reference formal bound to a named actual has its nullity (a call can't make the caller's
+            // variable null): `@Ensures({ s != null })` on the formal is about the actual
+            if (located != null && located != formals[i].name && !ClassHelper.isPrimitiveType(ft) && enc.peekNullity(formals[i].name) == null) {
+                enc.bindNullity(formals[i].name, callerView { enc.nullityOf(located) })
+            }
             // Phase 447 — a read-only set or map formal bound to a named one of the caller's is that set or map
             if (located != null && located != formals[i].name && !(modSet != null && formals[i].name in modSet)) {
-                if (currentSetElementTypes.containsKey(located)) enc.bindSet(formals[i].name, enc.setFor(located))
+                if (currentSetElementTypes.containsKey(located)) enc.bindSet(formals[i].name, callerView { enc.setFor(located) })
                 if (currentMapTypes.containsKey(located)) {
-                    enc.putMapVals(formals[i].name, enc.mapValsFor(located))
-                    enc.putMapKeys(formals[i].name, enc.mapKeysFor(located))
+                    Object[] mh = (Object[]) callerView { [enc.mapValsFor(located), enc.mapKeysFor(located)] as Object[] }
+                    enc.putMapVals(formals[i].name, mh[0])
+                    enc.putMapKeys(formals[i].name, mh[1])
                 }
             }
             if (h == null) {   // can't faithfully substitute → don't assume
@@ -21208,8 +21262,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // `g.apply(…)` is assumed onto the caller's own `apply$<actual>` symbol (the other half of the
             // lemma-reuse bridge; see the @Requires-discharge twin).
             if ((ft?.name == 'java.util.function.Function' || ft?.name == 'java.util.function.BiFunction') &&
-                    actuals.get(i) instanceof VariableExpression) {
-                enc.aliasFunction(formals[i].name, ((VariableExpression) actuals.get(i)).name)
+                    actual instanceof VariableExpression) {
+                enc.aliasFunction(formals[i].name, ((VariableExpression) actual).name)
             }
         }
         // Phase 113 — a tuple result is bound by renaming `result` to the caller's tuple local in the
