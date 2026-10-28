@@ -68,8 +68,9 @@ class G368_p323_list_recursion {
                         @Ensures({ result.size() == 2 })
                         static List<Integer> f(int x, List<Integer> xs) { [x, *xs] }
                     }''')],
-        // `xs + 1` appends. It used to translate the list as an Int and refute this true claim with a bogus f([]).
-        [group: 'P323 list recursion', name: 'appending an element still skips', expect: 'outside fragment',
+        // `xs + 1` appends. It used to translate the list as an Int and refute this true claim with a bogus f([]); then
+        // it skipped; since Phase 457 the appended element is modelled and the claim proves.
+        [group: 'P323 list recursion', name: 'appending an element proves its size', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null })
                         @Ensures({ result.size() == xs.size() + 1 })

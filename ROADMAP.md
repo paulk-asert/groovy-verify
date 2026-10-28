@@ -19156,6 +19156,26 @@ binds now (and so is told); it's an append (`f(n - 1) + n`) instead, which no me
 recursive ternary, a literal in each arm, nested, a parameter's list in an arm, two refutations, the one without a
 measure) and two false refutations (an append onto a recursive call and onto another method's).
 
+## Phase 457 — an element appended to a list  *(shipped — reach)*
+
+Phase 323 modelled a list concatenation (`a + b` over list literals and named lists, a spread literal) but refused an
+append, `xs + n` with a scalar `n` (`List.plus(Object)`): a loud skip wherever it was written, `return f(n - 1) + n`,
+`xs + n`, `List<Integer> ys = xs + n + 1` (the last also a false NPE alarm on `ys.size()`, `ys` having no value).
+
+- **An appended int or Integer is one element segment** of the concatenation (`Encoder.isAppendedElement`): a `+`
+  whose left side flattens to a list and whose right operand is statically an `int` or `Integer`, and no list. An
+  int's own `+` is untouched (its left side isn't a list); a `List<String> + int` is STC's to reject.
+
+**Changed cases:** three. P323's "appending an element still skips" (`xs + 1`, a true size claim) proves now, renamed
+"appending an element proves its size". Two more whose subject was a list operation the model refused, written as an
+append: P453's "a list-returning recursion isn't told to add a measure" and P456's pair against hoisting a list-valued
+call as an Int. They're written as a removal (`f(n - 1) - n`, `List.minus`), still unmodelled; P456's pair still fails
+without its fix.
+
+**Shipped tests:** group `P457 an element appended to a list`, 8 cases. Measured at the parent commit: seven skipped (a
+recursion's size and last element, a parameter's list and the element at its end, two chained into a local, an
+Integer, a size and an element refuted now); an int's `+` was addition before and after.
+
 ## Definition of done, per increment
 
 An increment is done when:

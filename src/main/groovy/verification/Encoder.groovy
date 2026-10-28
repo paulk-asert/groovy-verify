@@ -3555,7 +3555,11 @@ class Encoder implements TheoryApi {
     private boolean concatSegments(Expression e, List<Expression> out) {
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS) {
             BinaryExpression be = (BinaryExpression) e
-            return concatSegments(be.leftExpression, out) && concatSegments(be.rightExpression, out)
+            if (!concatSegments(be.leftExpression, out)) return false
+            // Phase 457 — `xs + n`, an int or Integer operand, appends it (List.plus(Object)): one element segment. A
+            // list's own `+` only — the left side flattened to a list (`1 + xs` isn't one)
+            if (isAppendedElement(be.rightExpression)) { out.add(be.rightExpression); return true }
+            return concatSegments(be.rightExpression, out)
         }
         if (e instanceof ListExpression) {
             for (Expression x : ((ListExpression) e).expressions) {
@@ -3572,6 +3576,13 @@ class Encoder implements TheoryApi {
         }
         if (isNamedIntList(e)) { out.add(new SpreadExpression(e)); return true }
         false
+    }
+
+    /** Phase 457 — an operand {@code +} appends to a list as one element: statically an int or an Integer, and no list. */
+    private boolean isAppendedElement(Expression e) {
+        if (e instanceof ListExpression || isNamedIntList(e)) return false
+        ClassNode t = staticTypeOf(e)
+        t != null && (t.name == 'int' || t.name == 'java.lang.Integer')
     }
 
     private boolean isNamedListOperand(Expression e) {

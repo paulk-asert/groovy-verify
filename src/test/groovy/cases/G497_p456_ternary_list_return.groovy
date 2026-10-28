@@ -83,24 +83,25 @@ class G497_p456_ternary_list_return {
                         static List<Integer> f(int n) { n == 0 ? [] : f(n - 1) + [n] }
                     }''')],
 
-        // A false alarm before: the call hoisted as an Int, `+ n` integer addition, `result.size() = 0`
-        [group: "P456 a ternary of lists returned", name: "an append onto a recursive call skips, not refuted",
-         expect: "return expression '(A.f((n - 1)) + n)' is outside fragment",
+        // A false alarm before: the call hoisted as an Int, the list operator integer arithmetic, `result.size() = 0`
+        // (written as an append, `+ n`, which Phase 457 models; a removal, `- n`, isn't modelled, so it still skips)
+        [group: "P456 a ternary of lists returned", name: "a list operator on a recursive call skips, not refuted",
+         expect: "return expression '(A.f((n - 1)) - n)' is outside fragment",
          src: tc('''class A {
                         @Requires({ n >= 0 })
-                        @Ensures({ result != null && result.size() == n })
+                        @Ensures({ result != null && result.size() <= n })
                         @Decreases({ n })
                         static List<Integer> f(int n) {
                             if (n == 0) return []
-                            return f(n - 1) + n
+                            return f(n - 1) - n
                         }
                     }''')],
 
-        [group: "P456 a ternary of lists returned", name: "… onto another method's",
-         expect: "return expression '(A.g(n) + n)' is outside fragment",
+        [group: "P456 a ternary of lists returned", name: "… on another method's",
+         expect: "return expression '(A.g(n) - n)' is outside fragment",
          src: tc('''class A {
-                        @Ensures({ result != null && result.size() == 3 })
-                        static List<Integer> f(int n) { g(n) + n }
+                        @Ensures({ result != null && result.size() <= 2 })
+                        static List<Integer> f(int n) { g(n) - n }
                         @Ensures({ result != null && result.size() == 2 })
                         static List<Integer> g(int n) { [n, n] }
                     }''')],
