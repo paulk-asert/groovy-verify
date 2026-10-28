@@ -18959,6 +18959,36 @@ not; `gcd(b, a % b)`'s precondition `a >= 0 && b >= 0` was a false alarm before 
 by the right argument and an identity pass (`g(s)`) were already right. Mutation-checked: with Phase 447's
 "not a name an actual mentions" rule back, the @Requires side fails three, the @Ensures side one.
 
+## Phase 449 — no checker pass fails silently  *(shipped — soundness of the reporting)*
+
+Phase 447 found the implicit-obligation pass under `catch (Throwable ignored) {}`: a throw dropped every check left in
+the method without a word, and two suite methods had been silently unchecked. An audit of `VerifyChecker`'s 157
+`catch (Throwable …)` blocks (106 with an empty body) for the same shape — a try-body that runs a check, with nothing
+said when it throws — found it on every per-class and per-method pass:
+
+- per class: the actor-field check (Phase 298), the `@Monadic` laws (136), the carrier-value laws (291), the
+  rely/guarantee lemmas (L1), and each constructor's whole verification;
+- per method: par interference, the CREW discipline (282), shared-reply correlation, the actor mailbox (289),
+  `shouldFail` claims, `@ThrowsIf` (213), information flow (L1), each EncodingPack's check (190), termination (7), the
+  `@Modifies` frame (13), contract purity (366), behavioural subtyping (120), the reducer laws (130), the
+  carrier-value laws (291), a body variant's implicit checks (the Phase 447 site's twin), the channel-network check,
+  and the channel stream analysis (`@ServedWithin`, `@DeliveredWithin`, liveness).
+
+- **Each runs under `loudPass`**: one that throws reports `Skipped <the check> of <owner> (an internal error: …)`.
+  Several were documented best-effort ("contributes nothing rather than failing the compile") — but every finding
+  here is a compile error, and a skipped check is reported as one (`Skipped verification of …`); a check that vanishes
+  isn't a weaker check, it's an unannounced one.
+- **Left as they were:** the other empty catches close a session, harvest best-effort facts (fewer facts: sound), or
+  run an auxiliary probe whose result is optional (`held { checkPath … }`); the non-empty ones return "don't assume"
+  (`false`, `null`), fall back to a sound pass, or already report.
+
+**Measured:** no suite case throws in these passes today (3487/3487 with them loud) — nothing was hidden now; the
+change is for the next one. An injected throw in the CREW check read `Skipped the CREW-discipline check of f (an
+internal error: injected)`.
+
+**Changed cases:** none. **Shipped tests:** none — no pass throws on any input the suite knows; a test needs a crash
+to exist (the injection was run once and removed).
+
 ## Definition of done, per increment
 
 An increment is done when:

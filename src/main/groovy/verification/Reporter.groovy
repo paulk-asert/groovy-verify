@@ -998,6 +998,12 @@ class Reporter {
             "Could not decide ${kindWord} stays in ${width}-bit range", result)
     }
 
+    /** Phase 449 — a checker pass stopped on an internal error: what it checks is unchecked (it was dropped silently). */
+    static String formatPassAborted(String pass, String owner, String reason) {
+        "Skipped ${pass} of ${owner} (an internal error: ${reason}). What it checks may not all have been checked; " +
+        "the code is allowed to proceed unchecked."
+    }
+
     /** Phase 447 — the implicit-obligation pass stopped on an internal error: what it hadn't reached is unchecked. */
     static String formatObligationsAborted(String methodName, String reason) {
         "Skipped the implicit safety checks of ${methodName} (an internal error: ${reason}). Its assertions, null " +

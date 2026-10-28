@@ -4778,28 +4778,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         // Phase 298 — an actor held in a FIELD: its behaviour-graph findings belong to the class, not to any one
         // method that sends to it, so they are raised here rather than once per method.
-        try {
+        loudPass(classNode, classNode.nameWithoutPackage, 'the actor-field check') {
             for (ActorMailbox.Finding f : ActorMailbox.checkClass(classNode)) addStaticTypeError(f.message, f.anchor)
-        } catch (Throwable ignored) {
         }
         // Phase 136 — a @Monadic carrier asserts the monad/functor laws; discharge the Tier-1 identity laws it
         // claims, derived from the annotation (à la @Reducer). Best-effort.
-        try { verifyMonadicLaws(classNode) } catch (Throwable ignored) { }
+        loudPass(classNode, classNode.nameWithoutPackage, 'the @Monadic law check') { verifyMonadicLaws(classNode) }
         // Phase 291 — a Monoid/Semigroup field initialised from a visible lambda (the field names the combiner).
-        try {
+        loudPass(classNode, classNode.nameWithoutPackage, 'the carrier-value law check') {
             for (FieldNode f : classNode.fields) {
                 if (f.initialValueExpression != null) verifyCarrierValueLaws(classNode, f.initialValueExpression, f.name, f.originType)
             }
-        } catch (Throwable ignored) { }
+        }
         // Phase L1 (rely/guarantee) — discharge the well-formedness/compatibility lemmas of any @Rely/@Guarantee
         // conditions the class declares (reflexive/transitive relies, reflexive guarantees, G_i ⟹ R_j). Best-effort.
-        try { verifyRelyGuarantee(classNode) } catch (Throwable ignored) { }
+        loudPass(classNode, classNode.nameWithoutPackage, 'the rely/guarantee check') { verifyRelyGuarantee(classNode) }
         for (ConstructorNode ctor : classNode.declaredConstructors) {
-            try {
+            // a constructor's failure doesn't break the class's other diagnostics — and (Phase 449) is reported, not dropped
+            loudPass(ctor, classNode.nameWithoutPackage + ' (a constructor)', 'the checks') {
                 beforeVisitMethod(ctor)
                 afterVisitMethod(ctor)
-            } catch (Throwable ignored) {
-                // Best-effort: a constructor processing failure shouldn't break the class's other diagnostics.
             }
         }
         // Phase 291 — VERIFY_TRUST: surface the trusted facts this class relied on, now that its methods,
@@ -4865,26 +4863,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     body = unrolled
                 }
             }
-            try {
-                checkParInterference(node, body)
-            } catch (Throwable ignored) {
-            }
-            try {
-                checkCrewDiscipline(node)                    // Phase 282 — the CREW lock discipline
-            } catch (Throwable ignored) {
-            }
-            try {
+            loudPass(node, node.name, 'the par-interference check') { checkParInterference(node, body) }
+            loudPass(node, node.name, 'the CREW-discipline check') { checkCrewDiscipline(node) }   // Phase 282 — the CREW lock discipline
+            loudPass(node, node.name, 'the shared-reply check') {
                 if (body instanceof BlockStatement) checkSharedReplyCorrelation(node, (BlockStatement) body)
-            } catch (Throwable ignored) {
             }
-            try {
+            loudPass(node, node.name, 'the actor-mailbox check') {
                 // Phase 289 — the bounded actor mailbox: the only send besides a rendezvous that blocks.
                 if (body instanceof BlockStatement) {
                     for (ActorMailbox.Finding f : ActorMailbox.check(node.name, (BlockStatement) body, node.declaringClass)) {
                         addStaticTypeError(f.message, f.anchor)
                     }
                 }
-            } catch (Throwable ignored) {
             }
 
             // Phase 242 — a constrained channel PARAM's statement send becomes its contract assert
@@ -4951,17 +4941,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 212 — shouldFail claims: each GroovyAssert.shouldFail(E) { … } in the body is a
             // GROUND exceptional claim ("this closed call throws E") — verified or refuted here, the
             // exceptional analogue of closed-call evaluation. Contained: never fails the compile flow.
-            try {
-                verifyShouldFailClaims(node, body)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the shouldFail check') { verifyShouldFailClaims(node, body) }
 
             // Phase 213 — @ThrowsIf: the UNIVERSAL exceptional contract (throws exactly when the
             // condition holds). Both directions discharged per path; contained like the passes above.
-            try {
-                verifyThrowsIf(node, body)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the @ThrowsIf check') { verifyThrowsIf(node, body) }
 
             // Implicit safety obligations (array bounds, division by zero, null
             // dereference) fire on every method, contract or not. For an
@@ -5021,69 +5005,47 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // discharge the noninterference obligation — no labelled source above that classification may flow
             // to the result. Best-effort, like the other discharges. Straight-line returns only for now; an
             // unlabelled/unsupported source skips loudly inside.
-            try {
-                verifyNoLeak(node)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the information-flow check') { verifyNoLeak(node) }
 
             // EncodingPack checker passes (Phase 190) — each pack's per-method AST analysis (e.g. UnitsPack's
             // C₀ kind-vector check of `as Quantity<K>` casts). Best-effort, contained per pack: a crashing
             // pass contributes nothing rather than failing the compile (the pre-migration posture kept).
             for (EncodingPack pk : PackRegistry.packs()) {
-                try {
-                    pk.checkMethod(this, node)
-                } catch (Throwable ignored) {
-                }
+                loudPass(node, node.name, "the ${pk.name()} pack's check".toString()) { pk.checkMethod(this, node) }
             }
 
             // Phase 7 (induction): prove the @Decreases measure decreases at each recursive call,
             // justifying the inductive hypothesis used in verifyPostcondition. No-op unless the
             // method carries a method-level @Decreases. Best-effort.
-            try {
-                verifyTermination(node)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the termination check') { verifyTermination(node) }
 
             // Phase 13 (frame): a method with @Modifies must write only what it declares. Best-effort.
-            try {
-                frameCheck(node)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the @Modifies frame check') { frameCheck(node) }
             noOverrideCheck(node)   // Phase 364
-            try {
-                contractPurityCheck(node)   // Phase 366
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the contract-purity check') { contractPurityCheck(node) }   // Phase 366
 
             // Phase 120 (behavioral subtyping / Liskov): if this method overrides a contracted parent method
             // and redeclares its own contract, prove the override is substitutable — its @Requires is weaker
             // (pre_parent ⟹ pre_child) and its @Ensures is stronger ((pre_parent ∧ post_child) ⟹ post_parent).
             // Pure contract-implication checks, independent of the body. Best-effort.
-            try {
-                verifyBehavioralSubtyping(node)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the behavioural-subtyping check') { verifyBehavioralSubtyping(node) }
 
             // Phase 130 (monoid laws): if this method is a @Reducer/@Associative combiner, discharge the
             // associativity (and, for @Reducer with a declared zero, identity) laws the annotation *asserts*.
             // Best-effort. Runs last: it recursively visits synthesized lemma methods, which reset the per-method
             // `current*` state — fine, since nothing after this needs the combiner's context before the finally.
-            try {
-                verifyReducerLaws(node)
-            } catch (Throwable ignored) {
-            }
+            loudPass(node, node.name, 'the reducer-law check') { verifyReducerLaws(node) }
 
             // Phase 291 — Monoid/Semigroup VALUES built from a visible lambda in this body: discharge the laws
             // the carrier asserts. Last for the same reason as the reducer laws (the lemmas reset `current*`).
             // A carrier reaching a parallel reduction with no body in sight is ledgered as trusted instead.
-            try {
+            loudPass(node, node.name, 'the carrier-value law check') {
                 Statement cbody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
                 if (cbody == null) cbody = node.code
                 if (cbody != null) {
                     recordOpaqueCarriers(node, cbody)
                     verifyCarrierValueLaws(node.declaringClass, cbody, null, null)
                 }
-            } catch (Throwable ignored) {
             }
         } finally {
             currentFacts = null
@@ -5210,6 +5172,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
                     "the method body is outside the value-flow fragment (${bail.message ?: 'a re-assignment or loop'})".toString()), as)
             }
+        }
+    }
+
+    /** Phase 449 — run a checker pass; one that throws is reported. Each ran under `catch (Throwable ignored) {}`, so a
+     *  crash dropped every check it makes without a word (Phase 447 found the implicit obligations' twin). */
+    private void loudPass(ASTNode anchor, String owner, String pass, Closure body) {
+        try {
+            body.call()
+        } catch (Throwable t) {
+            addStaticTypeError(Reporter.formatPassAborted(pass, owner, t.message ?: t.class.simpleName), anchor)
         }
     }
 
@@ -10293,9 +10265,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // refuse the VALUE rewrite — the blocking structure is still analysable (Phase 245), and
         // with multiple sends the single r→s edge under-detects but never over-claims.
         if (chanFindings < 2) {
-            try {
+            loudPass(node, node.name, 'the channel-network check') {
                 checkNetworkWellFormedness(node, ctx, (BlockStatement) body, chanParent, broadcastChans)
-            } catch (Throwable ignored) {
             }
         }
         if (ctx.arms.isEmpty()) return
@@ -11143,7 +11114,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, StreamInfo> infiniteProducers = new HashMap<String, StreamInfo>()
         Map<String, String> loopLiveness = new HashMap<String, String>()     // Phase 255 — root → why its liveness is undecided
         guardedReplyOf.clear()                                              // Phase 256 — per method
-        try {
+        loudPass(node, node.name, 'the channel stream analysis (@ServedWithin, @DeliveredWithin, liveness)') {
             Map<String, String> parent = new HashMap<String, String>()
             Set<String> subscribers = new HashSet<String>()
             collectChannelParents(body, ctx.chanVars, parent, subscribers)
@@ -11155,7 +11126,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
             for (StreamInfo p : sc.streams.values()) if (p.infinite) infiniteProducers.put(p.root, p)   // Phase 254
             loopLiveness = analyseLoopLiveness(node, modelBody, sc, parent)  // Phase 255 — liveness under weak fairness
-        } catch (Throwable ignored) {
         }
         Set<String> livenessNoted = new HashSet<String>()
         Set<String> paramChans = new HashSet<String>()
@@ -16117,10 +16087,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void verifyBodyVariant(MethodNode node, Statement variant, Statement original) {
         node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, variant)
         List<LoopSite> sites = findLoopSites(variant)
-        try {
+        loudPass(node, node.name, 'the implicit safety checks (a body variant)') {
             if (!sites.isEmpty()) verifyLoopObligations(node, sites)
             else verifyImplicitObligations(node)
-        } catch (Throwable ignored) {
         }
         try {
             if (!sites.isEmpty()) {
