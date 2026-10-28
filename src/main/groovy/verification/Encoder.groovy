@@ -3548,6 +3548,7 @@ class Encoder implements TheoryApi {
         if (e instanceof ListExpression && ((ListExpression) e).expressions.any { it instanceof SpreadExpression }) {
             return concatSegments(e, new ArrayList<Expression>())
         }
+        if (repeatCount(e) != null) return concatSegments(e, new ArrayList<Expression>())   // Phase 459
         isListMinus(e)
     }
 
@@ -3643,6 +3644,14 @@ class Encoder implements TheoryApi {
             if (isAppendedElement(be.rightExpression)) { out.add(be.rightExpression); return true }
             return concatSegments(be.rightExpression, out)
         }
+        // Phase 459 — `xs * k`, k a literal from 0 to MAX_REPEAT, is k copies of xs (List.multiply): its segments k times
+        Integer k = repeatCount(e)
+        if (k != null) {
+            List<Expression> once = new ArrayList<Expression>()
+            if (!concatSegments(((BinaryExpression) e).leftExpression, once)) return false
+            for (int c = 0; c < k; c++) out.addAll(once)
+            return true
+        }
         if (e instanceof ListExpression) {
             for (Expression x : ((ListExpression) e).expressions) {
                 if (x instanceof SpreadExpression) {
@@ -3658,6 +3667,17 @@ class Encoder implements TheoryApi {
         }
         if (isNamedIntList(e)) { out.add(new SpreadExpression(e)); return true }
         false
+    }
+
+    /** Phase 459 — the most copies {@code xs * k} is unrolled to: each is a segment, a quantifier for a named list */
+    private static final int MAX_REPEAT = 16
+
+    /** Phase 459 — {@code k} for {@code e * k} with {@code k} a literal in {@code 0..MAX_REPEAT}; else null. A negative
+     *  {@code k} throws (on a non-empty list) and a symbolic one makes the size {@code xs.size() * k}, nonlinear */
+    private Integer repeatCount(Expression e) {
+        if (!(e instanceof BinaryExpression) || ((BinaryExpression) e).operation.type != Types.MULTIPLY) return null
+        Integer k = constIntOrNull(((BinaryExpression) e).rightExpression)
+        k != null && k >= 0 && k <= MAX_REPEAT ? k : null
     }
 
     /** Phase 457 — an operand {@code +} appends to a list as one element: statically an int or an Integer, and no list. */

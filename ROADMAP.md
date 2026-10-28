@@ -19200,6 +19200,27 @@ argument; `xs - ys` leaving none of `ys`, `xs - xs` empty, a disjoint and a shar
 operand's skip and an int's `-` are unchanged. Mutation-checked: without the drop, the witness or the not-removed fact,
 the cases that need each fail.
 
+## Phase 459 — a list repeated  *(shipped — reach)*
+
+`xs * k` (`List.multiply`: `k` copies of `xs`, in order; `* 0` is empty; a negative `k` throws on a non-empty list)
+wasn't modelled: a loud skip wherever it was written, `return xs * 2`, `[n] * 3`, `f(n - 1) * 2`, `g(xs * 2)`, and a
+false NPE alarm on `ys.size()` after `List<Integer> ys = xs * 2 + n`.
+
+- **A literal count is a concatenation** (`Encoder.repeatCount`, `concatSegments`): `xs * k` with `k` a literal from
+  0 to 16 is `xs + xs + … + xs`, Phase 323's segments `k` times over, so its size and elements are exact and it joins
+  any other concatenation (`xs * 2 + n`). The cap keeps the unrolling small: a named list's copy is a quantifier.
+- **A symbolic count stays a skip:** its size `xs.size() * k` is nonlinear.
+
+**Changed cases:** three, the same three as Phase 458's, written as a literal repetition (`* 2`) because it was
+unmodelled: P453's "a list-returning recursion isn't told to add a measure" and P456's pair against hoisting a
+list-valued call as an Int. They're a symbolic repetition now (`* n`); P456's pair still fails without its fix.
+
+**Shipped tests:** group `P459 a list repeated`, 11 cases. Measured at the parent commit: eight skipped (twice the size,
+the second copy's elements, a literal three times, `* 0` empty, a recursion doubling to `2 ** n`, an argument, two
+refutations) and one false NPE (a repetition joined to an element, into a local); a symbolic count's skip and an int's
+`*` are unchanged. Mutation-checked: unrolled to one copy, the six cases that count copies fail. A refutation over a
+named list's copies answers "could not decide" (its elements are quantified), so the shipped one repeats a literal.
+
 ## Definition of done, per increment
 
 An increment is done when:
