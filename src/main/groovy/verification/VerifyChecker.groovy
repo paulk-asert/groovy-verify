@@ -1582,6 +1582,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  loops are checked under rely/guarantee, Phases 240–262). */
     private boolean currentChannelDesugared = false
 
+    /** Phase 461 — a call's precondition inside a loop with no @Invariant: checked at an arbitrary iteration, the
+     *  loop's writes unknown, and not re-sought from entry */
+    static final String IN_LOOP_CALL_NOTE = 'no failing call: the call is inside a loop with no @Invariant, so it is ' +
+        'checked at an arbitrary iteration, with what the loop writes unknown, and no run is known to get there (an ' +
+        '@Invariant saying what holds at each iteration would be assumed instead)'
     static final String LOOP_CALL_NOTE = 'no failing call: the failure is at a loop iteration the check reaches through ' +
         'the loop\'s summary, not from entry, and no run of its first eight iterations gets there, so no call is known ' +
         'to fail (it may not be reachable)'
@@ -19501,6 +19506,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             //     call is actually located do we seed the loop context; otherwise fall through to the straight-line
             //     path (no worse than before), so we never assume the invariant without the matching body replay.
             boolean handledInLoop = false
+            boolean throughLoop = false
             LoopingStatement encLoop = (currentMethod != null && callExpr.lineNumber > 0) ?
                 enclosingAnnotatedLoop(callExpr) : null
             if (encLoop != null) {
@@ -19543,8 +19549,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     // 2d. Thread the intervening straight-line body mutations to the call site, so both the
                     //     precondition and the actual arguments (step 1, next) see the state *at the call*.
+                    List<Statement> prefix = prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber)
+                    throughLoop = prefix.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }   // Phase 461
                     try {
-                        replayPrefix(prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber), enc, session)
+                        replayPrefix(prefix, enc, session)
                     } catch (Throwable ignored) {
                     }
                 }
@@ -19766,8 +19774,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
             session.assertExpr(session.not(contractSmt))
 
-            // 4. Check.
-            CheckResult r = shown(session.check())
+            // 4. Check. Phase 461 — inside an unannotated loop the state is an arbitrary iteration's: the call withheld
+            String prevNote = loopCallNote
+            if (throughLoop) loopCallNote = IN_LOOP_CALL_NOTE
+            CheckResult r
+            try { r = shown(session.check()) } finally { loopCallNote = prevNote }
             switch (r.status) {
                 case CheckResult.Status.VERIFIED:
                     return  // silent success
@@ -20796,6 +20807,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             while (out.size() > before) out.remove(out.size() - 1)
             return false
         }
+        // Phase 461 — a call inside an unannotated loop runs at an arbitrary iteration: the loop's init (a for's
+        // header), then a marker havocking everything the loop writes and, in the body, one assuming its guard; then
+        // the body up to the call. The siblings before the loop alone pinned a `while`'s `int i = 0` (`g(i)` was
+        // checked at i == 0 only, and `g` needing `i == 0` passed) and left a `for`'s `i` unbound (a false alarm)
+        if (st instanceof LoopingStatement && st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null) {
+            LoopingStatement loop = (LoopingStatement) st
+            LoopSpec raw = rawLoopSpec(loop)
+            if (raw?.init != null) out.addAll(raw.init)
+            out.add(havocMarker(st))
+            if (loop.loopBlock == null || !spans(loop.loopBlock, tl, tc)) return true   // in its guard or header
+            if (raw != null && !raw.isDoWhile && raw.guard != ConstantExpression.PRIM_TRUE) {
+                out.add(withAssume(Collections.<Statement> emptyList(), raw.guard).get(0))
+            }
+            collectPrefix(loop.loopBlock, tl, tc, out)
+            return true
+        }
         return false
     }
 
@@ -20808,6 +20835,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private void replayPrefix(List<Statement> prefix, Encoder enc, SmtSession s) {
         for (Statement st : prefix) {
+            // Phase 461 — an enclosing unannotated loop's markers (collectPrefix)
+            if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
+            if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) { assumeMarker((AssertStatement) st, enc, s, false, null); continue }
             if (st instanceof ExpressionStatement && replayMutation(((ExpressionStatement) st).expression, enc, s)) {
                 continue
             }

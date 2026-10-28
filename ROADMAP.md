@@ -19243,6 +19243,40 @@ alarms with a counterexample (an element kept, a head in front, a sorted `xs - y
 place) and a timeout (a sorted `xs - n`); the limit case was a false alarm then (its claim is true) and undecided now;
 two refutations unchanged. Mutation-checked: without the order fact four cases fail, without completeness three.
 
+## Phase 461 — a call inside a loop with no invariant  *(shipped — soundness)*
+
+Probing a recursive call in a loop (the candidate was "a self-call in a loop without an invariant skips with the
+loop"; with an `@Invariant` it already proves, and without one the loop skips like any other) turned up a hole in
+every call's precondition check inside such a loop. `verifyCallSite` replays the straight-line siblings before the call
+(`collectPrefix`), and stopped at an enclosing loop: the call was checked in the state *before* it.
+
+- **A `while`'s counter was pinned** to its first value: `int i = 0; while (i < n) { s += g(i); i++ }` checked
+  `g(i)` at `i == 0` only, so a `g` needing `i == 0` passed though `f(2)` calls `g(1)`. Unsound, for any call (a
+  standalone one, one in the guard, a do-while's).
+- **A `for`'s header wasn't replayed:** `i` was free and the guard not assumed, so `g` needing `i >= 0` was refuted
+  with `i = -1, n = 0` and `fails on: f(0)`, a call that never enters the loop.
+
+**The fix** (`collectPrefix`, `replayPrefix`): an unannotated loop around the call contributes Phase 371's arbitrary
+iteration: its init (a `for`'s header), a marker havocking everything it writes (`havocLoop`), and in its body a marker
+assuming its guard (not for a do-while's first pass, nor a call in the guard or header); then the body up to the call.
+A refutation there names no failing call (`IN_LOOP_CALL_NOTE`): no run is sought from entry, as Phase 371's are for the
+loop's other obligations. That search is a candidate.
+
+**The cost:** a counter's bound (`i >= 0`) is the loop's invariant to state; without one it's unknown, as for every
+other obligation in the loop. No case in the corpus relied on the old state (the gate unchanged before the new cases).
+
+**Found on the way, not fixed:** `verifyCallSite` asserts the enclosing `if` conditions and early-return guards before
+the prefix replay, on the entry values: `n = n + 1; if (n != 1) return g(n)` with `g` needing `n != 2` passes, and
+`f(1)` calls `g(2)`. A candidate.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P461 a call inside a loop with no invariant`, 10 cases. Measured at the parent commit: five
+passed unsoundly (a `while`'s call broken on its second iteration, standalone, in the guard, a do-while's; a counter's
+bound with no invariant), one named a call that never enters the loop (a `for`'s), one was a false alarm (the guard
+not assumed); three unchanged (a value the loop doesn't write, an invariant's bound, a recursive call in a loop with
+an invariant). Mutation-checked: without the havoc six cases fail, without the guard one, without the note six.
+
 ## Definition of done, per increment
 
 An increment is done when:
