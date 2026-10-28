@@ -84,24 +84,25 @@ class G497_p456_ternary_list_return {
                     }''')],
 
         // A false alarm before: the call hoisted as an Int, the list operator integer arithmetic, `result.size() = 0`
-        // (written as an append, `+ n`, which Phase 457 models; a removal, `- n`, isn't modelled, so it still skips)
+        // (written as an append, `+ n`, which Phase 457 models, then a removal, `- n`, which 458 does; a repetition,
+        // `* 2`, isn't modelled, so it still skips)
         [group: "P456 a ternary of lists returned", name: "a list operator on a recursive call skips, not refuted",
-         expect: "return expression '(A.f((n - 1)) - n)' is outside fragment",
+         expect: "return expression '(A.f((n - 1)) * 2)' is outside fragment",
          src: tc('''class A {
                         @Requires({ n >= 0 })
                         @Ensures({ result != null && result.size() <= n })
                         @Decreases({ n })
                         static List<Integer> f(int n) {
                             if (n == 0) return []
-                            return f(n - 1) - n
+                            return f(n - 1) * 2
                         }
                     }''')],
 
         [group: "P456 a ternary of lists returned", name: "… on another method's",
-         expect: "return expression '(A.g(n) - n)' is outside fragment",
+         expect: "return expression '(A.g(n) * 2)' is outside fragment",
          src: tc('''class A {
-                        @Ensures({ result != null && result.size() <= 2 })
-                        static List<Integer> f(int n) { g(n) - n }
+                        @Ensures({ result != null && result.size() == 4 })
+                        static List<Integer> f(int n) { g(n) * 2 }
                         @Ensures({ result != null && result.size() == 2 })
                         static List<Integer> g(int n) { [n, n] }
                     }''')],

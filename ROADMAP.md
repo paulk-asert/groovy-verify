@@ -19176,6 +19176,30 @@ without its fix.
 recursion's size and last element, a parameter's list and the element at its end, two chained into a local, an
 Integer, a size and an element refuted now); an int's `+` was addition before and after.
 
+## Phase 458 — elements removed from a list  *(shipped — reach)*
+
+`xs - n` and `xs - ys` (`List.minus`: every occurrence removed, the rest kept in order) weren't modelled: a loud skip
+wherever they were written, `return xs - n`, `List<Integer> ys = xs - n`, `f(n - 1) - n`, `g(xs - n)`. Unlike an
+append, the result's size depends on how many elements match, so the model is a contract, as `findAll`'s (Phase 320) is.
+
+- **A removal is a fresh non-null list** (`Encoder.tryRecordListMinusAssign`), for a named Int list on the left and an
+  `int` or a named Int list on the right: `0 <= size <= xs.size()`; each element is `xs[idx(k)]` (a skolem index),
+  with that element's nullity, and isn't removed; the size is `xs.size()` exactly when nothing in `xs` is removed (a
+  witness otherwise) and smaller whenever something is. Removal compares values, as `contains` and an element's `==`
+  already do, without the elements' nullity. Both operands are non-null afterwards: a null one throws.
+- **Not modelled, so not claimable:** which kept element is where (completeness and order), the size exactly. An
+  `Integer` right operand stays a skip: a null one removes the list's nulls, which the value comparison can't say.
+
+**Changed cases:** three, each written as a removal because removal was unmodelled: P453's "a list-returning recursion
+isn't told to add a measure" (a removal binds now, so it would be told) and P456's pair against hoisting a list-valued call as an Int. They're a
+repetition now (`f(n - 1) * 2`, `List.multiply`), still unmodelled; P456's pair still fails without its fix.
+
+**Shipped tests:** group `P458 elements removed from a list`, 16 cases. Measured at the parent commit: fourteen skipped
+(`xs - n` leaving none of `n`, its size bounds four ways, its elements the list's, two refutations, a recursion, an
+argument; `xs - ys` leaving none of `ys`, `xs - xs` empty, a disjoint and a sharing `ys`, a refutation); an Integer
+operand's skip and an int's `-` are unchanged. Mutation-checked: without the drop, the witness or the not-removed fact,
+the cases that need each fail.
+
 ## Definition of done, per increment
 
 An increment is done when:

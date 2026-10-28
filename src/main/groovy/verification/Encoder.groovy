@@ -3479,6 +3479,7 @@ class Encoder implements TheoryApi {
     boolean tryRecordListDerivedAssign(String name, Expression rhs) {
         Expression e = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
         if (!isListDerivedExpr(e)) return false
+        if (isListMinus(e)) return tryRecordListMinusAssign(name, (BinaryExpression) e)   // Phase 458
         try {
             int n = quantCounter++
             Object zero = session.intLit(0L)
@@ -3547,7 +3548,88 @@ class Encoder implements TheoryApi {
         if (e instanceof ListExpression && ((ListExpression) e).expressions.any { it instanceof SpreadExpression }) {
             return concatSegments(e, new ArrayList<Expression>())
         }
-        false
+        isListMinus(e)
+    }
+
+    /** Phase 458 — {@code xs - n} (an int) or {@code xs - ys}, both lists named Int lists: {@code List.minus}. */
+    private boolean isListMinus(Expression e) {
+        if (!(e instanceof BinaryExpression) || ((BinaryExpression) e).operation.type != Types.MINUS) return false
+        BinaryExpression be = (BinaryExpression) e
+        if (!isNamedIntList(be.leftExpression)) return false
+        if (isNamedIntList(be.rightExpression)) return true
+        ClassNode t = staticTypeOf(be.rightExpression)
+        t != null && t.name == 'int'
+    }
+
+    /**
+     * Phase 458 — {@code src - n} and {@code src - ys} ({@code List.minus}: every occurrence removed, the rest kept in
+     * order) bound to {@code name} as a fresh non-null list: {@code 0 <= size <= src.size()}; each element is one of
+     * {@code src}'s, null exactly when that one is, and not removed; the size is {@code src.size()} exactly when nothing in {@code src} is removed, smaller otherwise. Not
+     * modelled, so not claimable: which of {@code src}'s kept elements appear where (completeness and order). Either
+     * operand being null throws, so a point after it has both non-null.
+     */
+    private boolean tryRecordListMinusAssign(String name, BinaryExpression e) {
+        try {
+            String src = receiverArrayName(e.leftExpression)
+            String ys = isNamedIntList(e.rightExpression) ? receiverArrayName(e.rightExpression) : null
+            Object nH = ys == null ? translate(e.rightExpression) : null
+            if (ys == null && nH == null) return false
+            int n = quantCounter++
+            Object zero = session.intLit(0L)
+            Object srcArr = arrayFor(src), srcSize = sizeOf(src), srcNull = elementNullityFor(src)
+            Object ysArr = ys == null ? null : arrayFor(ys), ysSize = ys == null ? null : sizeOf(ys)
+            session.assertExpr(session.not(nullityOf(src)))
+            if (ys != null) session.assertExpr(session.not(nullityOf(ys)))
+            Object arr = session.arrayVar(name + '$minus' + n)
+            Object nul = session.arrayVar(name + '$minus$nullElem' + n)
+            Object size = session.intVar(name + '$minus$size' + n)
+            // removed(v, j): the element v is taken out — by n, or by ys[j]. Compared by value, without its nullity, as
+            // `contains` and an element's `==` are
+            Closure<Object> removed = { Object v, Object j ->
+                ys == null ? session.eq(v, nH)
+                           : session.and([session.le(zero, j), session.lt(j, ysSize), session.eq(v, session.select(ysArr, j))])
+            }
+            session.assertExpr(session.and([session.le(zero, size), session.le(size, srcSize)]))
+            // each element is src[idx(k)], with its nullity, and isn't removed
+            Object k = session.boundIntVar('minus$k' + n)
+            Object rk = session.select(arr, k)
+            Object idx = session.applyUF('minusIdx$' + n, [k], session.intSort())
+            Object inR = session.and([session.le(zero, k), session.lt(k, size)])
+            session.assertExpr(session.forall([k], session.implies(inR, session.and([
+                session.le(zero, idx), session.lt(idx, srcSize), session.eq(rk, session.select(srcArr, idx)),
+                session.eq(session.select(nul, k), session.select(srcNull, idx)),
+                ys == null ? session.not(removed(rk, null)) : session.boolLit(true)])), [rk]))
+            if (ys != null) {
+                Object j = session.boundIntVar('minus$j' + n)
+                session.assertExpr(session.forallMultiPattern([k, j],
+                    session.implies(inR, session.not(removed(rk, j))), [rk, session.select(ysArr, j)]))
+            }
+            // the size drops exactly when something is removed: a witness w (and wj) when it does
+            Object i = session.boundIntVar('minus$i' + n)
+            Object si = session.select(srcArr, i)
+            Object inSrc = session.and([session.le(zero, i), session.lt(i, srcSize)])
+            Object w = session.intVar(name + '$minus$w' + n), wj = session.intVar(name + '$minus$wj' + n)
+            Object wHit = session.and([session.le(zero, w), session.lt(w, srcSize),
+                removed(session.select(srcArr, w), wj)])
+            session.assertExpr(session.or([session.eq(size, srcSize), wHit]))
+            if (ys == null) {
+                session.assertExpr(session.forall([i], session.implies(session.and([inSrc, removed(si, null)]),
+                    session.lt(size, srcSize)), [si]))
+            } else {
+                Object j = session.boundIntVar('minus$hj' + n)
+                session.assertExpr(session.forallMultiPattern([i, j], session.implies(session.and([inSrc, removed(si, j)]),
+                    session.lt(size, srcSize)), [si, session.select(ysArr, j)]))
+            }
+            localFactories.remove(name)
+            registerListName(name)
+            bindArray(name, arr)
+            arrEnv.put(name + '$nullElem', nul)
+            bindSize(name, size)
+            session.assertExpr(session.not(nullityOf(name)))
+            return true
+        } catch (UnsupportedConstructException ignored) {
+            return false
+        }
     }
 
     /** Flattens a list concatenation into segments: a scalar element expression, or a {@link SpreadExpression} over
