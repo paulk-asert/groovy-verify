@@ -14435,7 +14435,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // A self-recursive call is the inductive hypothesis, enabled only when
                         // the method declares a @Decreases measure (termination checked separately).
                     } else {
-                        requireDecreasesFor(rhsE, node)   // Phase 452
+                        requireDecreasesFor(rhsE, node) {   // Phase 452
+                            isCallExpr(rhsE) && assumeCalleeEnsures(session, enc, rhsE, node, fresh, true)
+                        }
                         throw new UnsupportedConstructException(
                             "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                     }
@@ -14636,7 +14638,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.bindNullity('result', session.boolLit(false))
                     } else {
                         if (resHandle == null) {
-                            requireDecreasesFor(p.result, node)   // Phase 452
+                            requireDecreasesFor(p.result, node) {   // Phase 452
+                                Expression r = hoistValueCalls(retExpr, enc, session, node)
+                                r != null && enc.translate(r) != null
+                            }
                             throw new UnsupportedConstructException(
                                 "return expression '${p.result.text}' is outside fragment")
                         }
@@ -19964,14 +19969,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** True if the method carries a method-level {@code @Decreases} termination measure. */
     private boolean hasDecreases(MethodNode node) {
-        contractAstFor(node, 'decreases') != null
+        assumingDecreases || contractAstFor(node, 'decreases') != null
     }
+
+    /** Phase 453 — set while {@link #requireDecreasesFor} retries a translation as if the method had a measure. */
+    private boolean assumingDecreases = false
 
     /**
      * Phase 452 — an expression that didn't translate and calls {@code node} itself, where {@code node} has no @Decreases:
      * the self-call's @Ensures went unassumed for want of the measure, so say that, not "outside fragment".
      */
-    private void requireDecreasesFor(Expression e, MethodNode node) {
+    private void requireDecreasesFor(Expression e, MethodNode node, Closure<Boolean> withMeasure) {
         if (e == null || hasDecreases(node)) return
         boolean[] self = [false] as boolean[]
         e.visit(new CodeVisitorSupport() {
@@ -19985,7 +19993,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             @Override void visitClosureExpression(ClosureExpression ce) { }   // a closure's call isn't this body's
         })
-        if (self[0]) throw new RecursionNeedsDecreasesException("${node.name} calls itself without a @Decreases")
+        if (!self[0]) return
+        // Phase 453 — and only where a measure is what's missing: retried as if the method had one (the path is skipped
+        // either way, so what the retry assumes is dropped with it). A list-returning recursion has no inductive
+        // hypothesis with or without one (Phase 92), and was told to add one
+        boolean helps
+        assumingDecreases = true
+        try { helps = withMeasure.call() } catch (Exception ignored) { helps = false } finally { assumingDecreases = false }
+        if (helps) throw new RecursionNeedsDecreasesException("${node.name} calls itself without a @Decreases")
     }
 
     /** True if {@code expr} is a (direct, same-class) recursive call to {@code node} — by name + arity. */
@@ -20020,12 +20035,56 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Path p : paths) {
             for (int i = 0; i < p.steps.size(); i++) {
                 Object step = p.steps.get(i)
-                Expression call = (step instanceof Assign) ? ((Assign) step).rhs :
-                                  (step instanceof LemmaCall) ? ((LemmaCall) step).call : null
-                if (call != null && isSelfCall(call, node)) {
-                    dischargeTermination(node, p.steps.subList(0, i), call, measureAst, reqAst)
-                }
+                Expression e = (step instanceof Assign) ? ((Assign) step).rhs :
+                               (step instanceof LemmaCall) ? ((LemmaCall) step).call :
+                               (step instanceof Guard) ? ((Guard) step).cond : null
+                dischargeSelfCallsIn(node, e, p.steps.subList(0, i), measureAst, reqAst)
             }
+            dischargeSelfCallsIn(node, p.result, p.steps, measureAst, reqAst)
+        }
+    }
+
+    /**
+     * Phase 453 — every recursive call in {@code e}, each under the short-circuit and ternary operands guarding it: the
+     * measure was checked only at a call that was a whole assignment's right-hand side or a statement, while Phase 92
+     * assumes the @Ensures of one in a return (`n == 0 ? 7 : f(n + 1)`, `n * f(n)`) — a non-terminating method with a
+     * @Decreases compiled clean.
+     */
+    private void dischargeSelfCallsIn(MethodNode node, Expression e, List<Object> preceding, Expression measureAst,
+                                      Expression reqAst) {
+        if (e == null) return
+        List<Object[]> found = new ArrayList<Object[]>()
+        Deque<Guard> guards = new ArrayDeque<Guard>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int op = be.operation.type
+                if (op != Types.LOGICAL_AND && op != Types.LOGICAL_OR) { super.visitBinaryExpression(be); return }
+                be.leftExpression.visit(this)
+                guards.addLast(new Guard(new BooleanExpression(be.leftExpression), op == Types.LOGICAL_AND))
+                try { be.rightExpression.visit(this) } finally { guards.removeLast() }
+            }
+            @Override void visitTernaryExpression(TernaryExpression te) {
+                if (te instanceof ElvisOperatorExpression) { super.visitTernaryExpression(te); return }
+                te.booleanExpression.visit(this)
+                guards.addLast(new Guard(te.booleanExpression, true))
+                try { te.trueExpression.visit(this) } finally { guards.removeLast() }
+                guards.addLast(new Guard(te.booleanExpression, false))
+                try { te.falseExpression.visit(this) } finally { guards.removeLast() }
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (isSelfCall(mce, node)) found.add([mce, new ArrayList<Guard>(guards)] as Object[])
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                if (isSelfCall(sce, node)) found.add([sce, new ArrayList<Guard>(guards)] as Object[])
+                super.visitStaticMethodCallExpression(sce)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) { }   // a closure's call isn't this body's
+        })
+        for (Object[] f : found) {
+            List<Object> at = new ArrayList<Object>(preceding)
+            at.addAll((List<Guard>) f[1])
+            dischargeTermination(node, at, (Expression) f[0], measureAst, reqAst)
         }
     }
 
@@ -20051,7 +20110,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translateCondition(g.cond)   // Phase 450
-                    if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+                    if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))   // Phase 453 — a value's truth isn't
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
                     Object rhs = enc.translate(a.rhs)

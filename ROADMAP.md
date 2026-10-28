@@ -19062,6 +19062,34 @@ skips (a ternary, a return, a local, a call inside `n * fact(n - 1)`) gave the o
 measure gcd proves and a false `result > 0` is refuted at `gcd(0, 0)`, and a call to another, uncontracted method is
 any value (refuted, not asked for a measure) — as before.
 
+## Phase 453 — a recursive call's measure, wherever it is  *(shipped — soundness of @Decreases, and a message)*
+
+Measuring Phase 452's message in other shapes found that the measure it recommends wasn't always checked.
+`verifyTermination` discharged the measure only at a recursive call that was a whole assignment's right-hand side or a
+statement, while Phase 92 assumes the @Ensures of one in a return expression. **Unchecked:** `return f(n)`,
+`n == 0 ? 7 : f(n + 1)`, `n * f(n)` and a predicate's `n == 0 ? true : f(n + 1)` each compiled clean under
+`@Decreases({ n })`, never ending. Each postcondition still held of the runs that end (partial correctness), but the
+termination the measure claims went unchecked, without a word. The same measuring found Phase 452's advice wrong for a
+list-returning recursion (`n == 0 ? [] : f(n - 1) + [n]`): with a @Decreases it still skips, since Phase 92's
+inductive hypothesis is for scalar results.
+
+- **Every recursive call on a path is checked against the measure**: in an assignment, a statement, a path guard or
+  the return expression, at any depth, each under the `&&`, `||` and ternary operands guarding it (Phase 451's facts),
+  so `n == 0 ? 1 : n * f(n - 1)` keeps `n - 1 >= 0`. A guard that is a value's truth is left unassumed, as elsewhere.
+- **The advice is given only where a measure would help**: the failed translation is retried as if the method had a
+  @Decreases (the path is skipped either way, so what the retry assumes goes with it); only if that translates is the
+  method told to add one. Otherwise the skip keeps its own reason.
+
+**Not changed:** a recursive call in a path guard (`if (f(n - 1) > 5)`) still skips the postcondition, with or without a
+measure: Phase 450's condition value excludes the method itself. A self-call in a loop body skips with the loop.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P453 a recursive call's measure, wherever it is`, 10 cases. Measured at the parent commit: four
+compiled clean though they never end (a return, a ternary's arm, a product, a predicate) and the list recursion was told
+to add a measure; a local's call was already checked, and the four guarded recursions (factorial, gcd, `&&`, `||`)
+already proved. Mutation-checked: without the guards those four fail on the measure.
+
 ## Definition of done, per increment
 
 An increment is done when:
