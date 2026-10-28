@@ -12455,6 +12455,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // A constructor has no return value (it implicitly produces `this`); treat its body
             // as void-shaped for path enumeration — paths terminate without a return expression.
             List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod() || node instanceof ConstructorNode)
+            if (isListType(node.returnType)) paths = splitTernaryReturns(paths)   // Phase 456
             for (Path p : paths) {
                 checkPath(node, p, postAst, reqAst, classInvs)
             }
@@ -19830,6 +19831,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                     collectArgumentExpressions((MethodCall) e)?.size() ?: -1,
                                     hasDecreases(node), null, null, e) : null
                                 ClassNode hrt = hoistCallee?.returnType
+                                // Phase 456 — not a list-valued call: as an Int handle, `f(n - 1) + n` (an append) was
+                                // integer addition, and `result.size() == n` refuted with `result.size() = 0` (Phase 323
+                                // refused it over a named list; a hoisted one slipped by). A list return's calls are
+                                // listCallsHoisted's
+                                if (hoistCallee != null && calleeReturnsList(e, node)) return e
                                 Object hSort = (hrt != null && !isIntElement(hrt)) ? enc.sortForType(hrt) : null
                                 Object fresh = hSort != null ?
                                     session.varOfSort('ret$call#' + (++hoistSeq), hSort) :
@@ -19889,6 +19895,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     private static boolean isCallExpr(Expression e) {
         e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression
+    }
+
+    /**
+     * Phase 456 — a list return of a ternary (`n == 0 ? [] : f(n - 1) + [n]`) as the two returns it chooses between, each
+     * under its test, as `if (n == 0) return [] else return …` is walked: a list has no `ite` value, so the ternary bound
+     * as nothing and the postcondition was skipped. Nested ternaries split in turn; an Elvis (a value's truth) doesn't.
+     */
+    private static List<Path> splitTernaryReturns(List<Path> paths) {
+        List<Path> out = new ArrayList<Path>()
+        Deque<Path> todo = new ArrayDeque<Path>(paths)
+        while (!todo.isEmpty()) {
+            Path p = todo.removeFirst()
+            Expression r = p.result
+            if (!(r instanceof TernaryExpression) || r instanceof ElvisOperatorExpression) { out.add(p); continue }
+            TernaryExpression te = (TernaryExpression) r
+            for (boolean arm : [true, false]) {
+                Path q = new Path()
+                q.steps.addAll(p.steps)
+                q.steps.add(new Guard(te.booleanExpression, arm))
+                q.result = arm ? te.trueExpression : te.falseExpression
+                todo.addLast(q)
+            }
+        }
+        out
     }
 
     /** Phase 133 — the Groovy operator-method a binary operator dispatches to (`a + b` is `a.plus(b)`), or null. */

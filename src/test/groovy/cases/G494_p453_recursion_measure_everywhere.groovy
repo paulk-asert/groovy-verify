@@ -115,13 +115,14 @@ class G494_p453_recursion_measure_everywhere {
                         static boolean f(int n) { n == 0 || f(n - 1) }
                     }''')],
 
-        // Told to add a @Decreases before, which wouldn't have helped: a list result has no inductive hypothesis
+        // Told to add a @Decreases before, which wouldn't have helped: an append (`+ n`) has no list value with one
+        // either (Phase 456 changed the shape: a ternary of lists, which this was, binds now)
         [group: "P453 a recursive call's measure, wherever it is", name: "a list-returning recursion isn't told to add a measure",
-         expect: "return expression '((n == 0)) ? [] : (A.f((n - 1)) + [n])' is outside fragment",
+         expect: "return expression '(A.f((n - 1)) + n)' is outside fragment",
          src: tc('''class A {
                         @Requires({ n >= 0 })
                         @Ensures({ result != null && result.size() == n })
-                        static List<Integer> f(int n) { n == 0 ? [] : f(n - 1) + [n] }
+                        static List<Integer> f(int n) { n == 0 ? [] : f(n - 1) + n }
                     }''')],
     ]
 }

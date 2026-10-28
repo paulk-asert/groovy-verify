@@ -19132,6 +19132,30 @@ models the concatenation (Phase 323) only over named lists, and Phase 92's hoist
 append, a spread, the element it adds, another method's call, a size and an element claim refuted now, the one without
 a measure); the measure at it was already checked (Phase 453).
 
+## Phase 456 — a ternary of lists returned  *(shipped — reach, and a false alarm)*
+
+Phase 455 left it: a list return of a ternary (`n == 0 ? [] : f(n - 1) + [n]`, or plainly `n > 0 ? [n, n] : [0]`) had
+no list value, recursive or not. A scalar ternary is an `ite`; a list has none, so the factory route bound nothing and
+the postcondition was skipped, where `if (n == 0) return []` proved.
+
+Measuring its neighbour found a false alarm: an append onto a list-valued call (`return f(n - 1) + n`, `g(n) + n`).
+Phase 92's hoist minted the call an Int handle, so `+ n` was integer addition, `result` a number, and a true
+`result.size() == n` was refuted with `result.size() = 0`. Phase 323 refused an append on a named list; a hoisted call
+slipped past it.
+
+- **A list return of a ternary is checked as the two returns it chooses between** (`splitTernaryReturns`), each under
+  its test as a path guard, as the `if` form is walked; nested ternaries split in turn, an Elvis doesn't. Only in the
+  postcondition pass and only for a list-typed method: a scalar keeps its `ite`, and the other passes their own walks.
+- **A list-valued call isn't hoisted as a scalar**: the return stays untranslated and skips loudly, as an append on a
+  named list does. Its calls are Phase 455's to hoist, as lists, where the return is a concatenation.
+
+**Changed cases:** one. P453's "a list-returning recursion isn't told to add a measure" was the ternary of lists, which
+binds now (and so is told); it's an append (`f(n - 1) + n`) instead, which no measure helps.
+
+**Shipped tests:** group `P456 a ternary of lists returned`, 9 cases. Measured at the parent commit: seven skipped (a
+recursive ternary, a literal in each arm, nested, a parameter's list in an arm, two refutations, the one without a
+measure) and two false refutations (an append onto a recursive call and onto another method's).
+
 ## Definition of done, per increment
 
 An increment is done when:
