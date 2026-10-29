@@ -992,7 +992,7 @@ class PureEvaluator {
     }
 
     /** Phase 469 — {@code c}'s {@link StateReads}; null when it reads state no snapshot names: a field of another object
-     *  or of a sibling class, the state of an object parameter. */
+     *  or of a sibling class, the state of an object parameter, a call whose value may differ in one state (Phase 470). */
     StateReads stateReads(Call c) {
         if (c == null) return null
         stateReadsOf(c.name, c.args.size(), new HashSet<String>())
@@ -1071,12 +1071,18 @@ class PureEvaluator {
             @Override void visitMethodCallExpression(MethodCallExpression mce) {
                 Call inner = callInfo(mce)
                 if (inner != null) { nested(inner) ; return }
-                if (!mce.implicitThis) readInto.call(mce.objectExpression)
+                // Phase 470 — a call whose value may differ between two calls in one state: an own method that is no
+                // function (a contracted one is only what its @Ensures allows), a library static not known deterministic
+                if (mce.implicitThis || isThis(mce.objectExpression)) bad[0] = true
+                else if (mce.objectExpression instanceof ClassExpression) {
+                    if (!deterministicStatic(mce.objectExpression.type?.name, mce.methodAsString, argList(mce).size())) bad[0] = true
+                } else readInto.call(mce.objectExpression)
                 super.visitMethodCallExpression(mce)
             }
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sm) {
                 Call inner = callInfo(sm)
                 if (inner != null) { nested(inner); return }
+                if (!deterministicStatic(sm.ownerType?.name, sm.method, argsOf(sm.arguments).size())) bad[0] = true   // Phase 470
                 super.visitStaticMethodCallExpression(sm)
             }
             // a function it calls: what that reads, its parameters' contents mapped to this call's arguments
@@ -1100,6 +1106,27 @@ class PureEvaluator {
             }
         })
         bad[0] ? null : out
+    }
+
+    /** Phase 470 — the library classes whose statics are functions of their arguments (none reads a clock, a random
+     *  source or mutable global state) — but for {@code random}: Phase 347's write-free classes
+     *  ({@code VerifyChecker.PURE_STATIC_CLASSES}, {@code INFER_PURE_STATIC_CLASSES}), and StrictMath. */
+    private static final Set<String> DETERMINISTIC_STATICS = (['java.lang.Math', 'java.lang.StrictMath',
+        'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte', 'java.lang.Character',
+        'java.lang.Boolean', 'java.lang.Double', 'java.lang.Float', 'java.lang.String', 'java.util.Objects',
+        'java.math.BigInteger', 'java.math.BigDecimal', 'groovy.lang.Tuple', 'java.util.List', 'java.util.Set',
+        'java.util.Map', 'java.util.Optional',
+        // the spec helpers
+        'verification.Forall', 'verification.Sets', 'verification.Fib', 'verification.Trib', 'verification.Gcd',
+        'verification.Lcm', 'Forall', 'Sets', 'Fib', 'Trib', 'Gcd', 'Lcm'] as Set<String>).asImmutable()
+
+    /** Phase 470 — is {@code fqn.name/arity} a static whose value is a function of its arguments: on that list, or a
+     *  registry spec marked {@code @Pure} (Phase 218's admission gate)? {@code Math.random()}, {@code System.nanoTime()},
+     *  {@code UUID.randomUUID()} are not: a helper calling one is a new value at each call. */
+    static boolean deterministicStatic(String fqn, String name, int arity) {
+        if (fqn == null || name == null) return false
+        if (DETERMINISTIC_STATICS.contains(fqn)) return name != 'random'
+        SpecRegistry.isPure(SpecRegistry.lookup(fqn, name, arity))
     }
 
     private static boolean isThis(Expression e) {

@@ -19536,6 +19536,34 @@ twice, a recursive count over a set, an array read twice past a write to another
 arguments seven cases fail; a fresh value at every call one (and P25); without the transitive reads one; without the
 parameters' contents one; without maps and sets one.
 
+## Phase 470 — a helper whose call may vary  *(shipped — soundness)*
+
+Phase 469's second slice. A contract-free, write-free helper is a function of its arguments and the state it reads
+(Phase 469). Its value must also not vary between two calls in one state. Phase 347's write analysis
+(`calleeWrites`) already refuses a helper calling a library static off its write-free classes (`System.nanoTime()`,
+`UUID.randomUUID()`, `StrictMath.random()`: no function, their probes refuted at the parent commit), but two calls slipped
+through, each making the helper one term per argument list:
+
+- **Unsound:** `Math.random()`, the one nondeterministic static of a write-free class (`h(n) > 0 && h(n) <= 0` was
+  false, so a `g` refusing 1 behind it passed; likewise a helper calling such a helper); and an own method that is no
+  function, a contracted one, whose value is only what its `@Ensures` allows (`h() { k() }` with `k` under
+  `@Ensures({ result >= 0 })` returning a random value: `h(n) != h(n)` was false), static or instance.
+
+**The fix** (`PureEvaluator.stateReads`, Phase 469's analysis): such a call in the body makes the helper's value a new
+one at each call (still defined by its body). A library static is deterministic on Phase 347's write-free classes and
+StrictMath, but for `random`, or as a registry spec marked `@Pure` (`deterministicStatic`); an own method only when it
+is itself a function (followed, as Phase 469 follows its reads).
+
+**The precision kept:** a helper over deterministic statics stays one term, which a recursive one needs past its
+unfolding (`s(k) { k <= 0 ? 0 : Math.abs(k) + s(k - 1) }` read twice).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P470 a helper whose call may vary`, 6 cases. Measured at the parent commit: four passed
+unsoundly (`Math.random`, an own contracted call, an instance one, a helper calling one that does); two unchanged
+(`Math.abs` and `Math.max`, a recursive one over `Math.abs`). Mutation-checked: allowing `random` two cases fail; without
+the own-method rule one (a static own call is caught as a static); taking no static as deterministic one.
+
 ## Definition of done, per increment
 
 An increment is done when:
