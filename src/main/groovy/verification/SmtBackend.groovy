@@ -618,6 +618,14 @@ interface SmtSession extends AutoCloseable {
     /** Assert a boolean expression. */
     void assertExpr(Object boolExpr)
 
+    /** Phase 473 — assert {@code var == value} as a DEFINITION: a local bound to a value. A check's dependence test reads
+     *  through it (an unknown value bound to a local the check doesn't read decides nothing). */
+    void assertDefinition(Object var, Object value)
+
+    /** Phase 473 — assert a DOMAIN fact: a range every value of its sort-and-type has (an int local within the JVM's
+     *  bounds), true of any run, so no dependence for the test {@link #assertDefinition} feeds. */
+    void assertDomainFact(Object boolExpr)
+
     /**
      * Phase 324 — make every {@link #assertExpr} until the matching {@link #popAssertGuard} assert
      * {@code guard ⟹ e} instead of {@code e} (guards nest, conjoined). For replaying one alternative of a

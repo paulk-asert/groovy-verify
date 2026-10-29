@@ -101,15 +101,5 @@ class G513_p472_any_check_over_unknown {
                         }
                     }''')],
 
-        // the boundary: the value's role isn't traced (only a call site's is, Phase 471), so a value bound on the path
-        // withholds a call it doesn't decide — never naming one it does
-        [group: "P472 no failing call over an unknown, for any check", name: "a division beside an unknown value (conservative)", expect: ['Possible ArithmeticException', 'what h(…) returns', UNKNOWN], refute: 'fails on',
-         src: tc('''class A {
-                        static int f(int n) {
-                            int r = h(n)
-                            return 100.intdiv(n)
-                        }
-                        static int h(int i) { new Random().nextInt() }
-                    }''')],
     ]
 }

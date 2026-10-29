@@ -5795,7 +5795,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.bindNullity(a.name, enc.nullityOf(((VariableExpression) a.rhs).name))
                     }
                     Object rhs = enc.translate(a.rhs)
-                    if (rhs != null) { s.assertExpr(s.eq(enc.varFor(a.name), rhs)); continue }
+                    if (rhs != null) { s.assertDefinition(enc.varFor(a.name), rhs); continue }   // Phase 473
                     // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
                     // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
                     // replay leaves `i` unconstrained and a downstream `s.charAt(i)` bound can't discharge.
@@ -14488,7 +14488,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         fresh = session.intVar(a.name + '#' + (++ssaVersion))
                     }
                     if (rhs != null) {
-                        session.assertExpr(session.eq(fresh, rhs))
+                        session.assertDefinition(fresh, rhs)   // Phase 473
                         enc.bind(a.name, fresh)
                         // Phase 423 — a safe call's value: its null case, whatever the declared type (a boxed one too)
                         if (enc.noteNullableValue(a.name, a.rhs)) enc.bindNullity(a.name, enc.nullityOfExpr(a.rhs))
@@ -20437,7 +20437,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
                     Object rhs = enc.translate(a.rhs)
-                    if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
+                    if (rhs != null) s.assertDefinition(enc.varFor(a.name), rhs)   // Phase 473
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step
                     // Phase 27 — same sort-routing as in checkPath's main step replay above.

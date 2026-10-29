@@ -19627,6 +19627,28 @@ one named a call that does fail and now withholds it (a division beside an unkno
 unchanged (an index under a condition it can evaluate). Mutation-checked: without the value-flow guards' taint three
 cases fail, the measure's one, the unknown values' three; the region walk's four taints are neutral (above).
 
+## Phase 473 — an unknown value traced through the check
+
+Phase 472's conservative boundary. Any check's failing call was withheld when its model gave a helper's unknown value
+(Phase 471/472) one, and a value merely bound to a local is in the model too: `int r = h(n); return 100.intdiv(n)` no
+longer named `f(0)`, which fails whatever `h` returns.
+
+**How:** the session tells two kinds of assertion from the rest. A DEFINITION (`assertDefinition`: a local bound to a
+value — the value-flow walk's, a recursion measure's and the postcondition walk's `Assign` steps) passes the value to
+the local; a DOMAIN fact (`assertDomainFact`: an int local's JVM range, `assumeIntegralRange`) is true of any value. On
+a refutation with unknown taints, `Z3Session.dropUnreachedUnknowns` closes the unknown values over the definitions and
+looks for any other assertion mentioning one — a path condition, the obligation, an axiom; with none, the unknown taints
+are dropped and the call is named. A local of the value in a condition, through any chain of locals, or the value in the
+obligation itself still withholds it.
+
+**Changed cases:** P472's "a division beside an unknown value (conservative)" moves here as "a value bound and unread",
+naming `fails on: f(0)` again.
+
+**Shipped tests:** group `P473 an unknown value traced through the check`, 5 cases. Measured at the parent commit: two
+withheld a call the value doesn't decide (a value bound and unread, through a chain of locals); three unchanged (a local
+of it in the condition, through a chain, the value in the obligation). Mutation-checked: without the test two cases
+fail; without reading through definitions two; counting the range facts two; counting the definitions two.
+
 ## Definition of done, per increment
 
 An increment is done when:

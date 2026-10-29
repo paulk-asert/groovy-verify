@@ -1983,7 +1983,7 @@ class Encoder implements TheoryApi {
         if (bits == null) return
         long lo = bits == 64 ? Long.MIN_VALUE : (long) Integer.MIN_VALUE
         long hi = bits == 64 ? Long.MAX_VALUE : (long) Integer.MAX_VALUE
-        session.assertExpr(session.and([session.le(session.intLit(lo), v), session.le(v, session.intLit(hi))]))
+        session.assertDomainFact(session.and([session.le(session.intLit(lo), v), session.le(v, session.intLit(hi))]))   // Phase 473
     }
 
     /** Per-sort variable bindings (Phase 27), keyed by {@code name + ':' + sortHandle.toString()}. */

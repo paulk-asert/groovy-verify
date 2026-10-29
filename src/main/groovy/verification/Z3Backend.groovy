@@ -1375,6 +1375,68 @@ class Z3Session implements SmtSession {
     @Override Object implies(Object a, Object b) { ctx.mkImplies((BoolExpr) a, (BoolExpr) b) }
     @Override Object boolLit(boolean b) { b ? ctx.mkTrue() : ctx.mkFalse() }
 
+    /** Phase 473 — the definitions asserted ({@link #assertDefinition}): the defined constant's name, its value, and the
+     *  assertion's AST id. */
+    private final List<Object[]> definitions = new ArrayList<Object[]>()
+
+    /** Phase 473 — the AST ids of the domain facts asserted ({@link #assertDomainFact}). */
+    private final Set<Integer> domainIds = new HashSet<Integer>()
+
+    @Override
+    void assertDomainFact(Object boolExpr) {
+        assertExpr(boolExpr)
+        domainIds.add(assertedExprs.get(assertedExprs.size() - 1).getId())
+    }
+
+    @Override
+    void assertDefinition(Object var, Object value) {
+        assertExpr(eq(var, value))
+        Expr v = (Expr) var
+        if (v.isConst()) definitions.add([v.getFuncDecl().getName().toString(), value, assertedExprs.get(assertedExprs.size() - 1).getId()] as Object[])
+    }
+
+    /**
+     * Phase 473 — does a refuted check depend on one of its unknown values (Phase 472's {@code unknown:} taints)? The
+     * values a definition binds a local to pass to the local; any other assertion — a path condition, the obligation, an
+     * axiom — mentioning one of them, or a local bound to one, is a dependence. With none, the unknown taints are dropped:
+     * the failing call doesn't rest on the value (`int r = h(n); 100.intdiv(n)` fails on f(0), whatever h returns).
+     */
+    private void dropUnreachedUnknowns(CheckResult result) {
+        Set<String> derived = new HashSet<String>()
+        for (String t : result.taints) if (t.startsWith('unknown:')) derived.add(t.substring('unknown:'.length()))
+        if (derived.isEmpty()) return
+        boolean changed = true
+        while (changed) {
+            changed = false
+            for (Object[] d : definitions) {
+                if (!derived.contains((String) d[0]) && mentionsAny((Expr) d[1], derived)) { derived.add((String) d[0]); changed = true }
+            }
+        }
+        Set<Integer> defIds = new HashSet<Integer>()
+        for (Object[] d : definitions) defIds.add((Integer) d[2])
+        for (BoolExpr a : solver.getAssertions()) {
+            if (defIds.contains(a.getId()) || domainIds.contains(a.getId())) continue
+            if (mentionsAny(a, derived)) return
+        }
+        result.taints.removeAll { String t -> t.startsWith('unknown:') }
+    }
+
+    /** Phase 473 — does {@code e} mention a constant named in {@code names} (through quantifier bodies too)? */
+    private static boolean mentionsAny(Expr e, Set<String> names) {
+        Deque<Expr> todo = new ArrayDeque<Expr>()
+        Set<Integer> seen = new HashSet<Integer>()
+        todo.push(e)
+        while (!todo.isEmpty()) {
+            Expr x = todo.pop()
+            if (!seen.add(x.getId())) continue
+            if (x.isQuantifier()) { todo.push(((Quantifier) x).getBody()); continue }
+            if (!x.isApp()) continue
+            if (x.isConst() && names.contains(x.getFuncDecl().getName().toString())) return true
+            for (Expr a : x.getArgs()) todo.push(a)
+        }
+        false
+    }
+
     @Override
     void assertExpr(Object boolExpr) {
         BoolExpr be = (BoolExpr) boolExpr
@@ -1704,6 +1766,7 @@ class Z3Session implements SmtSession {
         }
         if (Reporter.DUMP_SMT) println("; groovy-verify/Z3 verdict: ${result.status}".toString())
         result.taints = new LinkedHashSet<String>(taints)   // Phase 406 — this session's, cached verdict or not
+        if (result.status == CheckResult.Status.REFUTED) dropUnreachedUnknowns(result)   // Phase 473
         return result
     }
 
