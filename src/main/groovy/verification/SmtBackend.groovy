@@ -180,6 +180,9 @@ interface SmtSession extends AutoCloseable {
      */
     Object constIntArray(Object value)
 
+    /** Phase 478 — {@link #constIntArray} over another index sort: {@code ((as const (Array domainSort _)) value)}. */
+    Object constArray(Object domainSort, Object value)
+
     /** The element {@code arr[i]} — Z3 {@code (select arr i)}. */
     Object select(Object arr, Object idx)
 

@@ -2136,6 +2136,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Parameter p : node.parameters) if (isMapType(p.type)) out.put(p.name, twoGenericsOrInt(p.type))
         ClassNode dc = node.declaringClass
         if (dc != null) for (FieldNode f : dc.fields) if (isMapType(f.type)) out.put(f.name, twoGenericsOrInt(f.type))
+        // Phase 478 — a typed local map assigned only where it's declared: a map too. As a list its String key
+        // reached an Int-indexed array (`m.put('x', 0)` then `m.get('x')` stopped the method's checks), and its
+        // puts were lost. One assigned again stays out: its map would be the first value's.
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            Map<String, ClassNode[]> locals = new LinkedHashMap<String, ClassNode[]>()
+            Map<String, Integer> writes = new HashMap<String, Integer>()
+            cleanBody.visit(new CodeVisitorSupport() {
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    for (VariableExpression v : declaredTargets(de)) {
+                        writes.merge(v.name, 1, Integer.&sum)
+                        ClassNode t = v.originType
+                        if (t != null && isMapType(t) && t.genericsTypes?.length == 2) locals.put(v.name, twoGenericsOrInt(t))
+                    }
+                    de.rightExpression.visit(this)
+                }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                        writes.merge(((VariableExpression) be.leftExpression).name, 1, Integer.&sum)
+                    }
+                    super.visitBinaryExpression(be)
+                }
+            })
+            locals.each { String n, ClassNode[] kv -> if (writes.get(n) == 1) out.putIfAbsent(n, kv) }
+        } catch (Throwable ignored) {}
         out
     }
 
@@ -5306,6 +5332,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         [t, v] as Expression[]
     }
 
+    /** Phase 478 — {@code m.x} on a String-keyed map as {@code m['x']} ({@link Encoder#mapPropertySubscript}). */
+    private Expression mapPropertySubscript(Expression lhs) { Encoder.mapPropertySubscript(lhs, currentMapTypes) }
+
     /** True if {@code e} mentions any parameter of {@code m} by name — the "this assert is a precondition" smell. */
     private static boolean referencesParameter(Expression e, MethodNode m) {
         if (e == null || m == null || m.parameters.length == 0) return false
@@ -5571,7 +5600,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // proved, and `a[0] = 0; 10 % a[0]` under `a[0] == 1`
                 Expression[] vw = vfWrite(e)
                 if (vw != null) {
-                    Expression lhs = vw[0], value = vw[1]
+                    Expression lhs = mapPropertySubscript(vw[0]), value = vw[1]
                     if (lhs instanceof VariableExpression) {
                         String name = ((VariableExpression) lhs).name
                         scanObligations(value, steps, out)
@@ -5603,7 +5632,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (lhs instanceof BinaryExpression &&
                         ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET) {
                         BinaryExpression sub = (BinaryExpression) lhs
-                        scanObligations(lhs, steps, out)
+                        scanObligations(vw[0], steps, out)   // as written: `m.x`'s own, not its rewrite's
                         scanObligations(value, steps, out)
                         if (!(sub.leftExpression instanceof VariableExpression)) {
                             throw new UnsupportedConstructException("an element store through '${clip(sub.leftExpression.text)}'")
@@ -7850,6 +7879,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 void target(Expression t) {
                     if (t instanceof VariableExpression) names.add(((VariableExpression) t).name)
                     else if (t instanceof BinaryExpression && ((BinaryExpression) t).operation.type == Types.LEFT_SQUARE_BRACKET) target(((BinaryExpression) t).leftExpression)
+                    else if (t instanceof PropertyExpression && isMapType(declaredTypeOf(((PropertyExpression) t).objectExpression))) {
+                        target(((PropertyExpression) t).objectExpression)   // Phase 478 — `m.x = v` puts into m
+                    }
                     else if (t instanceof PropertyExpression) names.add(((PropertyExpression) t).propertyAsString)
                 }
                 @Override void visitBinaryExpression(BinaryExpression be) {
@@ -21386,7 +21418,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
             BinaryExpression be = (BinaryExpression) e
-            Expression lhs = be.leftExpression
+            Expression lhs = mapPropertySubscript(be.leftExpression)   // Phase 478
             if (lhs instanceof VariableExpression) {
                 String name = ((VariableExpression) lhs).name
                 if (replayArrayAssign(enc, s, name, be.rightExpression)) return true   // Phase 375

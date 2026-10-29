@@ -499,6 +499,11 @@ class Z3Session implements SmtSession {
         ctx.mkConstArray(ctx.getIntSort(), (Expr) value)
     }
 
+    @Override
+    Object constArray(Object domainSort, Object value) {
+        ctx.mkConstArray((Sort) domainSort, (Expr) value)
+    }
+
     // --- Bitwise / shift via 32-bit two's-complement bit-vectors (Java `int` width) ---
     private BitVecExpr toBV32(Object e) { ctx.mkInt2BV(32, (IntExpr) e) }          // int → 32-bit BV (mod 2^32)
     private Object fromBV(BitVecExpr b) { ctx.mkBV2Int(b, true) }                  // BV → signed Int

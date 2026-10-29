@@ -3404,7 +3404,31 @@ class Encoder implements TheoryApi {
             bindSize(name, session.intLit((long) f.entryCount()))
         }
         if (f.kind == 'list') bindLiteralContents(name, f.args)   // Phase 477
+        if (f.kind == 'map' && isMapName(name)) {   // Phase 478 — its puts drop the record: put it back
+            bindMapLiteral(name, f.keys, f.values)
+            localFactories.put(name, f)
+        }
         true
+    }
+
+    /**
+     * Phase 478 — a map literal's entries, as its map's model: the empty key-set (size 0), then a put per entry. Reads fold to the literal ({@link #localFactories}) until a put drops the record
+     * ({@link #mapPut}); from then on they go through the model, which must already hold the entries. An entry that
+     * doesn't translate leaves the whole map unknown.
+     */
+    private void bindMapLiteral(String name, List<Expression> keys, List<Expression> values) {
+        Object kSort = mapKeySort(name), vSort = mapValueSort(name)
+        List<Object> ks = new ArrayList<Object>(), vs = new ArrayList<Object>()
+        for (int k = 0; k < keys.size(); k++) {
+            Object kt = null, vt = null
+            try { kt = translateInSort(keys.get(k), kSort); vt = translateInSort(values.get(k), vSort) } catch (Exception ignored) {}
+            if (kt == null || vt == null) { havocMap(name); return }
+            ks.add(kt); vs.add(vt)
+        }
+        Object empty = session.constArray(kSort, session.intLit(0L))
+        session.assertExpr(session.eq(cardOf(empty), session.intLit(0L)))
+        putMapKeys(name, empty)
+        for (int k = 0; k < ks.size(); k++) mapPut(name, ks.get(k), vs.get(k))
     }
 
     /**
@@ -4162,6 +4186,7 @@ class Encoder implements TheoryApi {
     void havocMap(String name) {
         // Phase 447 — in the map's own sorts: a String-keyed map's Int-sorted fresh key-set left `m.containsKey('k')`
         // untranslatable after a call, and the assertion over it was dropped
+        localFactories.remove(name)   // Phase 478
         havocContents(mapValsKey(name))
         putMapKeys(name, freshSetLike(mapKeysKey(name), mapKeysKey(name) + '$havoc$' + (havocCounter++)))
     }
@@ -4178,6 +4203,7 @@ class Encoder implements TheoryApi {
      * (VerifyChecker) and the loop-body executor (LoopEncoder) so both spellings and positions agree.
      */
     void mapPut(String logical, Object key, Object val) {
+        localFactories.remove(logical)   // Phase 478 — the literal no longer describes it: reads go through the model
         putMapVals(logical, session.store(mapValsFor(logical), key, val))
         Object oldKeys = mapKeysFor(logical)
         Object memOld = member(oldKeys, key)
@@ -4754,6 +4780,25 @@ class Encoder implements TheoryApi {
     Object peekMapKeys(String logical) { peekSet(mapKeysKey(logical)) }
 
     /** The logical map name for a receiver that names a map ({@code m} or the snapshot {@code old.m}); null otherwise. */
+    /**
+     * Phase 478 — {@code m.x = v} on a String-keyed map is {@code m['x'] = v}, a put (its read is Phase 83/84's): as a
+     * property store it was lost, and a literal-bound map's {@code m.x} still read the literal's value. Any other target
+     * is returned as is.
+     */
+    static Expression mapPropertySubscript(Expression e, Map<String, ClassNode[]> mapTypes) {
+        if (!(e instanceof PropertyExpression)) return e
+        PropertyExpression pe = (PropertyExpression) e
+        if (pe.safe || pe.spreadSafe || !(pe.objectExpression instanceof VariableExpression) || pe.propertyAsString == null) return e
+        ClassNode[] kv = mapTypes.get(((VariableExpression) pe.objectExpression).name)
+        if (kv == null || kv[0].name != 'java.lang.String') return e
+        BinaryExpression sub = new BinaryExpression(pe.objectExpression, Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1),
+            new ConstantExpression(pe.propertyAsString))
+        sub.setSourcePosition(pe)
+        sub
+    }
+
+    Expression mapPropertySubscript(Expression e) { mapPropertySubscript(e, mapTypes) }
+
     String mapLogicalFor(Expression recv) {
         if (recv instanceof VariableExpression) {
             String n = ((VariableExpression) recv).name

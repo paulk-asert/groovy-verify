@@ -656,6 +656,12 @@ class LoopEncoder {
                 r.setSourcePosition(be)
                 return r
             }
+            Expression sub = enc.mapPropertySubscript(t)   // Phase 478 — m.x = v on a map: m['x'] = v
+            if (sub != t) {
+                BinaryExpression r = new BinaryExpression(sub, be.operation, be.rightExpression)
+                r.setSourcePosition(be)
+                return r
+            }
             return e
         }
         if (!(e instanceof MethodCallExpression)) return e

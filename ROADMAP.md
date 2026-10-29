@@ -19747,7 +19747,7 @@ stays: its writes are read by nothing, and the region pass doesn't carry Phase 4
 (`if (b.length > 0) b[0] = 1` would report the store's null too).
 
 **Not changed here:** a map literal's `put` then `get` (`Map<String, Integer> m = [x: 1]; m.put('x', 0)`) skips the
-method's implicit checks with an internal sort error — loudly, so not a silent pass.
+method's implicit checks with an internal sort error — loudly, so not a silent pass. (Phase 478.)
 
 **Changed cases:** none.
 
@@ -19758,6 +19758,40 @@ helper's unknown value in another slot, in the slot read); three unchanged (anot
 literal unwritten still folds, an arm that returns). Mutation-checked: without dropping the record on a store six cases
 fail; without the literal's contents two; without the bail-out six; without the continuation through a block one;
 without looking into nested ifs one.
+
+## Phase 478 — a local map
+
+Phase 477's loud skip (`Map<String, Integer> m = [x: 1]; m.put('x', 0)` then `m.get('x')`) had a wider cause: only a
+method's map *parameters* and *fields* were maps to the checker (`collectMapTypes`). A typed local map took the list
+path, its String key reaching an Int-indexed array — the implicit checks stopped with an internal sort error, and a
+call-site precondition after a loop let the Z3Exception escape into the compile — while an Integer key's puts were
+lost ("rests on m, a value the verifier doesn't model"). And `m.x = v` wasn't a put at all: the value-flow pass bailed on
+it ("assignment to a non-variable target"), the region pass and the loops' write sets saw a write to a field `x`, and a
+literal-bound map's `m.x` still read the literal (Phase 83's fold) — so `[x: 1]`, `m.x = 0`, `100.intdiv(m.x)`
+**proved** (soundness), in straight line, after `if (n > 5) m.x = 0`, and after a loop's `m.x = i`.
+
+**The fixes:** a local declared `Map<K, V>` (both generics) and assigned nowhere else is a map too (one assigned again
+stays out: its model would be the first value's). A literal's entries are its model (`bindMapLiteral`): the empty
+key-set — a constant array, so the size counts each new key (`SmtSession.constArray`, the any-sort `constIntArray`) —
+then a put per entry. A put or a havoc drops the fold's record, so reads after one go through the model (Phase 84's
+`m.x` read, `get`, `[k]`). `m.x = v` on a String-keyed map is `m['x'] = v` (`Encoder.mapPropertySubscript`) in the
+value-flow steps, the call-site prefix replay and the loop executor's `asStore`, and the loops' write targets record
+`m`.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P478 a local map`, 17 cases. Measured at the parent commit: five proved a division by zero
+that runs (a property store read as `m.x`, read by `get`, in an arm, in a loop, past a re-assignment); four skipped the method's checks with the
+internal sort error; one crashed the compile with the Z3Exception (a call's precondition past a loop); three reported
+without a failing call (an Integer-keyed put, both size cases); two skipped loudly (an assert after a property store,
+a call's precondition over `m.x`); two unchanged (a literal unwritten still folds, another key keeps the literal's
+value). Mutation-checked: without the local maps sixteen cases fail; without the literal's
+entries four; with a fresh key-set for the empty one one; without dropping the record on a put seven; without the
+rewrite in the value-flow steps one, in the prefix replay one, in the loop executor two; without the write target one;
+without dropping the record on a havoc one.
+
+**Not changed here:** `m.x` on a map *parameter* that may be null gets no null check (`m.get('x')` does); obligations
+print `m.get(x)` for `m.get('x')`, for parameters too.
 
 ## Definition of done, per increment
 
