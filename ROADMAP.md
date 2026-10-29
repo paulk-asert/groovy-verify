@@ -19467,6 +19467,39 @@ throw); three unchanged (two divisions in a statement, a catch of Throwable, a c
 Mutation-checked: without the flag four cases fail; allowing two throws in a statement one; without `exactTry` one;
 requiring a way in two.
 
+## Phase 468 — a failing call through a guard that calls
+
+Phase 464 seeks a failing call inside a loop with no `@Invariant` along the runs through its first iterations
+(`inLoopCallPaths`), each iteration assuming the loop's guard with an assume marker. A marker's condition is translated,
+not replayed, and a call has no translation, so with a guard like `while (g(i) < n)` no run got past the first test: a
+call in such a guard, or in the body of such a loop, named no failing call (P461's guard case kept the note).
+
+**How** (`guardsEvaluated`): on each such run, an assumption of a guard holding a call is replaced by the guard
+evaluated into a hidden local (`boolean $guard0 = g(i) < n`, replayed, so the call assumes its `@Ensures` through the
+loop's call handler) and the local assumed.
+
+- `while (g(i) < n) { i++ }` with `g` needing `i != 2` (and `@Ensures({ result == i })`) fails on `f(2)`; a call in the
+  body past such a guard, and a do-while's, likewise. P461's guard case names `f(2)`.
+- The note stays when no run of the first eight iterations reaches the failure (`i += 2` never meets 3).
+
+**Not taken: a lenient mode for Errors.** The candidate before this one was proving a call in a `finally` along every
+way in (Phase 466/467's proof). A `finally` runs after an Error too, which Phase 395 lets any statement raise, so its
+ways are never all the ways in. A knob narrowing that was weighed: "only a call or an allocation raises an Error" is
+near-vacuous under dynamic Groovy (`@TypeChecked` arithmetic boxes through call sites); "no implicit Error at all" is a
+modelling assumption. Declined: the strict stance stays, and a finally or a catch of Throwable is never proved complete.
+
+**Found on the way, not fixed (and not new):** a failing call named along a run whose branch an unmodelled call's
+result decides. `if (h(n) > 0) g(n)` with `h` returning `new Random().nextInt()` says `fails on: f(1)`, a run that fails
+only when `h` happens to return a positive value; the same in a loop body and, now, a guard. At the parent commit too,
+straight-line as well: the call handler's result for a call with no `@Ensures` isn't among the values Phase 401/406
+withhold a call over. A candidate.
+
+**Changed cases:** P461's "… in the loop's guard" expects `fails on: f(2)` in place of the note.
+
+**Shipped tests:** group `P468 a failing call through a guard that calls`, 4 cases. Measured at the parent commit: three
+showed the note where a run fails (the call in the guard, a call in the body past it, a do-while's guard); one
+unchanged (no run reaches it). Mutation-checked: without the guard's evaluation three P468 cases and one P461 fail.
+
 ## Definition of done, per increment
 
 An increment is done when:

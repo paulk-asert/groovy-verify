@@ -19914,7 +19914,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (List<Statement> p : loopEntryPaths(new ArrayList<Statement>(prefix.subList(0, at)), raw, inBody ? 'body' : 'head')) {
             List<Statement> way = new ArrayList<Statement>(p)
             way.addAll(after)
-            out.add(way)
+            out.add(containsCall(raw.guard) ? guardsEvaluated(way, raw.guard) : way)
+        }
+        out
+    }
+
+    /** Phase 468 — {@code way} with each assumption of a guard holding a call ({@code while (g(i) < n)}) replaced by the
+     *  guard evaluated into a hidden local — replayed, so its call assumes its @Ensures (the loop's call handler) — and
+     *  the local assumed: an assume marker's condition is translated, not replayed, and a call has no translation. */
+    private static List<Statement> guardsEvaluated(List<Statement> way, Expression guard) {
+        List<Statement> out = new ArrayList<Statement>()
+        int k = 0
+        for (Statement st : way) {
+            Expression c = st.getNodeMetaData(REPLAY_ASSUME_KEY) != null ? ((AssertStatement) st).booleanExpression.expression : null
+            if (c == null || !c.is(guard)) { out.add(st); continue }
+            VariableExpression held = new VariableExpression('$guard' + (k++), ClassHelper.boolean_TYPE)
+            out.add(new ExpressionStatement(new DeclarationExpression(held, Token.newSymbol(Types.ASSIGN, -1, -1), guard)))
+            out.add(withAssume(Collections.<Statement> emptyList(), new VariableExpression(held.name, ClassHelper.boolean_TYPE)).get(0))
         }
         out
     }

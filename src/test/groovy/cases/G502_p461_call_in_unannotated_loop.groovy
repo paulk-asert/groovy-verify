@@ -60,7 +60,7 @@ class G502_p461_call_in_unannotated_loop {
                         static void g(int i) { }
                     }''')],
 
-        [group: "P461 a call inside a loop with no invariant", name: "… in the loop's guard", expect: ['Cannot prove precondition of g', NOTE], refute: 'fails on',
+        [group: "P461 a call inside a loop with no invariant", name: "… in the loop's guard", expect: ['Cannot prove precondition of g', 'fails on: f(2)'],
          src: tc('''class A {
                         @Requires({ n >= 2 })
                         static int f(int n) {
