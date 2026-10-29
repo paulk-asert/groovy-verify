@@ -9082,6 +9082,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Closure<List<List<Statement>>> paths = { String at ->
             List<List<Statement>> out = new ArrayList<List<Statement>>()
             for (List<Statement> b : bases) out.addAll(loopEntryPaths(b, raw, at))
+            // Phase 475 — the shortest over every base: the cap took the first base's alone, an enclosing loop's first
+            // iteration, so a failure past it (each earlier one running this loop through) had no run
+            out.sort { List<Statement> p -> p.size() }
             out.size() > ENTRY_PATHS ? out.subList(0, ENTRY_PATHS) : out
         }
 

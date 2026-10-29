@@ -19677,6 +19677,28 @@ no call where a run fails (two for loops, a while in a for on the outer counter,
 levels); two unchanged (a third outer iteration, no run reaches it). Mutation-checked: through one loop only, four
 cases fail (and P464's nested case keeps the note).
 
+## Phase 475 — a failing run past an outer loop's first iteration
+
+Found in Phase 474. A loop's obligations (an index, a division) inside loops with no `@Invariant` are checked at an
+arbitrary iteration, and a failing call sought along the runs from entry through the loops' first iterations (Phase
+371). For a loop nested in another, `dischargeUnannotatedLoop` gathered the candidates over each run to an outer
+iteration, then cut them to the first `ENTRY_PATHS` unsorted: the outer loop's first iteration alone filled them, so a
+failure past it — each earlier outer iteration running the inner loop through — named no call. `100.intdiv(i - 1)` in
+two for loops (or a while in a for) kept the note, though `f(2)` fails; the call-site search (Phase 474) found its run.
+
+**The fix:** the shortest over every outer run are kept (sorted before the cut), as the call-site search does.
+
+**The boundary** (shared with Phase 474): a failure needing two whole outer iterations (`100.intdiv(i - 2)`) is a run
+longer than the candidates built; the note stays. Annotated loops' paths (`shortestEntryPaths`) cut early too, but
+Phase 398's second pass, by iterations over every combination, already reaches past it there.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P475 a failing run past an outer loop's first iteration`, 5 cases. Measured at the parent
+commit: three named no call where a run fails (a division in two for loops, in a while in a for, an index on the outer
+counter); two unchanged (a failure in the first outer iteration, a third outer iteration). Mutation-checked: without the
+sort the three fail.
+
 ## Definition of done, per increment
 
 An increment is done when:
