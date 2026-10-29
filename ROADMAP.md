@@ -19347,6 +19347,39 @@ unchanged (an arm that breaks, a catch keeping what the try doesn't write, the i
 Mutation-checked: without descending into the try block three cases fail, without the catch's havoc one, the
 finally's one, the fall-through's one, the arm's entry one, an arm's leaving one, the labels three.
 
+## Phase 464 — a failing call through a loop with no invariant
+
+Phase 461 checks a call inside a loop with no `@Invariant` at an arbitrary iteration (the loop's writes unknown, its
+guard holding), and a refutation there named no failing call: the state may be one no run reaches. Now the call is
+sought along the exact runs from entry, as Phase 371 seeks one for the loop's other obligations.
+
+**How** (`verifyCallSite`, `inLoopCallPaths`): on a refutation through one unannotated loop, the summarised prefix is
+split at the loop's havoc marker. The statements before it (the loop's init among them) are the base of Phase 371's
+`loopEntryPaths`: runs through the loop's first iterations (up to eight, 32 paths at most), to an iteration begun, or
+to its guard for a call in the guard. The body's statements up to the call follow. `verifyCallSite` re-checks the call
+along each (`exactPath`, under `held`): the method's full `@Requires` at entry, the run replayed exactly
+(`replayExact`, with the loop's call handler so an earlier iteration's contracted call assumes its `@Ensures`, Phase
+382). The first run that refutes is the diagnostic shown, with its failing call; with none, the note stays.
+
+- `int i = 0; while (i < n) { g(i); i++ }` with `g` needing `i != 3` fails on `f(4)`; P461's broken-on-the-second-
+  iteration cases (a while's, a standalone call, a do-while's, a for's) now name `f(2)`.
+- **The note stays** when no run of the first eight iterations reaches the failure (`i += 2` never meets 3; `g` needing
+  `i != 10`), or a counter's bound needs an invariant (P461).
+
+**Boundaries:** no search for a call in the guard (each iteration's guard assumption holds the call, which the exact
+replay can't translate), a loop nested in another (two summarised loops), a call after a catch or a fall-through
+(Phase 463's summaries), or one in a `for`'s header.
+
+**Changed cases:** P461's four refutations broken on the second iteration expect `fails on: f(2)` in place of the note
+(one renamed: "a for's call names no failing call" is "… a for's"); its guard and counter cases expect the note and no
+failing call.
+
+**Shipped tests:** group `P464 a failing call through a loop with no invariant`, 8 cases. Measured at the parent
+commit: five showed the note where a run fails (a later iteration's failure, a value the body builds, an if in the body,
+a write before the loop, an earlier call's `@Ensures` on the way); three unchanged (no run reaches it, past the eighth
+iteration, a loop nested in another). Mutation-checked: without the search five P464 and four P461 cases fail; without
+the call handler the same nine (every run replays the call itself on an earlier iteration).
+
 ## Definition of done, per increment
 
 An increment is done when:

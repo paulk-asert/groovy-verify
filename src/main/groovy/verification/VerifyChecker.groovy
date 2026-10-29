@@ -19429,9 +19429,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                 Parameter[] formals,
                                 List<Expression> argExprs,
                                 Expression contractAst,
-                                Expression callExpr) {
+                                Expression callExpr,
+                                List<Statement> exactPath = null) {
 
         SmtSession session = backend.session()
+        List<Expression> actuals = argExprs   // as written, for a witness's re-check (hoisting rebinds argExprs)
+        List<Statement> witnessPrefix = null
         TreeMap<Integer, String> prevLabels = havocLabels
         String prevHavocNote = havocCallNote
         try {
@@ -19494,8 +19497,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Statement[] leaf = new Statement[1]
             Statement encBody = currentMethod == null ? null :
                 (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
-            LoopingStatement encLoop = (currentMethod != null && callExpr.lineNumber > 0) ?
+            LoopingStatement encLoop = (exactPath == null && currentMethod != null && callExpr.lineNumber > 0) ?
                 enclosingAnnotatedLoop(callExpr) : null
+            // Phase 464 — a witness: the state reached exactly, along a run from entry (nothing summarised); none if a
+            // statement on it can't be replayed so
+            if (exactPath != null) {
+                prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, null, leaf)
+                replayed.addAll(exactPath)
+                for (Statement st : exactPath) {
+                    if (st.getNodeMetaData(BRANCH_FACT_KEY) != null) branchFacts.add((String) st.getNodeMetaData(BRANCH_FACT_KEY))
+                }
+                // the loop's call handler, so an earlier iteration's contracted call assumes its @Ensures (Phase 382)
+                LoopEncoder.LoopCallHandler prevHandler = LoopEncoder.callHandler.get()
+                if (prevHandler == null) LoopEncoder.callHandler.set(relyCallHandler(currentMethod))
+                boolean exact
+                try { exact = replayExact(exactPath, enc, session) } finally { LoopEncoder.callHandler.set(prevHandler) }
+                if (!exact) return
+                handledInLoop = true
+            }
             if (encLoop != null) {
                 LoopSpec spec = (LoopSpec) ((Statement) encLoop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
                 if (spec != null) {
@@ -19546,6 +19565,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 //     precondition and the actual arguments (step 1, next) see the state *at the call*.
                 List<Statement> prefix = prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, null, leaf)
                 throughLoop = prefix.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }   // Phase 461
+                if (throughLoop) witnessPrefix = prefix
                 replayed.addAll(prefix)
                 for (Statement st : prefix) {
                     if (st.getNodeMetaData(BRANCH_FACT_KEY) != null) branchFacts.add((String) st.getNodeMetaData(BRANCH_FACT_KEY))
@@ -19805,6 +19825,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (throughLoop) loopCallNote = IN_LOOP_CALL_NOTE
             CheckResult r
             try { r = shown(session.check()) } finally { loopCallNote = prevNote }
+            // Phase 464 — refuted at an arbitrary iteration: a failing call is sought along the exact runs from entry
+            // through the loop's first iterations to the call (Phase 371's search); the first refuted is reported
+            if (r.status == CheckResult.Status.REFUTED && witnessPrefix != null && heldErrors == null &&
+                    !currentChannelDesugared && currentChannelNames.isEmpty()) {
+                int tries = 0
+                for (List<Statement> way : inLoopCallPaths(witnessPrefix, callExpr)) {
+                    if (tries++ >= ENTRY_PATHS) break
+                    Object[] w = held({ ->
+                        try { verifyCallSite(target, formals, actuals, contractAst, callExpr, way) }
+                        catch (Throwable ignored) { return false }
+                        true
+                    })
+                    if ((boolean) w[1]) { emitHeld((List<Object[]>) w[0]); return }
+                }
+            }
             switch (r.status) {
                 case CheckResult.Status.VERIFIED:
                     return  // silent success
@@ -19826,6 +19861,37 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             havocCallNote = prevHavocNote
             try { session.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /**
+     * Phase 464 — the exact runs from entry to a call inside one unannotated loop, from its summarised prefix: the
+     * statements before the loop (its init among them), the loop's first iterations ({@link #loopEntryPaths}: to an
+     * iteration begun, or to its guard for a call in the guard), then the body's statements up to the call. None when
+     * the prefix summarises anything else (a second loop, a catch, a fall-through) or the call is in a for's header.
+     */
+    private static List<List<Statement>> inLoopCallPaths(List<Statement> prefix, Expression callExpr) {
+        int at = -1
+        for (int k = 0; k < prefix.size(); k++) {
+            Statement st = prefix.get(k)
+            if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) return Collections.<List<Statement>> emptyList()
+            if (st.getNodeMetaData(HAVOC_LOOP_KEY) == null) continue
+            if (at >= 0) return Collections.<List<Statement>> emptyList()
+            at = k
+        }
+        if (at < 0) return Collections.<List<Statement>> emptyList()
+        LoopingStatement loop = (LoopingStatement) prefix.get(at).getNodeMetaData(HAVOC_LOOP_KEY)
+        LoopSpec raw = rawLoopSpec(loop)
+        if (raw == null) return Collections.<List<Statement>> emptyList()
+        boolean inBody = loop.loopBlock != null && spans(loop.loopBlock, callExpr.lineNumber, callExpr.columnNumber)
+        if (!inBody && loop instanceof ForStatement) return Collections.<List<Statement>> emptyList()
+        List<Statement> after = prefix.subList(at + 1, prefix.size())   // the guard's marker first, assumed again: harmless
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (List<Statement> p : loopEntryPaths(new ArrayList<Statement>(prefix.subList(0, at)), raw, inBody ? 'body' : 'head')) {
+            List<Statement> way = new ArrayList<Statement>(p)
+            way.addAll(after)
+            out.add(way)
+        }
+        out
     }
 
     /** Phase 463 — a prefix with a summary marker shows what it havocs under its label ("x (in the catch)"), and its

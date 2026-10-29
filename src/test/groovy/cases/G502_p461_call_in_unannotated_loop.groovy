@@ -28,7 +28,7 @@ import static cases.CaseDsl.*
 class G502_p461_call_in_unannotated_loop {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = "Phase 461 (soundness): a call's @Requires inside a loop with no @Invariant is checked at an arbitrary iteration — the loop's init, its writes unknown, its guard holding — where it was checked before the loop (a `while`'s counter pinned to its first value, so a precondition broken on a later iteration passed); a refutation there names no failing call."
+    static final String DESCRIPTION = "Phase 461 (soundness): a call's @Requires inside a loop with no @Invariant is checked at an arbitrary iteration — the loop's init, its writes unknown, its guard holding — where it was checked before the loop (a `while`'s counter pinned to its first value, so a precondition broken on a later iteration passed); a refutation there names the failing call found along a run of the loop's first eight iterations (Phase 464), or none."
 
     static final String NOTE = 'no failing call: the call is inside a loop with no @Invariant'
 
@@ -36,7 +36,7 @@ class G502_p461_call_in_unannotated_loop {
 
         // ---------- broken on a later iteration: passed before ----------
         [group: "P461 a call inside a loop with no invariant", name: "a while's call broken on its second iteration",
-         expect: ['Cannot prove precondition of g', NOTE],
+         expect: ['Cannot prove precondition of g', 'fails on: f(2)'],
          src: tc('''class A {
                         @Requires({ n >= 2 })
                         static int f(int n) {
@@ -49,7 +49,7 @@ class G502_p461_call_in_unannotated_loop {
                         static int g(int i) { i }
                     }''')],
 
-        [group: "P461 a call inside a loop with no invariant", name: "… a standalone call", expect: ['Cannot prove precondition of g', NOTE],
+        [group: "P461 a call inside a loop with no invariant", name: "… a standalone call", expect: ['Cannot prove precondition of g', 'fails on: f(2)'],
          src: tc('''class A {
                         @Requires({ n >= 2 })
                         static void f(int n) {
@@ -60,7 +60,7 @@ class G502_p461_call_in_unannotated_loop {
                         static void g(int i) { }
                     }''')],
 
-        [group: "P461 a call inside a loop with no invariant", name: "… in the loop's guard", expect: ['Cannot prove precondition of g', NOTE],
+        [group: "P461 a call inside a loop with no invariant", name: "… in the loop's guard", expect: ['Cannot prove precondition of g', NOTE], refute: 'fails on',
          src: tc('''class A {
                         @Requires({ n >= 2 })
                         static int f(int n) {
@@ -72,7 +72,7 @@ class G502_p461_call_in_unannotated_loop {
                         static int g(int i) { i }
                     }''')],
 
-        [group: "P461 a call inside a loop with no invariant", name: "… a do-while's", expect: ['Cannot prove precondition of g', NOTE],
+        [group: "P461 a call inside a loop with no invariant", name: "… a do-while's", expect: ['Cannot prove precondition of g', 'fails on: f(2)'],
          src: tc('''class A {
                         @Requires({ n >= 2 })
                         static int f(int n) {
@@ -86,7 +86,7 @@ class G502_p461_call_in_unannotated_loop {
                     }''')],
 
         // a refutation before too, with a call that never enters the loop: `fails on: f(0)`
-        [group: "P461 a call inside a loop with no invariant", name: "a for's call names no failing call", expect: ['Cannot prove precondition of g', NOTE],
+        [group: "P461 a call inside a loop with no invariant", name: "… a for's", expect: ['Cannot prove precondition of g', 'fails on: f(2)'],
          src: tc('''class A {
                         @Requires({ n >= 2 })
                         static int f(int n) {
@@ -125,7 +125,7 @@ class G502_p461_call_in_unannotated_loop {
                     }''')],
 
         // the counter's lower bound is the loop's invariant to state: without one it's unknown
-        [group: "P461 a call inside a loop with no invariant", name: "a counter's bound needs an invariant", expect: ['Cannot prove precondition of g', NOTE],
+        [group: "P461 a call inside a loop with no invariant", name: "a counter's bound needs an invariant", expect: ['Cannot prove precondition of g', NOTE], refute: 'fails on',
          src: tc('''class A {
                         @Requires({ n >= 0 })
                         static int f(int n) {
