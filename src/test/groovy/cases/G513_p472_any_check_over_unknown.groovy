@@ -31,7 +31,7 @@ class G513_p472_any_check_over_unknown {
     static final String DESCRIPTION = "Phase 472: any check — an index, a division, an assertion, a postcondition — whose path passes a condition the verifier can't evaluate, or whose model picks a helper's value no run is known to produce, names no failing call and says which; it named one that fails only for some draws of `rnd.nextInt()`."
 
     static final String DROPPED = 'a condition the verifier can\'t evaluate, so no run is known to get there'
-    static final String UNKNOWN = 'which the verifier can\'t evaluate'
+    static final String UNKNOWN = 'a value the verifier can\'t evaluate'
 
     static final List<Map> CASES = [
 

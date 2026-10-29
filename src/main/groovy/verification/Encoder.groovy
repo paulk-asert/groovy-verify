@@ -8183,25 +8183,9 @@ class Encoder implements TheoryApi {
             }
         }
         if (fresh != null) {
-            unknownCalls.add(fresh)   // Phase 471
             session.witnessTaints().add('unknown:' + fresh)   // Phase 472 — for every obligation's failing call
         }
         return fSharp
-    }
-
-    /** Phase 471 — the fresh values of helper calls (Phase 469/470) their body didn't define (it doesn't translate, or
-     *  the unfolding ran out): a value no run is known to produce. A failing call resting on one is withheld. */
-    final Set<String> unknownCalls = new LinkedHashSet<String>()
-
-    /** Phase 471 — the helper whose unknown value {@code text} (a term's rendering) mentions, or null. */
-    String unknownCallIn(String text) {
-        if (text == null) return null
-        for (String u : unknownCalls) {
-            if (java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(u) + '(?![0-9])').matcher(text).find()) {
-                return u.substring(0, u.indexOf('#call'))
-            }
-        }
-        null
     }
 
     /** Phase 469 — the current values of what a function reads ({@link PureEvaluator.StateReads}): each field's value,

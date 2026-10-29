@@ -1555,35 +1555,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 373 — while set, {@link #shown} withholds the failing call, with this note: the replay havocked what a
      *  statement writes inside (a nested assignment, a finally, a fall-through arm), and no run is followed there. */
     private String havocCallNote = null
-    /** Phase 471 — while set, {@link #shown} withholds the failing call with this note: the call site's path rests on a
-     *  condition the verifier can't evaluate, or on a helper's value no run is known to produce. */
-    private String pathCallNote = null
-    /** Phase 471 — while a call site is checked: the path conditions it assumes and its arguments, rendered, and the
-     *  first condition it couldn't translate (and so dropped). Null otherwise. */
-    private List<String> pathTerms = null
-    private String[] droppedCondition = null
     static final String DROPPED_CONDITION_NOTE = 'no failing call: the path here passes %s, a condition the ' +
         'verifier can\'t evaluate, so no run is known to get there'
+    /** Phase 471/472 — a helper's value no run is known to produce, which the failure rests on (Phase 473's test) */
     static final String UNKNOWN_CALL_NOTE = 'no failing call: the failure rests on what %s(…) returns, a value the ' +
         'verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so no run is known to fail'
-    /** Phase 472 — the same for any check, where the value's role isn't traced: it is in the model, so it may be one */
-    static final String UNKNOWN_MODEL_NOTE = 'no failing call: the counterexample takes a value for what %s(…) returns, ' +
-        'which the verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so the call it would build ' +
-        'isn\'t known to fail'
 
     /** Phase 472 — a path condition dropped from a check (it doesn't translate): the check is weaker, still sound, but a
      *  failing call built from its model may never take that path, so {@link #shown} withholds one. */
     private static void taintDropped(SmtSession s, Expression c, boolean holds) {
         s.witnessTaints().add('dropped:' + pathConditionText(c, holds))
-    }
-
-    /** Phase 471 — record an assumed path condition for the call site being checked (see {@link #pathTerms}). */
-    private void notePathTerm(AssertStatement m, Encoder enc) {
-        if (pathTerms == null) return
-        Expression c = m.booleanExpression.expression
-        Object t = enc.translate(c)
-        if (t == null) { if (droppedCondition[0] == null) droppedCondition[0] = pathConditionText(c, true) }
-        else pathTerms.add(t.toString())
     }
 
     /** Phase 471 — a path condition as the source spells it (cut from its line), marked "(false)" where the path takes
@@ -2960,7 +2941,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
         // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
-        String callNote = loopCallNote ?: pathCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404, 471
+        String callNote = loopCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404
         // Phase 408 — a precondition part assumed nowhere: the call the model builds may break it
         if (r.failingCall != null && callNote == null && r.taints) {
             List<String> pre = r.taints.findAll { it.startsWith('pre:') }.collect { "'" + it.substring(4) + "'" }
@@ -2999,7 +2980,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (dropped != null || unknown != null) {
                 r.failingCall = null
                 String note = dropped != null ? String.format(DROPPED_CONDITION_NOTE, dropped.substring('dropped:'.length())) :
-                    String.format(UNKNOWN_MODEL_NOTE, unknown)
+                    String.format(UNKNOWN_CALL_NOTE, unknown)
                 if (!r.notes.contains(note)) r.notes.add(note)
             }
         }
@@ -7737,7 +7718,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (int i = 0; i < stmts.size(); i++) {
             Statement st = stmts.get(i)
             if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) {
-                notePathTerm((AssertStatement) st, enc)   // Phase 471
                 assumeMarker((AssertStatement) st, enc, s, stripQ, assumed)
                 continue
             }
@@ -8059,7 +8039,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (st instanceof AssertStatement && (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null ||
                                                  st.getNodeMetaData(ASSUME_ONLY_KEY) != null)) {
                 if (enc.translate(((AssertStatement) st).booleanExpression.expression) == null) return false
-                notePathTerm((AssertStatement) st, enc)   // Phase 471
                 assumeMarker((AssertStatement) st, enc, s, false, null)
                 continue
             }
@@ -19527,10 +19506,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Statement> witnessPrefix = null
         TreeMap<Integer, String> prevLabels = havocLabels
         String prevHavocNote = havocCallNote
-        List<String> prevPathTerms = pathTerms
-        String[] prevDropped = droppedCondition
-        pathTerms = new ArrayList<String>()   // Phase 471
-        droppedCondition = new String[1]
         try {
             Encoder enc = mkEncoder(session)
             // Phase 44c bounds apply at call sites too: without them the solver picks caller-parameter
@@ -19693,7 +19668,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (!local && namesRead(f.condition).any { written.contains(it) }) continue
                 Object condExpr = enc.translate(f.condition)
                 if (condExpr == null || !session.isBool(condExpr)) {   // Phase 451 — a value's truth (`s && …`) is no term
-                    if (droppedCondition[0] == null) droppedCondition[0] = pathConditionText(f.condition, f.inThenBranch)   // Phase 471
                     taintDropped(session, f.condition, f.inThenBranch)   // Phase 472
                     // A fact we can't encode just becomes an unknown
                     // — drop it. Safe (it weakens our assumption set),
@@ -19701,7 +19675,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     continue
                 }
                 session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))
-                pathTerms.add(condExpr.toString())   // Phase 471
             }
 
             // 1. Translate each actual-argument expression — now against the post-replay state — and pin a
@@ -19748,8 +19721,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object formalVar = (formalSort == session.intSort()) ?
                     session.intVar(formalName) :
                     session.varOfSort(formalName, formalSort)
-                session.assertExpr(session.eq(formalVar, argHandle))
-                pathTerms.add(argHandle.toString())   // Phase 471
+                // Phase 476 — a definition: an unknown value passed to a formal the precondition doesn't read is no dependence
+                session.assertDefinition(formalVar, argHandle)
                 formalBindings[formals[i].name] = formalVar
                 if (namedLocation(argExprs[i]) != null &&   // Phase 376 — a `this.f` actual is the field's oracles too
                     !ClassHelper.isPrimitiveType(formals[i].type)) {
@@ -19924,14 +19897,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // 4. Check. Phase 461 — inside an unannotated loop the state is an arbitrary iteration's: the call withheld
             String prevNote = loopCallNote
             if (throughLoop) loopCallNote = IN_LOOP_CALL_NOTE
-            // Phase 471 — a path through a condition it couldn't evaluate, or resting on a helper's unknown value
-            String prevPathNote = pathCallNote
-            String unknownCall = pathTerms.findResult { String t -> enc.unknownCallIn(t) }
-            pathCallNote = droppedCondition[0] != null ?
-                String.format(DROPPED_CONDITION_NOTE, droppedCondition[0]) :
-                unknownCall != null ? String.format(UNKNOWN_CALL_NOTE, unknownCall) : null
+            // Phase 476 — a path through a condition it couldn't evaluate, or resting on a helper's unknown value: the
+            // session's taints (Phase 472) and its dependence test (Phase 473), as for every other check
             CheckResult r
-            try { r = shown(session.check()) } finally { loopCallNote = prevNote; pathCallNote = prevPathNote }
+            try { r = shown(session.check()) } finally { loopCallNote = prevNote }
             if (exactPath != null) exactStatus = r.status   // Phase 466
             // Phase 464 — refuted at an arbitrary iteration: a failing call is sought along the exact runs from entry
             // through the loop's first iterations to the call (Phase 371's search); the first refuted is reported
@@ -19986,8 +19955,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } finally {
             havocLabels = prevLabels
             havocCallNote = prevHavocNote
-            pathTerms = prevPathTerms
-            droppedCondition = prevDropped
             try { session.close() } catch (Throwable ignored) {}
         }
     }
@@ -21283,7 +21250,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 461 — an enclosing unannotated loop's markers (collectPrefix)
             if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
             if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) {
-                notePathTerm((AssertStatement) st, enc)   // Phase 471
                 assumeMarker((AssertStatement) st, enc, s, false, null)
                 continue
             }

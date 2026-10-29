@@ -30,7 +30,7 @@ class G514_p473_unknown_traced {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = "Phase 473: a check's failing call is withheld over a helper's unknown value only when the value — or a local bound to it, through any chain of locals — reaches a path condition or the obligation; one merely bound on the path names its call again (`int r = h(n); 100.intdiv(n)` fails on f(0))."
 
-    static final String UNKNOWN = 'which the verifier can\'t evaluate'
+    static final String UNKNOWN = 'a value the verifier can\'t evaluate'
 
     static final List<Map> CASES = [
 

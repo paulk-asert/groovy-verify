@@ -19699,6 +19699,28 @@ commit: three named no call where a run fails (a division in two for loops, in a
 counter); two unchanged (a failure in the first outer iteration, a third outer iteration). Mutation-checked: without the
 sort the three fail.
 
+## Phase 476 — call-site unknowns traced
+
+Phase 471 withheld a call site's failing call when a helper's unknown value showed in the rendering of a path
+condition or of any argument (`Encoder.unknownCallIn`, string matching), and kept its own record of a dropped
+condition. Phase 472 then tainted every check, call sites among them, and Phase 473 traced the values through the
+session; the call-site rule stayed apart, and coarser: `g(n, h(n))` named no call though `g`'s precondition reads only
+its first parameter, and `f(1)` fails whatever `h` returns.
+
+**How:** a call site's actual arguments bind its fresh formals as definitions (`assertDefinition`), so a value passed to
+a formal the precondition doesn't read is no dependence. The call-site note, its path terms, its dropped-condition slot
+and `unknownCallIn` are gone: the session's taints (`dropped:`, `unknown:`) and its dependence test decide, as for
+every other check. One note now says it everywhere — "the failure rests on what h(…) returns, a value the verifier
+can't evaluate …"; Phase 472's "the counterexample takes a value for what h(…) returns" was the wording for an
+untraced value, and after Phase 473 a surviving taint is a traced dependence.
+
+**Changed cases:** none (P472's and P473's expected text follows the one note).
+
+**Shipped tests:** group `P476 call-site unknowns traced`, 5 cases. Measured at the parent commit: three named no call
+where it fails (an unknown argument the precondition doesn't read, as the first argument, through a local); two
+unchanged (the precondition reads both, through a chain of locals). Mutation-checked: binding the formals by a plain
+assertion, the three fail.
+
 ## Definition of done, per increment
 
 An increment is done when:
