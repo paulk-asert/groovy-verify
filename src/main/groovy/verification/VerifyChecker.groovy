@@ -1555,6 +1555,52 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 373 — while set, {@link #shown} withholds the failing call, with this note: the replay havocked what a
      *  statement writes inside (a nested assignment, a finally, a fall-through arm), and no run is followed there. */
     private String havocCallNote = null
+    /** Phase 471 — while set, {@link #shown} withholds the failing call with this note: the call site's path rests on a
+     *  condition the verifier can't evaluate, or on a helper's value no run is known to produce. */
+    private String pathCallNote = null
+    /** Phase 471 — while a call site is checked: the path conditions it assumes and its arguments, rendered, and the
+     *  first condition it couldn't translate (and so dropped). Null otherwise. */
+    private List<String> pathTerms = null
+    private String[] droppedCondition = null
+    static final String DROPPED_CONDITION_NOTE = 'no failing call: the path to the call passes %s, a condition the ' +
+        'verifier can\'t evaluate, so no run is known to get there'
+    static final String UNKNOWN_CALL_NOTE = 'no failing call: the failure rests on what %s(…) returns, a value the ' +
+        'verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so no run is known to fail'
+
+    /** Phase 471 — record an assumed path condition for the call site being checked (see {@link #pathTerms}). */
+    private void notePathTerm(AssertStatement m, Encoder enc) {
+        if (pathTerms == null) return
+        Expression c = m.booleanExpression.expression
+        Object t = enc.translate(c)
+        if (t == null) { if (droppedCondition[0] == null) droppedCondition[0] = pathConditionText(c, true) }
+        else pathTerms.add(t.toString())
+    }
+
+    /** Phase 471 — a path condition as the source spells it (cut from its line), marked "(false)" where the path takes
+     *  it false (a negated marker, an else branch). */
+    private String pathConditionText(Expression c, boolean holds) {
+        Expression e = c
+        // a NotExpression is a BooleanExpression: the negation is unwrapped before the grouping
+        if (e instanceof NotExpression && e.getNodeMetaData(NEGATED_BRANCH_KEY) != null) { e = ((NotExpression) e).expression; holds = !holds }
+        while (e instanceof BooleanExpression && !(e instanceof NotExpression)) e = ((BooleanExpression) e).expression
+        String text = null
+        SourceUnit su = typeCheckingVisitor?.typeCheckingContext?.source
+        if (su != null && e.lineNumber > 0 && e.lineNumber == e.lastLineNumber) {
+            Janitor janitor = new Janitor()
+            try {
+                String line = su.getSample(e.lineNumber, 0, janitor)
+                if (line != null && e.columnNumber >= 1 && e.lastColumnNumber - 1 <= line.length()) {
+                    text = line.substring(e.columnNumber - 1, e.lastColumnNumber - 1)
+                }
+            } catch (Throwable ignored) {
+            } finally {
+                janitor.cleanup()
+            }
+        }
+        if (text == null) text = Reporter.ungrouped(e.text)
+        '`' + clip(text) + '`' + (holds ? '' : ' (false)')
+    }
+
     /** Phase 466 — an exact-path re-check's outcome (null when its path couldn't be replayed or it didn't check). */
     private CheckResult.Status exactStatus = null
     /** Phase 374 — set while a witness is sought along an exact path from entry (every condition on it translated). */
@@ -2901,7 +2947,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         // Phase 371 — a loop region's model is an arbitrary state the invariant allows: its call may never get there
         // Phase 372 — or a closure's call after earlier writes; Phase 373 — or a state after a write inside a statement
-        String callNote = loopCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404
+        String callNote = loopCallNote ?: pathCallNote ?: closureCallNote ?: havocCallNote ?: aliasCallNote   // Phase 404, 471
         // Phase 408 — a precondition part assumed nowhere: the call the model builds may break it
         if (r.failingCall != null && callNote == null && r.taints) {
             List<String> pre = r.taints.findAll { it.startsWith('pre:') }.collect { "'" + it.substring(4) + "'" }
@@ -7657,6 +7703,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (int i = 0; i < stmts.size(); i++) {
             Statement st = stmts.get(i)
             if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) {
+                notePathTerm((AssertStatement) st, enc)   // Phase 471
                 assumeMarker((AssertStatement) st, enc, s, stripQ, assumed)
                 continue
             }
@@ -7975,6 +8022,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (st instanceof AssertStatement && (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null ||
                                                  st.getNodeMetaData(ASSUME_ONLY_KEY) != null)) {
                 if (enc.translate(((AssertStatement) st).booleanExpression.expression) == null) return false
+                notePathTerm((AssertStatement) st, enc)   // Phase 471
                 assumeMarker((AssertStatement) st, enc, s, false, null)
                 continue
             }
@@ -19439,6 +19487,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Statement> witnessPrefix = null
         TreeMap<Integer, String> prevLabels = havocLabels
         String prevHavocNote = havocCallNote
+        List<String> prevPathTerms = pathTerms
+        String[] prevDropped = droppedCondition
+        pathTerms = new ArrayList<String>()   // Phase 471
+        droppedCondition = new String[1]
         try {
             Encoder enc = mkEncoder(session)
             // Phase 44c bounds apply at call sites too: without them the solver picks caller-parameter
@@ -19601,12 +19653,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (!local && namesRead(f.condition).any { written.contains(it) }) continue
                 Object condExpr = enc.translate(f.condition)
                 if (condExpr == null || !session.isBool(condExpr)) {   // Phase 451 — a value's truth (`s && …`) is no term
+                    if (droppedCondition[0] == null) droppedCondition[0] = pathConditionText(f.condition, f.inThenBranch)   // Phase 471
                     // A fact we can't encode just becomes an unknown
                     // — drop it. Safe (it weakens our assumption set),
                     // and the spike stays honest.
                     continue
                 }
                 session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))
+                pathTerms.add(condExpr.toString())   // Phase 471
             }
 
             // 1. Translate each actual-argument expression — now against the post-replay state — and pin a
@@ -19654,6 +19708,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     session.intVar(formalName) :
                     session.varOfSort(formalName, formalSort)
                 session.assertExpr(session.eq(formalVar, argHandle))
+                pathTerms.add(argHandle.toString())   // Phase 471
                 formalBindings[formals[i].name] = formalVar
                 if (namedLocation(argExprs[i]) != null &&   // Phase 376 — a `this.f` actual is the field's oracles too
                     !ClassHelper.isPrimitiveType(formals[i].type)) {
@@ -19828,8 +19883,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // 4. Check. Phase 461 — inside an unannotated loop the state is an arbitrary iteration's: the call withheld
             String prevNote = loopCallNote
             if (throughLoop) loopCallNote = IN_LOOP_CALL_NOTE
+            // Phase 471 — a path through a condition it couldn't evaluate, or resting on a helper's unknown value
+            String prevPathNote = pathCallNote
+            String unknownCall = pathTerms.findResult { String t -> enc.unknownCallIn(t) }
+            pathCallNote = droppedCondition[0] != null ?
+                String.format(DROPPED_CONDITION_NOTE, droppedCondition[0]) :
+                unknownCall != null ? String.format(UNKNOWN_CALL_NOTE, unknownCall) : null
             CheckResult r
-            try { r = shown(session.check()) } finally { loopCallNote = prevNote }
+            try { r = shown(session.check()) } finally { loopCallNote = prevNote; pathCallNote = prevPathNote }
             if (exactPath != null) exactStatus = r.status   // Phase 466
             // Phase 464 — refuted at an arbitrary iteration: a failing call is sought along the exact runs from entry
             // through the loop's first iterations to the call (Phase 371's search); the first refuted is reported
@@ -19884,6 +19945,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } finally {
             havocLabels = prevLabels
             havocCallNote = prevHavocNote
+            pathTerms = prevPathTerms
+            droppedCondition = prevDropped
             try { session.close() } catch (Throwable ignored) {}
         }
     }
@@ -20899,6 +20962,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /** Phase 471 — tags the negation {@link #branchFact} builds for a branch taken false. */
+    static final String NEGATED_BRANCH_KEY = 'verification.negatedBranch'
+
     /** Phase 462 — tags a prefix marker with the source span of the {@code if} condition it assumes. */
     static final String BRANCH_FACT_KEY = 'verification.branchFact'
 
@@ -20912,7 +20978,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static Statement branchFact(BooleanExpression cond, boolean holds) {
         Expression c = cond.expression
         if (assigns(c)) return new ExpressionStatement(c)
-        Statement m = withAssume(Collections.<Statement> emptyList(), holds ? c : new NotExpression(c)).get(0)
+        Expression assumed = c
+        if (!holds) {
+            assumed = new NotExpression(c)
+            assumed.putNodeMetaData(NEGATED_BRANCH_KEY, Boolean.TRUE)   // Phase 471 — shown as the condition, false
+        }
+        Statement m = withAssume(Collections.<Statement> emptyList(), assumed).get(0)
         m.putNodeMetaData(BRANCH_FACT_KEY, spanOf(cond))
         m
     }
@@ -21159,7 +21230,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Statement st : prefix) {
             // Phase 461 — an enclosing unannotated loop's markers (collectPrefix)
             if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
-            if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) { assumeMarker((AssertStatement) st, enc, s, false, null); continue }
+            if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) {
+                notePathTerm((AssertStatement) st, enc)   // Phase 471
+                assumeMarker((AssertStatement) st, enc, s, false, null)
+                continue
+            }
             if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) { havocSummary(st, enc); continue }   // Phase 463
             if (st instanceof ExpressionStatement && replayMutation(((ExpressionStatement) st).expression, enc, s)) {
                 continue

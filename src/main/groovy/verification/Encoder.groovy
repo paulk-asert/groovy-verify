@@ -8134,8 +8134,9 @@ class Encoder implements TheoryApi {
         PureEvaluator.StateReads reads = pureEvaluator.stateReads(c)
         List<Object> state = reads == null ? null : stateSnapshot(reads, c.args)
         Object fSharp
+        String fresh = null
         if (state == null) {
-            String fresh = c.name + '#call' + (havocCounter++)
+            fresh = c.name + '#call' + (havocCounter++)
             fSharp = isNonIntPureRange(pureRt) ? session.varOfSort(fresh, sortFor(pureRt)) : session.intVar(fresh)
         } else if (!state.isEmpty()) {
             List<Object> all = new ArrayList<Object>(handles)
@@ -8169,6 +8170,7 @@ class Encoder implements TheoryApi {
                             : translate(body)
                     } finally { pureBodyDepth-- }
                     if (bodyH != null) session.assertExpr(session.eq(fSharp, bodyH))
+                    if (bodyH != null) fresh = null   // Phase 471 — defined by its body: a value the state fixes
                     // Phase 355 — a summarised loop's exit facts over its fresh `$loopK$…` names (each one it can't
                     // translate is left out: weaker, still sound)
                     if (bodyH != null) for (Expression lf : loopFacts) {
@@ -8180,7 +8182,23 @@ class Encoder implements TheoryApi {
                 }
             }
         }
+        if (fresh != null) unknownCalls.add(fresh)   // Phase 471
         return fSharp
+    }
+
+    /** Phase 471 — the fresh values of helper calls (Phase 469/470) their body didn't define (it doesn't translate, or
+     *  the unfolding ran out): a value no run is known to produce. A failing call resting on one is withheld. */
+    final Set<String> unknownCalls = new LinkedHashSet<String>()
+
+    /** Phase 471 — the helper whose unknown value {@code text} (a term's rendering) mentions, or null. */
+    String unknownCallIn(String text) {
+        if (text == null) return null
+        for (String u : unknownCalls) {
+            if (java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(u) + '(?![0-9])').matcher(text).find()) {
+                return u.substring(0, u.indexOf('#call'))
+            }
+        }
+        null
     }
 
     /** Phase 469 — the current values of what a function reads ({@link PureEvaluator.StateReads}): each field's value,

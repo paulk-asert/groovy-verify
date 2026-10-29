@@ -19564,6 +19564,38 @@ unsoundly (`Math.random`, an own contracted call, an instance one, a helper call
 (`Math.abs` and `Math.max`, a recursive one over `Math.abs`). Mutation-checked: allowing `random` two cases fail; without
 the own-method rule one (a static own call is caught as a static); taking no static as deterministic one.
 
+## Phase 471 — no failing call over an unknown
+
+Found in Phase 468 (a failing call along a run whose branch an unmodelled call decides). A call-site refutation names a
+failing call built from the model's entry values; two things on the path made it one that fails only sometimes.
+
+- **A dropped condition.** A path condition the verifier can't translate (`rnd.nextInt() > 0`) was dropped — a sound
+  weakening for the check — and the failing call was built as if its branch were always taken: `if (rnd != null &&
+  rnd.nextInt() > 0) g(n)` said `fails on: f(1, new Random())`; likewise an early return's and a ternary's.
+- **A helper's unknown value.** A helper call whose value Phase 469/470 makes fresh and whose body doesn't translate
+  (`h` returning `new Random().nextInt()`) is a value no run is known to produce; the model picked one, and
+  `if (h(n) > 0) g(n)` said `fails on: f(1)`. Likewise through a local, or as the argument.
+
+**The fix:** the encoder records each fresh helper value its body didn't define (`unknownCalls`). While a call site is
+checked, `verifyCallSite` records the path conditions it assumes (its PathFacts, the prefix's branch markers through
+`notePathTerm`, on every replay path) and its arguments, rendered, and the first condition it had to drop. A dropped
+condition, or an unknown value appearing in one of them, withholds the failing call (`pathCallNote`) with a note: the
+condition as the source spells it (cut from its line; `(false)` where the path takes it false), or the helper. A value
+defined by its body (a helper reading an object parameter's field: fresh, but fixed by the state) still names its call,
+and so does an unknown value nothing on the path reads.
+
+**Boundaries:** the dependence is syntactic (a term's rendering names the value), so an unknown value that only
+disappears by arithmetic still withholds; and the region obligations (an index, a division, …) keep their own witness
+paths, which this doesn't touch.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P471 no failing call over an unknown`, 8 cases. Measured at the parent commit: six named a call
+that fails only sometimes (a condition it can't evaluate, an early return's, a ternary's, a helper's unknown value,
+through a local, as the argument); two unchanged (an unknown value unused, a fresh value its body defines).
+Mutation-checked: without the markers' drops two cases fail, the PathFacts' one, the arguments' terms one, the unknown
+values three, telling a defined value from an unknown one one.
+
 ## Definition of done, per increment
 
 An increment is done when:
