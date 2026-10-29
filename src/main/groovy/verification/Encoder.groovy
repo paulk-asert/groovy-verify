@@ -2258,6 +2258,7 @@ class Encoder implements TheoryApi {
 
     /** Phase 404 — after an element store into {@code name}: an array that may be it has unknown contents now. */
     void storedInto(String name) {
+        localFactories.remove(name)   // Phase 477 — the literal no longer describes it: reads go through the array
         Set<String> others = mayShare.get(name)
         if (others != null) for (String o : others) { havocContents(o); aliasHavocked.add(o) }
     }
@@ -3402,7 +3403,30 @@ class Encoder implements TheoryApi {
         if (f.kind == 'list' || f.kind == 'set') {
             bindSize(name, session.intLit((long) f.entryCount()))
         }
+        if (f.kind == 'list') bindLiteralContents(name, f.args)   // Phase 477
         true
+    }
+
+    /**
+     * Phase 477 — a list or array literal's contents, as its array oracle: a fresh array whose slot {@code k} is the
+     * {@code k}-th element. The literal fold ({@link #localFactories}) reads them only until a store into the local
+     * ({@link #storedInto} drops the record); from then on reads go through the array, which must already hold them.
+     * An element that doesn't translate (or isn't the element sort) leaves its slot unknown.
+     */
+    private void bindLiteralContents(String name, List<Expression> elems) {
+        Object[] sorts = arraySortsFor(name)
+        Object arr = sorts[0] == session.intSort() && sorts[1] == session.intSort() ?
+            session.arrayVar(name + '$lit' + quantCounter) : session.arrayVarOfSort(name + '$lit' + quantCounter, sorts[0], sorts[1])
+        quantCounter++
+        for (int k = 0; k < elems.size(); k++) {
+            try {
+                Object x = translateInSort(elems.get(k), sorts[1])
+                if (x != null) session.assertExpr(session.eq(session.select(arr, session.intLit((long) k)), x))
+            } catch (Exception ignored) {
+                // an untranslatable element: its slot stays unknown
+            }
+        }
+        bindArray(name, arr)
     }
 
     /**

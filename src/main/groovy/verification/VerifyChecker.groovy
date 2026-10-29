@@ -5486,12 +5486,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private void collectVfObligations(List<Statement> stmts,
                                       List<Object> steps,
-                                      Set<String> assigned, List<VfObligation> out) {
+                                      Set<String> assigned, List<VfObligation> out, boolean outerFollowed = false) {
         // Hoist expression-position `++`/`--` so obligations are scanned on the rewritten access (`a[i]`);
         // the resulting `i = i+1` re-assignment throws this single-assignment pass out to the havoc pass
         // (which threads it via `preceding`), exactly as a plain `i = i + 1` already does.
         stmts = Encoder.expandIncDecStatements(stmts)
+        int at = 0
         for (Statement st : stmts) {
+            boolean followed = ++at < stmts.size() || outerFollowed   // Phase 477 — a statement after it, here or after a block
             // Phase 373 — a statement that writes inside an expression, or runs a callable, is bound by more than its
             // top-level target: outside the value-flow fragment (the region pass havocs it)
             if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null &&
@@ -5499,7 +5501,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 throw new UnsupportedConstructException("a statement that writes inside an expression, or runs a callable")
             }
             if (st instanceof BlockStatement) {
-                collectVfObligations(((BlockStatement) st).statements, steps, assigned, out)
+                collectVfObligations(((BlockStatement) st).statements, steps, assigned, out, followed)
                 continue
             }
             if (st instanceof IfStatement) {
@@ -5524,6 +5526,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 boolean thenExits = alwaysExits(ifs.ifBlock)
                 boolean elseExits = hasElse && alwaysExits(elseBlk)
                 if (thenExits && elseExits) return           // neither arm falls through — the rest is dead
+                // Phase 477 — an arm checks its own statements on a copy of the steps, and what follows the if goes on
+                // from the steps before it: a write an arm records as a step past its names (an element store, a field's
+                // or parameter's, a call's) was dropped there, so `a[1] = 1; if (n > 5) a[1] = 0; 100.intdiv(a[1])`
+                // proved. Such an arm, falling through to a statement after the if, leaves the pass for the region pass,
+                // which merges both arms (an if last in its list is followed by an enclosing if's continuation, if any,
+                // and that if's arm holds this one's writes)
+                if (followed && (!thenExits && armWritesThrough(ifs.ifBlock) || hasElse && !elseExits && armWritesThrough(elseBlk))) {
+                    throw new UnsupportedConstructException("a write inside an if's arm, read after it")
+                }
                 if (thenExits || elseExits) {
                     // Rebind `steps` (rather than recursing) so the remaining statements in THIS list —
                     // and the in-place Assign/LemmaCall appends they make — build on the narrowed context.
@@ -5647,6 +5658,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             throw new UnsupportedConstructException(
                 "statement ${st.class.simpleName} outside value-flow fragment")
         }
+    }
+
+    /** Phase 477 — does the arm record a step that outlives it ({@link #collectVfObligations}): an element store, a write
+     *  to a field or parameter, or a statement that writes through a call ({@code xs.add(v)}, {@code xs << v}), here or
+     *  in a nested if's arm; a local's re-assignment already leaves the pass. */
+    private boolean armWritesThrough(Statement arm) {
+        if (arm == null) return false
+        for (Statement st : topStatements(arm)) {
+            if (st instanceof BlockStatement && armWritesThrough(st)) return true
+            if (st instanceof IfStatement && (armWritesThrough(((IfStatement) st).ifBlock) || armWritesThrough(((IfStatement) st).elseBlock))) return true
+            if (!(st instanceof ExpressionStatement)) continue
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof DeclarationExpression) continue
+            Expression[] vw = vfWrite(e)
+            if (vw != null) {
+                if (!(vw[0] instanceof VariableExpression)) return true
+                Variable acc = ((VariableExpression) vw[0]).accessedVariable
+                if (acc instanceof FieldNode || acc instanceof Parameter) return true
+                continue
+            }
+            if (leftShiftTarget(e) != null || !writesOf([st] as List<Statement>, currentMethod?.declaringClass).isEmpty()) return true
+        }
+        false
     }
 
     /** Collect the implicit obligations syntactically present in {@code e}, each tagged with a snapshot of context. */

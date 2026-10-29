@@ -19721,6 +19721,44 @@ where it fails (an unknown argument the precondition doesn't read, as the first 
 unchanged (the precondition reads both, through a chain of locals). Mutation-checked: binding the formals by a plain
 assertion, the three fail.
 
+## Phase 477 — a store the check dropped (soundness)
+
+Found probing the next candidate (an unknown value stored into a container). Two holes, each proving a division by
+zero that runs:
+
+- **A store into a literal-bound local.** Phase 38's factory fold reads `a[i]`, `a.get(i)`, `first`/`last` of a local
+  bound to a list or array literal straight from the literal's elements (`localFactories`). Only `add`, `clear` and
+  `removeLast` dropped the record (Phase 38d), so after `List<Integer> a = [1, 1]; a[1] = 0` (or `a.set(1, 0)`, or the
+  `[1, 1] as int[]` array) `a[1]` still read 1 and `100.intdiv(a[1])` proved; with `[0, 0]` and `a[1] = n` it named
+  `f(-2147483648)`, a call that doesn't fail.
+- **A write in an if's arm.** The value-flow pass (`collectVfObligations`) checks each arm on a copy of the steps
+  before the if, and goes on after the if from those: sound for a local, whose re-assignment leaves the pass, but an
+  element store (Phase 404's step), a field's or parameter's write, or a mutating call (Phase 42/405) in an arm that
+  falls through was dropped after it. `int[] a = new int[2]; a[1] = 1; if (n > 5) a[1] = 0; 100.intdiv(a[1])` proved;
+  so did `@Requires({ x != 0 })` with `if (n > 5) x = 0; 100.intdiv(x)`. (With nothing stored before the if, the
+  dropped store's slot read its default, which hid it.)
+
+**The fixes:** a list or array literal's contents are bound as its array oracle when the record is made
+(`bindLiteralContents`), and `storedInto` — which every element store calls — drops the record, so reads after a store
+go through the array, the other slots keeping the literal's values. An arm that falls through and writes past its own
+names (`armWritesThrough`, through nested ifs), with a statement after it — in its list, or after the block it ends —
+sends the method to the region pass, whose replay merges both arms (`LoopEncoder.applyIf`). An if with nothing after it
+stays: its writes are read by nothing, and the region pass doesn't carry Phase 415's "the guard dereferenced it" fact
+(`if (b.length > 0) b[0] = 1` would report the store's null too).
+
+**Not changed here:** a map literal's `put` then `get` (`Map<String, Integer> m = [x: 1]; m.put('x', 0)`) skips the
+method's implicit checks with an internal sort error — loudly, so not a silent pass.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P477 a store the check dropped`, 15 cases. Measured at the parent commit: ten proved a
+division by zero that runs (four stores into a literal, six writes in an arm: an array's, a list literal's, a field's,
+a mutating call, in a nested if, last in a labelled block); two named a call that doesn't fail (`f(-2147483648)`: a
+helper's unknown value in another slot, in the slot read); three unchanged (another slot keeps the literal's value, a
+literal unwritten still folds, an arm that returns). Mutation-checked: without dropping the record on a store six cases
+fail; without the literal's contents two; without the bail-out six; without the continuation through a block one;
+without looking into nested ifs one.
+
 ## Definition of done, per increment
 
 An increment is done when:
