@@ -19471,28 +19471,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
 
-            // 2. Harvest path facts and assert them. Each fact is one
-            //    enclosing if's condition (negated if we're in the
-            //    else branch).
-            List<IfFact> facts = currentFacts != null ?
-                currentFacts.factsAt(callExpr as ASTNode) :
-                Collections.<IfFact>emptyList()
-            for (IfFact f : facts) {
-                Object condExpr = enc.translate(f.condition)
-                if (condExpr == null || !session.isBool(condExpr)) {   // Phase 451 — a value's truth (`s && …`) is no term
-                    // A fact we can't encode just becomes an unknown
-                    // — drop it. Safe (it weakens our assumption set),
-                    // and the spike stays honest.
-                    continue
-                }
-                session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))
-            }
-
-            // 2c. Early-return path narrowing: an `if (cond) return/throw` that *precedes* this call on its
-            //     path means `cond` was false when we got here. Such a guard is not an *enclosing* `if`, so
-            //     PathFacts misses it — yet it is a definite fact (e.g. `sumUp(n-1)` after `if (n==0) return 0`
-            //     needs ¬(n==0) to show `n-1 >= 0`). Without it, fresh formals would leave these recursive
-            //     preconditions unprovable (they pass vacuously today only via the name-conflation above).
             // 2e. The call lies inside an annotated loop body. Discharge its precondition against an ARBITRARY
             //     iteration, not the loop-entry state: seed the loop invariant + guard (the loop variables stay
             //     symbolic, constrained only by the invariant — not pinned to their pre-loop init values the way the
@@ -19507,6 +19485,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             //     path (no worse than before), so we never assume the invariant without the matching body replay.
             boolean handledInLoop = false
             boolean throughLoop = false
+            // Phase 462 — the conditions the replayed prefix assumes where the path passes them (see collectPrefix)
+            Set<String> branchFacts = new HashSet<String>()
+            List<Statement> replayed = new ArrayList<Statement>()
+            Statement[] leaf = new Statement[1]
+            Statement encBody = currentMethod == null ? null :
+                (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
             LoopingStatement encLoop = (currentMethod != null && callExpr.lineNumber > 0) ?
                 enclosingAnnotatedLoop(callExpr) : null
             if (encLoop != null) {
@@ -19514,7 +19498,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (spec != null) {
                     List<Statement> inLoopPrefix = new ArrayList<Statement>()
                     if (collectPrefix(new BlockStatement(spec.body, null),
-                            callExpr.lineNumber, callExpr.columnNumber, inLoopPrefix)) {
+                            callExpr.lineNumber, callExpr.columnNumber, inLoopPrefix, null, leaf)) {
+                        // Phase 462 — the path to the loop (its writes, the ifs around it), then everything the loop
+                        // writes unknown: the invariant used to be assumed of the entry values, with an enclosing if's
+                        // condition (`if (i == 0) { … while (i < n) { g(i); i++ } }` passed a `g` needing i == 0)
+                        List<Statement> outer = encBody == null ? Collections.<Statement> emptyList() :
+                            prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, (Statement) encLoop)
+                        try {
+                            replayPrefix(outer, enc, session)
+                        } catch (Throwable ignored) {
+                        }
+                        havocLoop((Statement) encLoop, enc)
+                        throughLoop = outer.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }
+                        replayed.addAll(outer); replayed.add((Statement) encLoop); replayed.addAll(inLoopPrefix)
+                        for (Statement st : outer + inLoopPrefix) {
+                            if (st.getNodeMetaData(BRANCH_FACT_KEY) != null) branchFacts.add((String) st.getNodeMetaData(BRANCH_FACT_KEY))
+                        }
                         for (Expression inv : spec.invariants) {
                             Object h = enc.translate(inv)
                             if (h != null) session.assertExpr(h)
@@ -19538,24 +19537,46 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 }
             }
-            if (!handledInLoop && currentMethod != null && callExpr.lineNumber > 0) {
-                Statement encBody = (Statement) currentMethod.getNodeMetaData(
-                    ContractExpansionTransform.ORIGINAL_BODY_KEY)
-                if (encBody == null) encBody = currentMethod.code
-                if (encBody != null) {
-                    for (Expression g : earlyReturnGuards(encBody, callExpr.lineNumber, callExpr.columnNumber)) {
-                        Object c = enc.translate(g)
-                        if (c != null) session.assertExpr(session.not(c))
-                    }
-                    // 2d. Thread the intervening straight-line body mutations to the call site, so both the
-                    //     precondition and the actual arguments (step 1, next) see the state *at the call*.
-                    List<Statement> prefix = prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber)
-                    throughLoop = prefix.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }   // Phase 461
-                    try {
-                        replayPrefix(prefix, enc, session)
-                    } catch (Throwable ignored) {
-                    }
+            if (!handledInLoop && encBody != null && callExpr.lineNumber > 0) {
+                // 2d. Thread the intervening straight-line body mutations to the call site, so both the
+                //     precondition and the actual arguments (step 1, next) see the state *at the call*.
+                List<Statement> prefix = prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, null, leaf)
+                throughLoop = prefix.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }   // Phase 461
+                replayed.addAll(prefix)
+                for (Statement st : prefix) {
+                    if (st.getNodeMetaData(BRANCH_FACT_KEY) != null) branchFacts.add((String) st.getNodeMetaData(BRANCH_FACT_KEY))
                 }
+                try {
+                    replayPrefix(prefix, enc, session)
+                } catch (Throwable ignored) {
+                }
+            }
+
+            // 2. The path facts the prefix didn't assume — a short-circuit's left operand, a ternary's condition, an if
+            //    the prefix can't reach — asserted at the call's state. Each is one enclosing condition (negated in its
+            //    else). Phase 462 — they were asserted of the ENTRY values, before the prefix replay, and so was each
+            //    early return's guard: `n = n + 1; if (n != 1) return g(n)` took `n != 1` of the entry `n`, and a `g`
+            //    needing `n != 2` passed though f(1) calls g(2). The prefix assumes those where the path passes them.
+            List<IfFact> facts = currentFacts != null ?
+                currentFacts.factsAt(callExpr as ASTNode) :
+                Collections.<IfFact>emptyList()
+            Set<String> written = facts.isEmpty() ? Collections.<String> emptySet() : prefixWrites(replayed)
+            for (IfFact f : facts) {
+                String span = spanOf(f.condition)
+                if (span != null && branchFacts.contains(span)) continue
+                // outside the call's statement, read where the prefix wrote: its value at the call isn't the one it
+                // tested, so it's dropped, never assumed stale
+                Expression fc = f.condition instanceof BooleanExpression ? ((BooleanExpression) f.condition).expression : f.condition
+                boolean local = leaf[0] != null && fc.lineNumber > 0 && spans(leaf[0], fc.lineNumber, fc.columnNumber)
+                if (!local && namesRead(f.condition).any { written.contains(it) }) continue
+                Object condExpr = enc.translate(f.condition)
+                if (condExpr == null || !session.isBool(condExpr)) {   // Phase 451 — a value's truth (`s && …`) is no term
+                    // A fact we can't encode just becomes an unknown
+                    // — drop it. Safe (it weakens our assumption set),
+                    // and the spike stays honest.
+                    continue
+                }
+                session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))
             }
 
             // 1. Translate each actual-argument expression — now against the post-replay state — and pin a
@@ -20721,43 +20742,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /**
-     * The conditions of {@code if (cond) <terminating>} statements that are *preceding siblings* of the call
-     * at {@code (tl, tc)} — at any enclosing block level. Reaching the call means each such {@code cond} was
-     * false, so the caller asserts their negations (the early-return path narrowing PathFacts can't supply,
-     * since these are not enclosing ifs). "Terminating" = the then-branch always returns/throws and there is
-     * no else.
-     */
-    private static List<Expression> earlyReturnGuards(Statement body, int tl, int tc) {
-        List<Expression> out = new ArrayList<Expression>()
-        try { collectEarlyReturns(body, tl, tc, out) } catch (Throwable ignored) {}
-        out
-    }
-
-    private static boolean collectEarlyReturns(Statement st, int tl, int tc, List<Expression> out) {
-        if (st instanceof BlockStatement) {
-            for (Statement child : ((BlockStatement) st).statements) {
-                if (spans(child, tl, tc)) { collectEarlyReturns(child, tl, tc, out); return true }
-                if (child instanceof IfStatement) {
-                    IfStatement ifs = (IfStatement) child
-                    boolean noElse = ifs.elseBlock == null || ifs.elseBlock instanceof EmptyStatement
-                    if (noElse && alwaysExits(ifs.ifBlock)) out.add(ifs.booleanExpression)
-                }
-            }
-            return false
-        }
-        if (st instanceof IfStatement) {
-            IfStatement ifs = (IfStatement) st
-            int before = out.size()
-            if (ifs.ifBlock != null && collectEarlyReturns(ifs.ifBlock, tl, tc, out)) return true
-            while (out.size() > before) out.remove(out.size() - 1)
-            if (ifs.elseBlock != null && collectEarlyReturns(ifs.elseBlock, tl, tc, out)) return true
-            while (out.size() > before) out.remove(out.size() - 1)
-            return false
-        }
-        return false
-    }
-
-    /**
      * True if every path through {@code s} ends by returning or throwing.
      *
      * <p>Also the predicate behind <em>early-exit narrowing</em> in {@link #collectVfObligations} and
@@ -20781,31 +20765,91 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /**
      * The straight-line statements that definitely execute before the call at {@code (tl, tc)} on its path:
-     * the siblings before the call's containing statement, at each nesting level down to it. Enclosing
-     * {@code if} conditions are excluded (they are the path facts / early-return guards, asserted separately).
+     * the siblings before the call's containing statement, at each nesting level down to it — up to {@code stop} (an
+     * annotated loop the caller seeds itself) when given. Phase 462 — the path's conditions are assume markers in it,
+     * where the path passes them: an enclosing {@code if}'s condition (negated in its else) and an early return's guard
+     * (negated), each tagged with {@link #BRANCH_FACT_KEY} so the caller doesn't assume its PathFacts copy again.
      */
-    private static List<Statement> prefixStatements(Statement body, int tl, int tc) {
+    private static List<Statement> prefixStatements(Statement body, int tl, int tc, Statement stop = null, Statement[] leaf = null) {
         List<Statement> out = new ArrayList<Statement>()
-        try { collectPrefix(body, tl, tc, out) } catch (Throwable ignored) {}
+        try { collectPrefix(body, tl, tc, out, stop, leaf) } catch (Throwable ignored) {}
         out
     }
 
-    private static boolean collectPrefix(Statement st, int tl, int tc, List<Statement> out) {
+    /** Phase 462 — tags a prefix marker with the source span of the {@code if} condition it assumes. */
+    static final String BRANCH_FACT_KEY = 'verification.branchFact'
+
+    /** The span a branch condition is matched by: the prefix walks the original body, PathFacts the live one. */
+    private static String spanOf(Expression e) {
+        e == null || e.lineNumber < 0 ? null : "${e.lineNumber}:${e.columnNumber}:${e.lastLineNumber}:${e.lastColumnNumber}"
+    }
+
+    /** An if's condition, held ({@code holds}) or not where the path passes it: an assume marker — or, for a condition
+     *  that writes (`if (i++ > 0)`), the condition replayed for its writes and nothing assumed. */
+    private static Statement branchFact(BooleanExpression cond, boolean holds) {
+        Expression c = cond.expression
+        if (assigns(c)) return new ExpressionStatement(c)
+        Statement m = withAssume(Collections.<Statement> emptyList(), holds ? c : new NotExpression(c)).get(0)
+        m.putNodeMetaData(BRANCH_FACT_KEY, spanOf(cond))
+        m
+    }
+
+    /** An assignment or increment in {@code e} (a call's arguments aren't counted: a condition's call is taken as pure,
+     *  as its PathFacts copy always was). */
+    private static boolean assigns(Expression e) {
+        boolean[] w = [false] as boolean[]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.isAssignment(be.operation.type)) w[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) { w[0] = true }
+            @Override void visitPrefixExpression(PrefixExpression pe) { w[0] = true }
+        })
+        w[0]
+    }
+
+    /** Phase 462 — every name a replayed prefix may write: its statements' targets, the loops its markers havoc, and
+     *  each instance field when it calls a method on this. */
+    private Set<String> prefixWrites(List<Statement> prefix) {
+        List<Statement> stmts = prefix.collect { Statement st -> (Statement) st.getNodeMetaData(HAVOC_LOOP_KEY) ?: st }
+        boolean[] thisCall = [false] as boolean[]
+        Set<String> out = new HashSet<String>()
+        for (String w : writeTargetsOf(stmts, thisCall)) out.add((w.startsWith('this.') ? w.substring(5) : w).split(/[.\[]/, 2)[0])
+        if (thisCall[0] && currentMethod?.declaringClass != null) {
+            for (FieldNode f : currentMethod.declaringClass.fields) out.add(f.name)
+        }
+        out
+    }
+
+    /** The walk behind {@link #prefixStatements}. {@code leaf}, when given, gets the statement holding the call that the
+     *  walk stops in: the conditions inside it (a short-circuit's operand, a ternary's) are read at the call's state. */
+    private static boolean collectPrefix(Statement st, int tl, int tc, List<Statement> out, Statement stop = null,
+                                         Statement[] leaf = null) {
+        if (stop != null && st.is(stop)) return true
         if (st instanceof BlockStatement) {
             for (Statement child : ((BlockStatement) st).statements) {
-                if (spans(child, tl, tc)) { collectPrefix(child, tl, tc, out); return true }
+                if (spans(child, tl, tc)) { collectPrefix(child, tl, tc, out, stop, leaf); return true }
+                // an early return before the call: reaching the call, its guard was false
+                if (child instanceof IfStatement) {
+                    IfStatement ifs = (IfStatement) child
+                    if ((ifs.elseBlock == null || ifs.elseBlock instanceof EmptyStatement) && alwaysExits(ifs.ifBlock)) {
+                        out.add(branchFact(ifs.booleanExpression, false))
+                        continue
+                    }
+                }
                 out.add(child)
             }
             return false
         }
         if (st instanceof IfStatement) {
             IfStatement ifs = (IfStatement) st
-            int before = out.size()
-            if (ifs.ifBlock != null && collectPrefix(ifs.ifBlock, tl, tc, out)) return true
-            while (out.size() > before) out.remove(out.size() - 1)
-            if (ifs.elseBlock != null && collectPrefix(ifs.elseBlock, tl, tc, out)) return true
-            while (out.size() > before) out.remove(out.size() - 1)
-            return false
+            boolean inThen = ifs.ifBlock != null && spans(ifs.ifBlock, tl, tc)
+            boolean inElse = !inThen && ifs.elseBlock != null && spans(ifs.elseBlock, tl, tc)
+            if (!inThen && !inElse) { if (leaf != null) leaf[0] = st; return false }   // in its condition
+            out.add(branchFact(ifs.booleanExpression, inThen))
+            collectPrefix(inThen ? ifs.ifBlock : ifs.elseBlock, tl, tc, out, stop, leaf)
+            return true
         }
         // Phase 461 — a call inside an unannotated loop runs at an arbitrary iteration: the loop's init (a for's
         // header), then a marker havocking everything the loop writes and, in the body, one assuming its guard; then
@@ -20816,13 +20860,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             LoopSpec raw = rawLoopSpec(loop)
             if (raw?.init != null) out.addAll(raw.init)
             out.add(havocMarker(st))
-            if (loop.loopBlock == null || !spans(loop.loopBlock, tl, tc)) return true   // in its guard or header
+            if (loop.loopBlock == null || !spans(loop.loopBlock, tl, tc)) { if (leaf != null) leaf[0] = st; return true }   // in its guard or header
             if (raw != null && !raw.isDoWhile && raw.guard != ConstantExpression.PRIM_TRUE) {
                 out.add(withAssume(Collections.<Statement> emptyList(), raw.guard).get(0))
             }
-            collectPrefix(loop.loopBlock, tl, tc, out)
+            collectPrefix(loop.loopBlock, tl, tc, out, stop, leaf)
             return true
         }
+        // Phase 462 — an annotated loop that isn't the one seeded (the call's in a loop nested in it): its writes unknown
+        if (st instanceof LoopingStatement) {
+            out.add(havocMarker(st))
+            return true
+        }
+        if (leaf != null) leaf[0] = st
         return false
     }
 

@@ -19277,6 +19277,47 @@ bound with no invariant), one named a call that never enters the loop (a `for`'s
 not assumed); three unchanged (a value the loop doesn't write, an invariant's bound, a recursive call in a loop with
 an invariant). Mutation-checked: without the havoc six cases fail, without the guard one, without the note six.
 
+## Phase 462 — a call's branch read where it's taken  *(shipped — soundness)*
+
+The hole Phase 461 found. `verifyCallSite` checks a call's `@Requires` against the state at the call: the method's
+entry, then the statements before the call replayed (`collectPrefix`, `replayPrefix`). The path's conditions were
+asserted *before* that replay, over the entry values: each enclosing `if`'s (PathFacts) and each early return's guard
+(`earlyReturnGuards`). A condition over a value written first was read before the write.
+
+- **Unsound:** `n = n + 1; if (n != 1) return g(n)` took `n != 1` of the entry `n`, so a `g` needing `n != 2` passed,
+  though `f(1)` calls `g(2)`. Likewise an else branch, an early return, a write between nested ifs, a field.
+- **An annotated loop** (the call in a loop with an `@Invariant`) didn't replay the path to the loop at all, and
+  assumed the invariant over the entry values: an `if` in the loop after `i++`, an `if (i == 0)` around a loop that
+  writes `i`, and `n = n - 1` before the loop were all unseen (a `g` needing `n >= 1` passed for `f(1)`).
+- **False alarms**, the same shapes written right: `n = n + 1; if (n != 2) return g(n)`, and `n = n + 1;
+  return n != 2 && g(n)` (a short-circuit's left operand was asserted before the write too).
+
+**The fix:** the prefix carries the path's conditions as assume markers where the path passes them (`branchFact`): an
+enclosing `if`'s condition (negated in its else) before the branch's statements, an early return's guard (negated) in
+place of its `if`. A condition that assigns (`if (i++ > 0)`) is replayed for its writes and not assumed. The PathFacts
+left over — a short-circuit's operand, a ternary's condition, inside the call's own statement — are asserted after the
+replay. A call in an annotated loop now replays the path to the loop (its writes, the ifs around it), havocs what the
+loop writes, then assumes the invariant and guard as before. An annotated loop the call sits in that isn't the one
+seeded (a nested one) havocs its writes; before, the replay stopped at it.
+
+**A guard kept:** a left-over PathFacts fact outside the call's statement that reads a name the prefix writes is
+dropped, not assumed. With the markers it never fires in the corpus (mutation-neutral), but it is what made P24's
+`visit` vacuous mid-phase: the condition's `Sets.boundedCount(visited, n)` was first taken as a write (a call's
+reference argument), no marker was made, and its copy `u !in visited` was asserted after `visited.add(u)`.
+
+**Found on the way, not fixed:** `collectPrefix` doesn't descend into a `try` or a `switch`, so a write inside one
+before the call is unseen: `try { n = n - 1; return g(n) }` passes a `g` needing `n > 0` under `@Requires({ n > 0 })`
+(f(1) calls g(0)), and a `switch` arm's likewise. Unchanged by this phase; a candidate.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P462 a call's branch read where it's taken`, 14 cases. Measured at the parent commit: eight
+passed unsoundly (an enclosing if after a write, its else, an early return, nested ifs, a field, an if in an annotated
+loop, one around it, a write before it), five were false alarms (the same read after the write, an if in a loop, a
+write before a loop replayed, a short-circuit), one unchanged (a value written after the if). Mutation-checked: without
+the if marker three cases fail, without the early-return marker two (one in P24), without the loop's havoc two,
+without the path to the loop two, without the call's-statement exemption one; the write guard is mutation-neutral.
+
 ## Definition of done, per increment
 
 An increment is done when:
