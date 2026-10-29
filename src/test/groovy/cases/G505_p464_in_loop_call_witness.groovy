@@ -114,7 +114,7 @@ class G505_p464_in_loop_call_witness {
                         static void g(int i) { }
                     }''')],
 
-        [group: "P464 a failing call through a loop with no invariant", name: "a loop nested in another", expect: ['Cannot prove precondition of g', NOTE], refute: 'fails on',
+        [group: "P464 a failing call through a loop with no invariant", name: "a loop nested in another", expect: ['Cannot prove precondition of g', 'fails on: f(2)'],
          src: tc('''class A {
                         static void f(int n) {
                             for (int i = 0; i < n; i++) {

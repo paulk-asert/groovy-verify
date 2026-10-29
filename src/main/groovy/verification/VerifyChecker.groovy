@@ -19990,46 +19990,56 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /**
-     * Phase 464 — the exact runs from entry to a call inside one unannotated loop, from its summarised prefix: the
+     * Phase 464 — the exact runs from entry to a call inside an unannotated loop, from its summarised prefix: the
      * statements before the loop (its init among them), the loop's first iterations ({@link #loopEntryPaths}: to an
-     * iteration begun, or to its guard for a call in the guard), then the body's statements up to the call. None when
-     * the prefix summarises anything else (a second loop, a catch, a fall-through) or the call is in a for's header.
+     * iteration begun, or to its guard for a call in the guard), then the body's statements up to the call. Phase 474 —
+     * through each unannotated loop around the call in turn, outermost first: a run to an iteration of the outer loop
+     * begun, its body up to the inner loop, the inner loop's first iterations from there (shortest first, at most
+     * {@link #ENTRY_PATHS} at each level). None when the prefix summarises a catch or a fall-through, or the call is in
+     * a for's header.
      */
     private static List<List<Statement>> inLoopCallPaths(List<Statement> prefix, Expression callExpr) {
-        int at = -1
+        List<Integer> marks = new ArrayList<Integer>()
         for (int k = 0; k < prefix.size(); k++) {
             Statement st = prefix.get(k)
             if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) return Collections.<List<Statement>> emptyList()
-            if (st.getNodeMetaData(HAVOC_LOOP_KEY) == null) continue
-            if (at >= 0) return Collections.<List<Statement>> emptyList()
-            at = k
+            if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) marks.add(k)
         }
-        if (at < 0) return Collections.<List<Statement>> emptyList()
-        LoopingStatement loop = (LoopingStatement) prefix.get(at).getNodeMetaData(HAVOC_LOOP_KEY)
-        LoopSpec raw = rawLoopSpec(loop)
-        if (raw == null) return Collections.<List<Statement>> emptyList()
-        boolean inBody = loop.loopBlock != null && spans(loop.loopBlock, callExpr.lineNumber, callExpr.columnNumber)
-        if (!inBody && loop instanceof ForStatement) return Collections.<List<Statement>> emptyList()
-        List<Statement> after = prefix.subList(at + 1, prefix.size())   // the guard's marker first, assumed again: harmless
-        List<List<Statement>> out = new ArrayList<List<Statement>>()
-        for (List<Statement> p : loopEntryPaths(new ArrayList<Statement>(prefix.subList(0, at)), raw, inBody ? 'body' : 'head')) {
-            List<Statement> way = new ArrayList<Statement>(p)
-            way.addAll(after)
-            out.add(containsCall(raw.guard) ? guardsEvaluated(way, raw.guard) : way)
+        if (marks.isEmpty()) return Collections.<List<Statement>> emptyList()
+        List<List<Statement>> ways = [new ArrayList<Statement>(prefix.subList(0, marks.get(0)))] as List<List<Statement>>
+        for (int m = 0; m < marks.size(); m++) {
+            int at = marks.get(m)
+            LoopingStatement loop = (LoopingStatement) prefix.get(at).getNodeMetaData(HAVOC_LOOP_KEY)
+            LoopSpec raw = rawLoopSpec(loop)
+            if (raw == null) return Collections.<List<Statement>> emptyList()
+            boolean inBody = loop.loopBlock != null && spans(loop.loopBlock, callExpr.lineNumber, callExpr.columnNumber)
+            if (!inBody && loop instanceof ForStatement) return Collections.<List<Statement>> emptyList()
+            // what follows the marker up to the next loop's (or the call): the guard's marker first, assumed again: harmless
+            List<Statement> after = prefix.subList(at + 1, m + 1 < marks.size() ? marks.get(m + 1) : prefix.size())
+            List<List<Statement>> next = new ArrayList<List<Statement>>()
+            for (List<Statement> w : ways) {
+                for (List<Statement> p : loopEntryPaths(w, raw, inBody ? 'body' : 'head')) {
+                    List<Statement> way = new ArrayList<Statement>(p)
+                    way.addAll(after)
+                    next.add(containsCall(raw.guard) ? guardsEvaluated(way, raw.guard, m) : way)
+                }
+            }
+            next.sort { List<Statement> p -> p.size() }
+            ways = next.size() > ENTRY_PATHS ? new ArrayList<List<Statement>>(next.subList(0, ENTRY_PATHS)) : next
         }
-        out
+        ways
     }
 
     /** Phase 468 — {@code way} with each assumption of a guard holding a call ({@code while (g(i) < n)}) replaced by the
      *  guard evaluated into a hidden local — replayed, so its call assumes its @Ensures (the loop's call handler) — and
      *  the local assumed: an assume marker's condition is translated, not replayed, and a call has no translation. */
-    private static List<Statement> guardsEvaluated(List<Statement> way, Expression guard) {
+    private static List<Statement> guardsEvaluated(List<Statement> way, Expression guard, int loopIndex = 0) {
         List<Statement> out = new ArrayList<Statement>()
         int k = 0
         for (Statement st : way) {
             Expression c = st.getNodeMetaData(REPLAY_ASSUME_KEY) != null ? ((AssertStatement) st).booleanExpression.expression : null
             if (c == null || !c.is(guard)) { out.add(st); continue }
-            VariableExpression held = new VariableExpression('$guard' + (k++), ClassHelper.boolean_TYPE)
+            VariableExpression held = new VariableExpression('$guard' + loopIndex + '_' + (k++), ClassHelper.boolean_TYPE)
             out.add(new ExpressionStatement(new DeclarationExpression(held, Token.newSymbol(Types.ASSIGN, -1, -1), guard)))
             out.add(withAssume(Collections.<Statement> emptyList(), new VariableExpression(held.name, ClassHelper.boolean_TYPE)).get(0))
         }

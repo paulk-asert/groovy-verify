@@ -19649,6 +19649,34 @@ withheld a call the value doesn't decide (a value bound and unread, through a ch
 of it in the condition, through a chain, the value in the obligation). Mutation-checked: without the test two cases
 fail; without reading through definitions two; counting the range facts two; counting the definitions two.
 
+## Phase 474 — a failing call through nested loops
+
+Phase 464 seeks a failing call for a call inside a loop with no `@Invariant` along the runs from entry through the
+loop's first iterations; with a second such loop around it (a loop nested in another) it sought none (P464's "a loop
+nested in another" kept the note). The loop's other obligations already go through nested loops (Phase 371/398).
+
+**How** (`inLoopCallPaths`): through each unannotated loop around the call in turn, outermost first — the runs to an
+iteration of the outer loop begun (`loopEntryPaths`, its earlier iterations unrolling the inner loop), the outer body up
+to the inner loop, the inner loop's first iterations from each, and so on to the call; shortest first, at most
+`ENTRY_PATHS` at each level. A guard holding a call is evaluated per loop (Phase 468; its hidden locals named per loop).
+
+- `for (i < n) { for (j < n) g(i + j) }` with `g` needing `i + j != 3` names a call that reaches it; a while in a for
+  on the outer counter (`g(i)` needing `i != 1`) fails on `f(2)`; a call in the inner loop's guard, three levels.
+- **The note stays** when no run reaches it (`i += 2`, `j += 2` never meet 3), and — the boundary, shared with the
+  loop's other obligations — when the failure needs two whole outer iterations, each running the inner loop through
+  (`g(i)` needing `i != 2`): that run is longer than the candidates built. (The region search doesn't reach the
+  one-iteration shape either, `100.intdiv(i - 1)` in the same loops: a candidate.)
+
+**Tried and dropped:** Phase 398's second pass (runs balanced by iterations) and a doubled try budget: neutral on every
+case here and in P464/P468, so not kept.
+
+**Changed cases:** P464's "a loop nested in another" names `fails on: f(2)` in place of the note.
+
+**Shipped tests:** group `P474 a failing call through nested loops`, 6 cases. Measured at the parent commit: four named
+no call where a run fails (two for loops, a while in a for on the outer counter, the call in the inner guard, three
+levels); two unchanged (a third outer iteration, no run reaches it). Mutation-checked: through one loop only, four
+cases fail (and P464's nested case keeps the note).
+
 ## Definition of done, per increment
 
 An increment is done when:
