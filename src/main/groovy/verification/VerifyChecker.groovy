@@ -19850,7 +19850,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 466 — no run fails, and the ways in are all the ways in (a fall-through's entries): the call holds
                 // along each, so it holds. The summarised check's refutation was a state no run reaches
                 List<List<Statement>> all = throughLoop ? null : completeWays(witnessPrefix)
-                if (all != null && !all.isEmpty() && all.size() <= ENTRY_PATHS) {
+                if (all != null && all.size() <= ENTRY_PATHS) {   // Phase 467 — none: no run reaches the call
                     boolean holds = true
                     for (List<Statement> way : all) {
                         exactStatus = null
@@ -21000,7 +21000,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // Phase 465 — its exact ways in: the try block up to a throw it takes (Phase 387)
                     List<List<Statement>> ways = new ArrayList<List<Statement>>()
                     for (List<Statement> w : catchWays(tcs, cs)) ways.add(new ArrayList<Statement>(tcs.resourceStatements) + w)
-                    out.add(summaryMarker(ran, 'in the catch', ways))
+                    Statement m = summaryMarker(ran, 'in the catch', ways)
+                    if (catchWaysComplete(tcs, ways)) m.putNodeMetaData(HAVOC_COMPLETE_KEY, Boolean.TRUE)   // Phase 467
+                    out.add(m)
                     collectPrefix(cs.code, tl, tc, out, stop, leaf)
                     return true
                 }
@@ -21052,7 +21054,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             }
                         }
                         Statement m = summaryMarker(arms.subList(from, i), 'after a fall-through', ways)
-                        // Phase 466 — every entry's way: each run into the arm is one of them (first-match entries)
+                        // Phase 466 — every entry's way: each run into the arm is one of them (first-match entries); none
+                        // when a case isn't a constant
                         if (!ways.isEmpty()) m.putNodeMetaData(HAVOC_COMPLETE_KEY, Boolean.TRUE)
                         out.add(m)
                     }
@@ -21074,6 +21077,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 466 — marks a summary whose exact ways are every way in (a fall-through's entries), so a call that holds
      *  along each holds. */
     static final String HAVOC_COMPLETE_KEY = 'verification.havocComplete'
+
+    /**
+     * Phase 467 — are a catch's ways ({@link #catchWays}) every way in? When each throw of the try block is known
+     * ({@code exactTry}: no call, index or cast that may throw, no catch of an Error) and each statement has one at
+     * most (the walk takes no way through a statement with two), with no resources and the walk not cut short. None of
+     * them then means no throw reaches the catch.
+     */
+    private static boolean catchWaysComplete(TryCatchStatement tcs, List<List<Statement>> ways) {
+        if (!tcs.resourceStatements.isEmpty() || ways.size() >= ENTRY_PATHS || !LoopEncoder.exactTry(tcs)) return false
+        for (Statement st : topStatements(tcs.tryStatement)) {
+            Object[] ex = explicitThrow(st)
+            if (ex != null) { if (ex[1] == null) return true; continue }   // a bare throw: nothing after it runs
+            List<Object[]> ts = stmtThrows(st)
+            if (ts == null || ts.size() > 1) return false
+            if (LoopEncoder.leaves(st)) return true
+        }
+        true
+    }
 
     /** Phase 466 — the prefix with its one complete summary replaced by each of its ways in turn; null when it has
      *  another summary, a loop's, or none complete. The rest is replayed as the summarised check replays it. */

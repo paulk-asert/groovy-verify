@@ -19443,6 +19443,30 @@ isn't a constant, an arm the replay can't follow, a catch's known throws not all
 call). Mutation-checked: without the proof four cases fail; taking a way that can't be replayed as holding one, dropping
 a way one, taking a catch's ways as complete one.
 
+## Phase 467 — a call proved along every way into its catch
+
+Phase 466's proof for a catch. A call in a catch is checked with what the try block writes havocked (Phase 463), and a
+failing call is sought along the throws Phase 387 knows (Phase 465); a call those always leave right was a false alarm
+with the note (`m = n; 100.intdiv(n - 5); m = -1` then `g(m)` needing `m > 0` in the `catch (ArithmeticException e)`).
+
+**How:** the catch's summary marker is flagged complete (`catchWaysComplete`) when its ways are every way in: each
+throw of the try block known (`LoopEncoder.exactTry`, Phase 391/395: no call, index or cast that may throw, no catch of
+an Error or Throwable), no statement with two throws (`catchWays` takes no way through one), no resources, the walk not
+cut at `ENTRY_PATHS`. Phase 466's proof then re-checks the call along each. A complete catch with no way in is one no
+throw reaches (none in the block, or an earlier catch takes it): its call holds, and the proof now accepts an empty set
+of complete ways for it (a fall-through's is never empty).
+
+**Boundaries:** a finally (its ways are the try or a catch run through, not a return or throw out of them); a catch
+past a call, an index or a cast; two divisions in a statement (`100.intdiv(n - 5) + 100.intdiv(k)`): the note stays.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P467 a call proved along every way into its catch`, 7 cases. Measured at the parent commit:
+four were false alarms (a division's throw, an explicit throw, no throw reaching the catch, an earlier catch taking the
+throw); three unchanged (two divisions in a statement, a catch of Throwable, a catch of Exception past an index).
+Mutation-checked: without the flag four cases fail; allowing two throws in a statement one; without `exactTry` one;
+requiring a way in two.
+
 ## Definition of done, per increment
 
 An increment is done when:
