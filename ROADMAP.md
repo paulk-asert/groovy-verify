@@ -19596,6 +19596,37 @@ through a local, as the argument); two unchanged (an unknown value unused, a fre
 Mutation-checked: without the markers' drops two cases fail, the PathFacts' one, the arguments' terms one, the unknown
 values three, telling a defined value from an unknown one one.
 
+## Phase 472 — no failing call over an unknown, for any check
+
+Phase 471's rule (a call site's failing call withheld over a condition it can't evaluate, or a helper's unknown value)
+for every obligation: an index, a division, an assertion, a postcondition, a recursion measure. Each drops a path
+condition it can't translate (a sound weakening) and lets the model pick an unknown helper value, and each named a
+failing call regardless: `if (rnd.nextInt() > 0) return a[n]` said `fails on: f(new int[0], -1, new Random())`, a run
+that fails only for some draws; `if (h(n) > 0) return 100.intdiv(n)` with `h` random said `fails on: f(0)`.
+
+**How:** the check's session is tainted, and `shown` — which every diagnostic passes — withholds the failing call when
+it is. A dropped condition taints it where it is dropped (`taintDropped`: the value-flow walk's guards, a recursion
+measure's guards, an obligation's enclosing ifs in `assumeContext`, the region walk's branch conditions and markers in
+`assumeMarker`), the note quoting the condition as the source spells it. An unknown value (Phase 471's `unknownCalls`)
+taints it from the encoder, and withholds the call when the model gives it a value.
+
+**Conservative, and said so:** a call site traces where the unknown value goes (Phase 471); a check here doesn't, so a
+value bound on the path withholds a call it doesn't decide (`int r = h(n); return 100.intdiv(n)`: `f(0)` fails, and is
+no longer named). The note claims only what is known: "the counterexample takes a value for what h(…) returns …, so the
+call it would build isn't known to fail". Never naming a call that may not fail is the trade.
+
+**Defensive, mutation-neutral:** the region walk's taints (markers, enclosing ifs, branch conditions) — every way into
+that walk (a loop, a try, a switch, a closure's call) brings its own note, which withholds the call first.
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P472 no failing call over an unknown, for any check`, 8 cases. Measured at the parent commit:
+six named a call that fails only sometimes (an index under a condition it can't evaluate, past an early return over one,
+an assertion under one, a recursion measure under one, a division and a postcondition under a helper's unknown value);
+one named a call that does fail and now withholds it (a division beside an unknown value: the conservative case); one
+unchanged (an index under a condition it can evaluate). Mutation-checked: without the value-flow guards' taint three
+cases fail, the measure's one, the unknown values' three; the region walk's four taints are neutral (above).
+
 ## Definition of done, per increment
 
 An increment is done when:

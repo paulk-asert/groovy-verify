@@ -1562,10 +1562,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  first condition it couldn't translate (and so dropped). Null otherwise. */
     private List<String> pathTerms = null
     private String[] droppedCondition = null
-    static final String DROPPED_CONDITION_NOTE = 'no failing call: the path to the call passes %s, a condition the ' +
+    static final String DROPPED_CONDITION_NOTE = 'no failing call: the path here passes %s, a condition the ' +
         'verifier can\'t evaluate, so no run is known to get there'
     static final String UNKNOWN_CALL_NOTE = 'no failing call: the failure rests on what %s(…) returns, a value the ' +
         'verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so no run is known to fail'
+    /** Phase 472 — the same for any check, where the value's role isn't traced: it is in the model, so it may be one */
+    static final String UNKNOWN_MODEL_NOTE = 'no failing call: the counterexample takes a value for what %s(…) returns, ' +
+        'which the verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so the call it would build ' +
+        'isn\'t known to fail'
+
+    /** Phase 472 — a path condition dropped from a check (it doesn't translate): the check is weaker, still sound, but a
+     *  failing call built from its model may never take that path, so {@link #shown} withholds one. */
+    private static void taintDropped(SmtSession s, Expression c, boolean holds) {
+        s.witnessTaints().add('dropped:' + pathConditionText(c, holds))
+    }
 
     /** Phase 471 — record an assumed path condition for the call site being checked (see {@link #pathTerms}). */
     private void notePathTerm(AssertStatement m, Encoder enc) {
@@ -1578,13 +1588,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 471 — a path condition as the source spells it (cut from its line), marked "(false)" where the path takes
      *  it false (a negated marker, an else branch). */
-    private String pathConditionText(Expression c, boolean holds) {
+    /** Phase 472 — the source unit of the method being checked, for {@link #pathConditionText} (static callers). */
+    private static final ThreadLocal<SourceUnit> CHECKED_SOURCE = new ThreadLocal<SourceUnit>()
+
+    private static String pathConditionText(Expression c, boolean holds) {
         Expression e = c
         // a NotExpression is a BooleanExpression: the negation is unwrapped before the grouping
         if (e instanceof NotExpression && e.getNodeMetaData(NEGATED_BRANCH_KEY) != null) { e = ((NotExpression) e).expression; holds = !holds }
         while (e instanceof BooleanExpression && !(e instanceof NotExpression)) e = ((BooleanExpression) e).expression
         String text = null
-        SourceUnit su = typeCheckingVisitor?.typeCheckingContext?.source
+        SourceUnit su = CHECKED_SOURCE.get()
         if (su != null && e.lineNumber > 0 && e.lineNumber == e.lastLineNumber) {
             Janitor janitor = new Janitor()
             try {
@@ -2968,6 +2981,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!on.isEmpty()) {
                 r.failingCall = null
                 String note = String.format(TAINT_CALL_NOTE, on.unique().collect { "'${it}'" }.join(', '))
+                if (!r.notes.contains(note)) r.notes.add(note)
+            }
+        }
+        // Phase 472 — a check whose path dropped a condition it can't evaluate, or whose model picked a helper's value no
+        // run is known to produce: its failing call may never fail (Phase 471's call-site rule, for every obligation)
+        if (r.failingCall != null && callNote == null && r.taints) {
+            String dropped = r.taints.find { String t -> t.startsWith('dropped:') }
+            String unknown = null
+            if (dropped == null) {
+                Set<String> keys = new LinkedHashSet<String>()
+                if (r.counterexample != null) keys.addAll(r.counterexample.keySet())
+                if (r.sortedCounterexample != null) keys.addAll(r.sortedCounterexample.keySet())
+                String k = keys.find { String key -> r.taints.contains('unknown:' + key) }
+                if (k != null) unknown = k.substring(0, k.indexOf('#call'))
+            }
+            if (dropped != null || unknown != null) {
+                r.failingCall = null
+                String note = dropped != null ? String.format(DROPPED_CONDITION_NOTE, dropped.substring('dropped:'.length())) :
+                    String.format(UNKNOWN_MODEL_NOTE, unknown)
                 if (!r.notes.contains(note)) r.notes.add(note)
             }
         }
@@ -4744,6 +4776,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     boolean beforeVisitMethod(MethodNode node) {
         Reporter.READ_NOTES.get().clear()   // Phase 361
         CLOSED_WORLD.set(ContractExpansionTransform.verifyOptionEnabled(node.declaringClass, 'closedWorld'))   // Phase 362
+        CHECKED_SOURCE.set(typeCheckingVisitor?.typeCheckingContext?.source)   // Phase 472
         CLOSED_WORLD_SITE.set(node)
         // Phase 364 — this compile's identity (its class loader) for the reliances, and the loader relied skeletons of
         // the libraries on its classpath are found through
@@ -5818,6 +5851,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object c = enc.translateCondition(g.cond)   // Phase 450
                     // Phase 447 — a guard on a value's truth (`m.get(5) ?: 0`) is no boolean term: left unassumed (it threw)
                     if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))
+                    else taintDropped(s, g.cond, g.positive)   // Phase 472
                     assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
@@ -5887,7 +5921,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         assumeClassInvariants(s, enc)
         for (IfFact f : pf.factsAt(site)) {
             Object c = enc.translate(f.condition)
-            if (c == null || !s.isBool(c)) continue   // an unencodable fact just weakens the assumption set — safe
+            if (c == null || !s.isBool(c)) { taintDropped(s, f.condition, f.inThenBranch); continue }   // weaker — safe; Phase 472
             s.assertExpr(f.inThenBranch ? c : s.not(c))
         }
     }
@@ -7746,6 +7780,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression c = m.booleanExpression.expression
         Object h = enc.translate(stripQ ? dropQuantifierConjuncts(c) : c)
         if (h != null) s.assertExpr(h)
+        else taintDropped(s, c, true)   // Phase 472
         if (assumed != null) assumed.add(c)
         // The condition reads the state at its point, which a replay may have bound to internal (#-named, hidden)
         // symbols — e.g. the index a select() chose this iteration. Show those values under the source names.
@@ -7972,11 +8007,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (Expression e : assumePos) {
                     Object h = enc.translate(stripQ ? dropQuantifierConjuncts(e) : e)
                     if (h != null) s.assertExpr(h)
+                    else taintDropped(s, e, true)   // Phase 472
                 }
             }
             if (assumeNeg != null) {
                 Object h = enc.translate(assumeNeg)
                 if (h != null) s.assertExpr(s.not(h))
+                else taintDropped(s, assumeNeg, false)   // Phase 472
             }
             List<Expression> assumed = new ArrayList<Expression>()
             if (entryPath == null) replaySafely(preceding, enc, s, stripQ, assumed)
@@ -19654,6 +19691,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object condExpr = enc.translate(f.condition)
                 if (condExpr == null || !session.isBool(condExpr)) {   // Phase 451 — a value's truth (`s && …`) is no term
                     if (droppedCondition[0] == null) droppedCondition[0] = pathConditionText(f.condition, f.inThenBranch)   // Phase 471
+                    taintDropped(session, f.condition, f.inThenBranch)   // Phase 472
                     // A fact we can't encode just becomes an unknown
                     // — drop it. Safe (it weakens our assumption set),
                     // and the spike stays honest.
@@ -20395,6 +20433,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Guard g = (Guard) step
                     Object c = enc.translateCondition(g.cond)   // Phase 450
                     if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))   // Phase 453 — a value's truth isn't
+                    else taintDropped(s, g.cond, g.positive)   // Phase 472
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
                     Object rhs = enc.translate(a.rhs)

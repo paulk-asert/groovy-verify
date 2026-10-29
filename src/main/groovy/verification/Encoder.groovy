@@ -8182,7 +8182,10 @@ class Encoder implements TheoryApi {
                 }
             }
         }
-        if (fresh != null) unknownCalls.add(fresh)   // Phase 471
+        if (fresh != null) {
+            unknownCalls.add(fresh)   // Phase 471
+            session.witnessTaints().add('unknown:' + fresh)   // Phase 472 — for every obligation's failing call
+        }
         return fSharp
     }
 
