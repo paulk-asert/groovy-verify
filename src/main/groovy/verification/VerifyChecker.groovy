@@ -7659,6 +7659,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 continue
             }
             if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
+            if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) { havocSummary(st, enc); continue }   // Phase 463
             if (st.getNodeMetaData(HAVOC_NAMES_KEY) != null) {
                 labelHavoc(enc, (String) st.getNodeMetaData(HAVOC_LABEL_KEY)) { ->
                     for (String n : (Set<String>) st.getNodeMetaData(HAVOC_NAMES_KEY)) havocLocation(enc, n)
@@ -19431,6 +19432,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                 Expression callExpr) {
 
         SmtSession session = backend.session()
+        TreeMap<Integer, String> prevLabels = havocLabels
+        String prevHavocNote = havocCallNote
         try {
             Encoder enc = mkEncoder(session)
             // Phase 44c bounds apply at call sites too: without them the solver picks caller-parameter
@@ -19504,6 +19507,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // condition (`if (i == 0) { … while (i < n) { g(i); i++ } }` passed a `g` needing i == 0)
                         List<Statement> outer = encBody == null ? Collections.<Statement> emptyList() :
                             prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, (Statement) encLoop)
+                        labelSummaries(outer + inLoopPrefix)
                         try {
                             replayPrefix(outer, enc, session)
                         } catch (Throwable ignored) {
@@ -19546,6 +19550,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (Statement st : prefix) {
                     if (st.getNodeMetaData(BRANCH_FACT_KEY) != null) branchFacts.add((String) st.getNodeMetaData(BRANCH_FACT_KEY))
                 }
+                labelSummaries(prefix)
                 try {
                     replayPrefix(prefix, enc, session)
                 } catch (Throwable ignored) {
@@ -19817,7 +19822,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     return
             }
         } finally {
+            havocLabels = prevLabels
+            havocCallNote = prevHavocNote
             try { session.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Phase 463 — a prefix with a summary marker shows what it havocs under its label ("x (in the catch)"), and its
+     *  call is withheld: the labels are kept for this check. */
+    private void labelSummaries(List<Statement> prefix) {
+        if (prefix.any { Statement st -> st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null }) {
+            havocLabels = new TreeMap<Integer, String>()
+            havocCallNote = null
         }
     }
 
@@ -20812,7 +20828,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 462 — every name a replayed prefix may write: its statements' targets, the loops its markers havoc, and
      *  each instance field when it calls a method on this. */
     private Set<String> prefixWrites(List<Statement> prefix) {
-        List<Statement> stmts = prefix.collect { Statement st -> (Statement) st.getNodeMetaData(HAVOC_LOOP_KEY) ?: st }
+        List<Statement> stmts = new ArrayList<Statement>()
+        for (Statement st : prefix) {
+            if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) stmts.addAll((List<Statement>) st.getNodeMetaData(HAVOC_SUMMARY_KEY))
+            else stmts.add((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY) ?: st)
+        }
         boolean[] thisCall = [false] as boolean[]
         Set<String> out = new HashSet<String>()
         for (String w : writeTargetsOf(stmts, thisCall)) out.add((w.startsWith('this.') ? w.substring(5) : w).split(/[.\[]/, 2)[0])
@@ -20872,8 +20892,79 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             out.add(havocMarker(st))
             return true
         }
+        // Phase 463 — a try: its block's statements before the call ran, none throwing; a catch is entered after any part
+        // of the block, and a finally after the block or a catch, so what those write is unknown there. The walk stopped
+        // at the try before, and a write in it before the call was unseen
+        if (st instanceof TryCatchStatement) {
+            TryCatchStatement tcs = (TryCatchStatement) st
+            List<Statement> ran = new ArrayList<Statement>(tcs.resourceStatements)
+            if (tcs.tryStatement != null && spans(tcs.tryStatement, tl, tc)) {
+                out.addAll(ran)
+                collectPrefix(tcs.tryStatement, tl, tc, out, stop, leaf)
+                return true
+            }
+            if (tcs.tryStatement != null) ran.add(tcs.tryStatement)
+            for (CatchStatement cs : tcs.catchStatements) {
+                if (cs.code != null && spans(cs.code, tl, tc)) {
+                    out.add(summaryMarker(ran, 'in the catch'))
+                    collectPrefix(cs.code, tl, tc, out, stop, leaf)
+                    return true
+                }
+                if (cs.code != null) ran.add(cs.code)
+            }
+            Statement fin = tcs.finallyStatement
+            if (fin != null && !(fin instanceof EmptyStatement) && spans(fin, tl, tc)) {
+                out.add(summaryMarker(ran, 'in the finally'))
+                collectPrefix(fin, tl, tc, out, stop, leaf)
+                return true
+            }
+        }
+        // Phase 463 — a switch arm: entered by its own match or by one of the arms falling into it (their entries
+        // assumed, the subject read before any arm runs), what those arms write unknown; then the arm up to the call
+        if (st instanceof SwitchStatement) {
+            SwitchStatement sw = (SwitchStatement) st
+            List<Statement> arms = new ArrayList<Statement>()
+            for (CaseStatement cs : sw.caseStatements) arms.add(cs.code)
+            if (sw.defaultStatement != null && !(sw.defaultStatement instanceof EmptyStatement)) arms.add(sw.defaultStatement)
+            List<Expression> guards = switchGuards(sw)
+            int from = 0   // the first arm of the run falling into this one
+            for (int i = 0; i < arms.size(); i++) {
+                Statement arm = arms.get(i)
+                if (arm != null && spans(arm, tl, tc)) {
+                    if (guards != null && guards.size() == arms.size()) {
+                        Expression entered = guards.get(from)
+                        for (int k = from + 1; k <= i; k++) {
+                            entered = new BinaryExpression(entered, Token.newSymbol(Types.LOGICAL_OR, -1, -1), guards.get(k))
+                        }
+                        out.add(withAssume(Collections.<Statement> emptyList(), entered).get(0))
+                    }
+                    if (from < i) out.add(summaryMarker(arms.subList(from, i), 'after a fall-through'))
+                    collectPrefix(arm, tl, tc, out, stop, leaf)
+                    return true
+                }
+                if (arm == null || LoopEncoder.leaves(arm)) from = i + 1
+            }
+        }
         if (leaf != null) leaf[0] = st
         return false
+    }
+
+    /** Phase 463 — marks a synthetic prefix statement standing for {@code stmts}, which may have run part-way (a try
+     *  block before its catch, the arms falling into a case): its replay havocs what they write, shown as {@code label}
+     *  (and so the call is withheld, Phase 373's note). */
+    static final String HAVOC_SUMMARY_KEY = 'verification.havocSummary'
+
+    private static Statement summaryMarker(List<Statement> stmts, String label) {
+        Statement m = new EmptyStatement()
+        m.putNodeMetaData(HAVOC_SUMMARY_KEY, new ArrayList<Statement>(stmts))
+        m.putNodeMetaData(HAVOC_LABEL_KEY, label)
+        m
+    }
+
+    private void havocSummary(Statement m, Encoder enc) {
+        labelHavoc(enc, (String) m.getNodeMetaData(HAVOC_LABEL_KEY)) { ->
+            havocWritesOf((List<Statement>) m.getNodeMetaData(HAVOC_SUMMARY_KEY), enc)
+        }
     }
 
     /**
@@ -20888,6 +20979,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 461 — an enclosing unannotated loop's markers (collectPrefix)
             if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) { havocLoop((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY), enc); continue }
             if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) { assumeMarker((AssertStatement) st, enc, s, false, null); continue }
+            if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) { havocSummary(st, enc); continue }   // Phase 463
             if (st instanceof ExpressionStatement && replayMutation(((ExpressionStatement) st).expression, enc, s)) {
                 continue
             }

@@ -19318,6 +19318,35 @@ write before a loop replayed, a short-circuit), one unchanged (a value written a
 the if marker three cases fail, without the early-return marker two (one in P24), without the loop's havoc two,
 without the path to the loop two, without the call's-statement exemption one; the write guard is mutation-neutral.
 
+## Phase 463 — a call inside a try or a switch  *(shipped — soundness)*
+
+The hole Phase 462 found. The walk collecting the statements before a call (`collectPrefix`) followed blocks, ifs and
+loops, and stopped at a `try` or a `switch` around the call, so a write inside one before the call was unseen.
+
+- **Unsound:** `try { n = n - 1; return g(n) }` was checked at the entry `n`, so a `g` needing `n > 0` passed under
+  `@Requires({ n > 0 })`, though `f(1)` calls `g(0)`. Likewise a switch arm's write, an arm falling into the call's
+  (`case 1: n = 0` with no break), a catch after the try wrote (`m = 0; h()` then `g(m)` in the catch), a finally.
+- **False alarms:** the same written right (`try { n = n + 1; return g(n) }` under `n >= 0` was refuted on `f(0)`), and
+  a wrong one named a call that doesn't fail: `try { n = n + 1; if (n != 1) return g(n) }` said `fails on: f(2)`.
+
+**The fix** (`collectPrefix`): a try block's statements before the call are replayed (each ran without throwing), its
+resources first. A catch is entered after any part of the try block, and a finally after the block or a catch, so a
+call in one is checked with what those write havocked (a summary marker, `HAVOC_SUMMARY_KEY`, replayed by
+`havocWritesOf`), then its own statements up to the call. A switch arm is entered by its match or by an arm falling
+into it: their entries are assumed (Phase 374's `switchGuards`, first-match; the subject read before any arm runs),
+what the falling arms write is havocked, then the arm up to the call. An arm that leaves (`break`, `return`) doesn't
+fall into the next. A havocked value is shown as Phase 373 shows it (`m (in the catch) = 0`, `n (after a fall-through)`)
+and the call is withheld with its note, as in a region's obligations (no run from entry is sought here).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P463 a call inside a try or a switch`, 11 cases. Measured at the parent commit: five passed
+unsoundly (a write in the try block, in the switch arm, an arm falling in, a catch, a finally), two were false alarms
+(the try's and the arm's write, replayed), one named a call that doesn't fail (an if in the try after a write); three
+unchanged (an arm that breaks, a catch keeping what the try doesn't write, the if in the try read after the write).
+Mutation-checked: without descending into the try block three cases fail, without the catch's havoc one, the
+finally's one, the fall-through's one, the arm's entry one, an arm's leaving one, the labels three.
+
 ## Definition of done, per increment
 
 An increment is done when:
