@@ -19380,6 +19380,14 @@ a write before the loop, an earlier call's `@Ensures` on the way); three unchang
 iteration, a loop nested in another). Mutation-checked: without the search five P464 and four P461 cases fail; without
 the call handler the same nine (every run replays the call itself on an earlier iteration).
 
+## Perf ceilings re-based (after Phase 464)
+
+The JUnit `test` run (the only place `PerfBudget` is asserted), run CI-style at `b7f27b0`,
+passed at 16,396 solver checks / 10,331 distinct VCs / 35 UNKNOWN / 32.6 s max, against ceilings of 16,500 /
+11,000 / 55 / 64 s: 0.6% headroom on the check count. Since Phase 399's re-base (13,189 / 8,516) the corpus grew about
+50 checks a phase, not measured per phase. Re-based `MAX_CHECK_CALLS` to 21,000 and `MAX_DISTINCT_VCS` to 13,500 (28% /
+31% over the measured figures, the file's sizing rule); UNKNOWN and the single-check backstop unchanged.
+
 ## Definition of done, per increment
 
 An increment is done when:
