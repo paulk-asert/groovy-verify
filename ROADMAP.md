@@ -19500,6 +19500,42 @@ withhold a call over. A candidate.
 showed the note where a run fails (the call in the guard, a call in the body past it, a do-while's guard); one
 unchanged (no run reaches it). Mutation-checked: without the guard's evaluation three P468 cases and one P461 fail.
 
+## Phase 469 — a helper's value in the state it reads  *(shipped — soundness)*
+
+Found chasing Phase 468's "a failing call over an unknown call's result". A contract-free helper that writes nothing
+caller-visible (Phase 347) is a function to the encoder: its call an uninterpreted symbol over its arguments, with its
+body as the defining equation (Phase 8a/353), so two calls with equal arguments are one term. That holds only if the
+value depends on nothing else. A helper reading STATE didn't: a call before a write and one after it were one value.
+
+- **Unsound:** `x = get(); c = c + 1; if (x != get()) g(1)` with `get() { c }` on a final class never reached `g(1)`,
+  so a `g` refusing 1 passed; likewise the second call in the condition, a static getter, a helper calling the getter,
+  an array's element across a store (`first(a)` around `a[0] = a[0] + 1`), a set's member across an add, and a helper
+  returning `new Random().nextInt()` (`h(n) > 0 && h(n) <= 0` taken as false).
+
+**The fix** (`PureEvaluator.stateReads`, `Encoder.translateCall`): what a helper reads beyond its arguments' values —
+the owner's fields (bare or `this.f`), and the contents of its array, list, map or set parameters, transitively over the
+helpers it calls, each nested call's parameters mapped to its arguments — becomes further arguments of its symbol: the
+field's current value, or the container's content terms (an array's or a list's elements and size, a map's values and
+keys, a set's members). The symbol is its own (`h$st`), never an overload's. Where no snapshot names the state (another
+object's field, a sibling class's field, an object parameter's state, `new Random()`), each call is a fresh value,
+still defined by the body.
+
+**The precision kept:** two calls in one state, or with a write to something the helper doesn't read between them,
+are still one term, which a recursive helper needs once its unfolding runs out of fuel (P25's `chain` over the `next`
+map, a recursive count over a set).
+
+**Not done:** a static call whose result varies with nothing it reads (`Math.random()`, `System.nanoTime()`) is still a
+function of its arguments. A candidate (the second slice of this finding).
+
+**Changed cases:** none.
+
+**Shipped tests:** group `P469 a helper's value in the state it reads`, 12 cases. Measured at the parent commit: seven
+passed unsoundly (a getter across a write, in the condition, a static getter, a helper calling it, an array's element,
+a set's member, a `Random`); five unchanged (two calls in one state, a write to a field it doesn't read, a set read
+twice, a recursive count over a set, an array read twice past a write to another). Mutation-checked: without the state
+arguments seven cases fail; a fresh value at every call one (and P25); without the transitive reads one; without the
+parameters' contents one; without maps and sets one.
+
 ## Definition of done, per increment
 
 An increment is done when:

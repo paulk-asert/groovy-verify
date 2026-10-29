@@ -8128,9 +8128,24 @@ class Encoder implements TheoryApi {
         // against the Int-only declaration. The range comes from the callee's signature, so it is stable
         // across occurrences (congruence) even before the body is unfolded.
         ClassNode pureRt = pureEvaluator.returnType(c)
-        Object fSharp = isNonIntPureRange(pureRt)
-            ? session.applyUF(c.name, handles, sortFor(pureRt))
-            : session.uninterpretedFunc(c.name, handles)
+        // Phase 469 — a function reading state (a field, an array's or a list's contents) takes that state's current
+        // value as further arguments, under its own symbol (`h$st`: never one of an overload's): two calls agree only in
+        // one state. Where no snapshot names the state, each call is its own value (still defined by the body below).
+        PureEvaluator.StateReads reads = pureEvaluator.stateReads(c)
+        List<Object> state = reads == null ? null : stateSnapshot(reads, c.args)
+        Object fSharp
+        if (state == null) {
+            String fresh = c.name + '#call' + (havocCounter++)
+            fSharp = isNonIntPureRange(pureRt) ? session.varOfSort(fresh, sortFor(pureRt)) : session.intVar(fresh)
+        } else if (!state.isEmpty()) {
+            List<Object> all = new ArrayList<Object>(handles)
+            all.addAll(state)
+            fSharp = session.applyUF(c.name + '$st', all, isNonIntPureRange(pureRt) ? sortFor(pureRt) : session.intSort())
+        } else {
+            fSharp = isNonIntPureRange(pureRt)
+                ? session.applyUF(c.name, handles, sortFor(pureRt))
+                : session.uninterpretedFunc(c.name, handles)
+        }
 
         // Assert its defining equation f#(args) == body[params↦args] (the function's definition — sound by
         // its purity). Asserted once per distinct term and fuel-bounded, so recursion unfolds to a finite
@@ -8166,6 +8181,37 @@ class Encoder implements TheoryApi {
             }
         }
         return fSharp
+    }
+
+    /** Phase 469 — the current values of what a function reads ({@link PureEvaluator.StateReads}): each field's value,
+     *  or its contents; each container argument's contents. Null when an argument isn't a named container, or a value
+     *  doesn't translate. */
+    private List<Object> stateSnapshot(PureEvaluator.StateReads reads, List<Expression> args) {
+        List<Object> out = new ArrayList<Object>()
+        for (String f : reads.fields) {
+            if (contentsSnapshot(f, out)) continue
+            Object v = translate(new VariableExpression(f))
+            if (v == null) return null
+            out.add(v)
+        }
+        for (Integer i : reads.params) {
+            Expression a = args.get(i)
+            String n = a instanceof VariableExpression ? ((VariableExpression) a).name :
+                a instanceof PropertyExpression && ((PropertyExpression) a).objectExpression instanceof VariableExpression &&
+                    ((VariableExpression) ((PropertyExpression) a).objectExpression).isThisExpression() ?
+                    ((PropertyExpression) a).propertyAsString : null
+            if (n == null || !contentsSnapshot(n, out)) return null
+        }
+        out
+    }
+
+    /** Phase 469 — a container name's contents, added to {@code out}: a map's values and keys, a set's members, an
+     *  array's or a list's elements and size. False when {@code n} names none of them. */
+    private boolean contentsSnapshot(String n, List<Object> out) {
+        if (isMapName(n)) { out.add(mapValsFor(n)); out.add(mapKeysFor(n)); return true }
+        if (isSetName(n)) { out.add(setFor(n)); return true }
+        if (isArrayTyped(n) || isListTyped(n)) { out.add(arrayFor(n)); out.add(sizeOf(n)); return true }
+        false
     }
 
     /**

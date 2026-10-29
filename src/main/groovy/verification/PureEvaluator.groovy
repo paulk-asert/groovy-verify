@@ -979,6 +979,152 @@ class PureEvaluator {
         List<Expression> args
     }
 
+    /**
+     * Phase 469 — what a function's value depends on beyond its arguments' values: the owner's fields its body reads
+     * ({@code fields}, bare or {@code this.f}) and the parameters whose contents it reads ({@code params}: an array, a
+     * list, a map or a set), transitively over the functions it calls. A call's symbol takes their current values as arguments, so two
+     * calls agree only in the same state: `get() { c }` called before and after `c = c + 1` were one term, and a
+     * check after the write read the value from before it.
+     */
+    static class StateReads {
+        LinkedHashSet<String> fields = new LinkedHashSet<String>()
+        LinkedHashSet<Integer> params = new LinkedHashSet<Integer>()
+    }
+
+    /** Phase 469 — {@code c}'s {@link StateReads}; null when it reads state no snapshot names: a field of another object
+     *  or of a sibling class, the state of an object parameter. */
+    StateReads stateReads(Call c) {
+        if (c == null) return null
+        stateReadsOf(c.name, c.args.size(), new HashSet<String>())
+    }
+
+    private StateReads stateReadsOf(String name, int arity, Set<String> visiting) {
+        StateReads out = new StateReads()
+        if (!visiting.add(name + '/' + arity)) return out   // a recursive call reads what the body reads, gathered once
+        MethodNode m = resolve(name, arity)
+        if (m == null) return null
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = m.getCode()
+        if (body == null) return out
+        boolean sibling = name.indexOf('$') > 0
+        Map<String, Integer> paramIdx = new HashMap<String, Integer>()
+        for (int i = 0; i < m.parameters.length; i++) paramIdx.put(m.parameters[i].name, i)
+        Set<String> locals = new HashSet<String>()
+        body.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) locals.add(((VariableExpression) de.leftExpression).name)
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                for (Parameter p : (ce.parameters ?: new Parameter[0])) locals.add(p.name)
+                super.visitClosureExpression(ce)
+            }
+            @Override void visitForLoop(org.codehaus.groovy.ast.stmt.ForStatement fs) {
+                if (fs.variable != null) locals.add(fs.variable.name)
+                super.visitForLoop(fs)
+            }
+        })
+        Map<String, ClassNode> fieldTypes = new HashMap<String, ClassNode>()
+        for (ClassNode k = m.declaringClass; k != null; k = k.superClass) {
+            for (org.codehaus.groovy.ast.FieldNode f : k.fields) if (!fieldTypes.containsKey(f.name)) fieldTypes.put(f.name, f.type)
+        }
+        boolean[] bad = [false] as boolean[]
+        // a name the body reads: a parameter (its contents, for an array or a list), a field, or a local
+        Closure<Void> readName = { String n ->
+            if (locals.contains(n) || n == 'this') return null
+            Integer pi = paramIdx.get(n)
+            if (pi != null) {
+                if (contentsType(m.parameters[pi].type)) out.params.add(pi)
+                return null
+            }
+            ClassNode ft = fieldTypes.get(n)
+            if (ft == null) return null
+            if (sibling || !(snapshotType(ft))) { bad[0] = true; return null }
+            out.fields.add(n)
+            null
+        }
+        // a receiver whose state the body reads into (a property, an element, a method): named state, or none
+        Closure<Void> readInto = { Expression recv ->
+            if (recv instanceof VariableExpression) {
+                String n = ((VariableExpression) recv).name
+                if (n == 'this' || locals.contains(n)) return null
+                Integer pi = paramIdx.get(n)
+                ClassNode t = pi != null ? m.parameters[pi].type : fieldTypes.get(n)
+                if (t != null && !contentsType(t) && !immutableType(t)) bad[0] = true
+            } else if (!(recv instanceof ClassExpression) && !(recv instanceof org.codehaus.groovy.ast.expr.PropertyExpression &&
+                    isThis(((org.codehaus.groovy.ast.expr.PropertyExpression) recv).objectExpression))) {
+                if (!(recv instanceof ConstantExpression) && !(recv instanceof MethodCallExpression)) bad[0] = true
+            }
+            null
+        }
+        body.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression v) { readName.call(v.name) }
+            @Override void visitPropertyExpression(org.codehaus.groovy.ast.expr.PropertyExpression pe) {
+                if (isThis(pe.objectExpression)) { readName.call(pe.propertyAsString); return }
+                readInto.call(pe.objectExpression)
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.LEFT_SQUARE_BRACKET) readInto.call(be.leftExpression)
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                Call inner = callInfo(mce)
+                if (inner != null) { nested(inner) ; return }
+                if (!mce.implicitThis) readInto.call(mce.objectExpression)
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sm) {
+                Call inner = callInfo(sm)
+                if (inner != null) { nested(inner); return }
+                super.visitStaticMethodCallExpression(sm)
+            }
+            // a function it calls: what that reads, its parameters' contents mapped to this call's arguments
+            private void nested(Call inner) {
+                for (Expression a : inner.args) a.visit(this)
+                StateReads r = stateReadsOf(inner.name, inner.args.size(), visiting)
+                if (r == null) { bad[0] = true; return }
+                if (inner.name.indexOf('$') > 0 && !r.fields.isEmpty()) { bad[0] = true; return }
+                out.fields.addAll(r.fields)
+                for (Integer j : r.params) {
+                    Expression a = inner.args.get(j)
+                    String an = a instanceof VariableExpression ? ((VariableExpression) a).name :
+                        a instanceof org.codehaus.groovy.ast.expr.PropertyExpression &&
+                            isThis(((org.codehaus.groovy.ast.expr.PropertyExpression) a).objectExpression) ?
+                            ((org.codehaus.groovy.ast.expr.PropertyExpression) a).propertyAsString : null
+                    if (an == null || locals.contains(an)) { bad[0] = true; continue }
+                    if (paramIdx.containsKey(an)) out.params.add(paramIdx.get(an))
+                    else if (fieldTypes.containsKey(an) && !sibling) out.fields.add(an)
+                    else bad[0] = true
+                }
+            }
+        })
+        bad[0] ? null : out
+    }
+
+    private static boolean isThis(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).isThisExpression()
+    }
+
+    /** An array, a list, a map or a set: its contents are named state (the encoder's content, key and size terms). */
+    static boolean contentsType(ClassNode t) {
+        t != null && (t.isArray() || t.name in ['java.util.List', 'java.util.ArrayList', 'java.util.LinkedList',
+            'java.util.Collection', 'java.util.Map', 'java.util.HashMap', 'java.util.LinkedHashMap', 'java.util.TreeMap',
+            'java.util.Set', 'java.util.HashSet', 'java.util.LinkedHashSet', 'java.util.TreeSet'])
+    }
+
+    /** A value no write changes: a primitive, a boxed number, a String, an enum, a BigInteger or BigDecimal. */
+    static boolean immutableType(ClassNode t) {
+        if (t == null) return false
+        if (ClassHelper.isPrimitiveType(t) || t.isEnum()) return true
+        t.name in ['java.lang.String', 'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte',
+                   'java.lang.Character', 'java.lang.Boolean', 'java.lang.Double', 'java.lang.Float',
+                   'java.math.BigInteger', 'java.math.BigDecimal']
+    }
+
+    /** A field whose value a snapshot names: an immutable value, or an array's or a list's contents. */
+    static boolean snapshotType(ClassNode t) { immutableType(t) || contentsType(t) }
+
     /** Control-flow signal carrying a returned value. */
     @CompileStatic
     private static class ReturnSignal extends RuntimeException {
