@@ -1555,6 +1555,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 373 — while set, {@link #shown} withholds the failing call, with this note: the replay havocked what a
      *  statement writes inside (a nested assignment, a finally, a fall-through arm), and no run is followed there. */
     private String havocCallNote = null
+    /** Phase 466 — an exact-path re-check's outcome (null when its path couldn't be replayed or it didn't check). */
+    private CheckResult.Status exactStatus = null
     /** Phase 374 — set while a witness is sought along an exact path from entry (every condition on it translated). */
     private boolean exactWitness = false
     static final String HAVOC_CALL_NOTE = 'no failing call: the failure rests on what a statement writes inside it ' +
@@ -19515,6 +19517,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 boolean exact
                 try { exact = replayExact(exactPath, enc, session) } finally { LoopEncoder.callHandler.set(prevHandler) }
                 if (!exact) return
+                exactStatus = null
                 handledInLoop = true
             }
             if (encLoop != null) {
@@ -19827,6 +19830,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (throughLoop) loopCallNote = IN_LOOP_CALL_NOTE
             CheckResult r
             try { r = shown(session.check()) } finally { loopCallNote = prevNote }
+            if (exactPath != null) exactStatus = r.status   // Phase 466
             // Phase 464 — refuted at an arbitrary iteration: a failing call is sought along the exact runs from entry
             // through the loop's first iterations to the call (Phase 371's search); the first refuted is reported
             if (r.status == CheckResult.Status.REFUTED && witnessPrefix != null && heldErrors == null &&
@@ -19842,6 +19846,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         true
                     })
                     if ((boolean) w[1]) { emitHeld((List<Object[]>) w[0]); return }
+                }
+                // Phase 466 — no run fails, and the ways in are all the ways in (a fall-through's entries): the call holds
+                // along each, so it holds. The summarised check's refutation was a state no run reaches
+                List<List<Statement>> all = throughLoop ? null : completeWays(witnessPrefix)
+                if (all != null && !all.isEmpty() && all.size() <= ENTRY_PATHS) {
+                    boolean holds = true
+                    for (List<Statement> way : all) {
+                        exactStatus = null
+                        held({ ->
+                            try { verifyCallSite(target, formals, actuals, contractAst, callExpr, way) }
+                            catch (Throwable ignored) { exactStatus = null }
+                            true
+                        })
+                        if (exactStatus != CheckResult.Status.VERIFIED) { holds = false; break }
+                    }
+                    exactStatus = null
+                    if (holds) return
                 }
             }
             switch (r.status) {
@@ -21030,7 +21051,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                 ways.add(way)
                             }
                         }
-                        out.add(summaryMarker(arms.subList(from, i), 'after a fall-through', ways))
+                        Statement m = summaryMarker(arms.subList(from, i), 'after a fall-through', ways)
+                        // Phase 466 — every entry's way: each run into the arm is one of them (first-match entries)
+                        if (!ways.isEmpty()) m.putNodeMetaData(HAVOC_COMPLETE_KEY, Boolean.TRUE)
+                        out.add(m)
                     }
                     collectPrefix(arm, tl, tc, out, stop, leaf)
                     return true
@@ -21046,6 +21070,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  block before its catch, the arms falling into a case): its replay havocs what they write, shown as {@code label}
      *  (and so the call is withheld, Phase 373's note). */
     static final String HAVOC_SUMMARY_KEY = 'verification.havocSummary'
+
+    /** Phase 466 — marks a summary whose exact ways are every way in (a fall-through's entries), so a call that holds
+     *  along each holds. */
+    static final String HAVOC_COMPLETE_KEY = 'verification.havocComplete'
+
+    /** Phase 466 — the prefix with its one complete summary replaced by each of its ways in turn; null when it has
+     *  another summary, a loop's, or none complete. The rest is replayed as the summarised check replays it. */
+    private static List<List<Statement>> completeWays(List<Statement> prefix) {
+        int at = -1
+        for (int k = 0; k < prefix.size(); k++) {
+            Statement st = prefix.get(k)
+            if (st.getNodeMetaData(HAVOC_LOOP_KEY) != null) return null
+            if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) == null) continue
+            if (at >= 0 || st.getNodeMetaData(HAVOC_COMPLETE_KEY) == null) return null
+            at = k
+        }
+        if (at < 0) return null
+        List<List<Statement>> out = new ArrayList<List<Statement>>()
+        for (List<Statement> way : (List<List<Statement>>) prefix.get(at).getNodeMetaData(HAVOC_EXACT_KEY)) {
+            List<Statement> p = new ArrayList<Statement>(prefix.subList(0, at))
+            p.addAll(way)
+            p.addAll(prefix.subList(at + 1, prefix.size()))
+            out.add(p)
+        }
+        out
+    }
 
     private static Statement summaryMarker(List<Statement> stmts, String label, List<List<Statement>> ways) {
         Statement m = new EmptyStatement()

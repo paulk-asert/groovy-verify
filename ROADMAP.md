@@ -19418,6 +19418,31 @@ second of two arms falling in); two unchanged (every way into the arm holds, a c
 Mutation-checked: without the catch's ways one case fails, the finally's catch route one, the fall-through's ways two
 (one in P463), without clearing the outer note five (two in P463).
 
+## Phase 466 — a call proved along every way into its arm
+
+The candidate Phase 465 found. A call in a switch arm that arms fall into is checked with what they write havocked
+(Phase 463), so a value they always leave right could still be refuted: `case 1: n = n + 1` falling into
+`case 2: return g(n)`, `g` needing `n > 0` under `@Requires({ n > 0 })`, was a false alarm with the note.
+
+**How:** a fall-through's exact ways (Phase 465) are each case's entry (first match, `switchGuards`) and the arms run
+from it to the call's, so every run into the arm is one of them; its summary marker is flagged complete
+(`HAVOC_COMPLETE_KEY`). When the summarised check refutes and Phase 465's search finds no failing run, `verifyCallSite`
+re-checks the call along each complete way (`completeWays`: the marker replaced by the way, the rest of the prefix as the
+summarised check replays it). If every re-check verifies, the call holds and nothing is reported. A way the exact replay
+can't follow (a closure, a loop) records no status (`exactStatus`), so the call isn't proved and the note stays.
+
+Only a fall-through is complete: a catch's ways are the throws Phase 387 knows (a call's throw is not among them), and a
+finally's are the try or a catch run through (not a return or a throw out of them).
+
+**Changed cases:** P465's "every way into the arm holds" (refuted with the note) moves here as "one arm falling in",
+compiling clean.
+
+**Shipped tests:** group `P466 a call proved along every way into its arm`, 8 cases. Measured at the parent commit: four
+were false alarms (one arm falling in, two, into the default, an arm writing the subject); four unchanged (a case that
+isn't a constant, an arm the replay can't follow, a catch's known throws not all of them, a way that fails naming its
+call). Mutation-checked: without the proof four cases fail; taking a way that can't be replayed as holding one, dropping
+a way one, taking a catch's ways as complete one.
+
 ## Definition of done, per increment
 
 An increment is done when:

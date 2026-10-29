@@ -90,23 +90,6 @@ class G506_p465_call_witness_past_try_or_switch {
                     }''')],
 
         // ---------- no way in fails, or none is known: the note stays ----------
-        [group: "P465 a failing call past a try or a switch", name: "every way into the arm holds", expect: ['Cannot prove precondition of g', HAVOC], refute: 'fails on',
-         src: tc('''class A {
-                        @Requires({ n > 0 })
-                        static int f(int n, int k) {
-                            switch (k) {
-                                case 1:
-                                    n = n + 1
-                                case 2:
-                                    return g(n)
-                                default:
-                                    return 0
-                            }
-                        }
-                        @Requires({ n > 0 })
-                        static int g(int n) { n }
-                    }''')],
-
         [group: "P465 a failing call past a try or a switch", name: "a catch no run reaches", expect: ['Cannot prove precondition of g', 'm (in the catch) = 0', HAVOC], refute: 'fails on',
          src: tc('''class A {
                         @Requires({ n > 0 && a != null && n < a.length })
