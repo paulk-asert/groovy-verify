@@ -19388,6 +19388,36 @@ passed at 16,396 solver checks / 10,331 distinct VCs / 35 UNKNOWN / 32.6 s max, 
 50 checks a phase, not measured per phase. Re-based `MAX_CHECK_CALLS` to 21,000 and `MAX_DISTINCT_VCS` to 13,500 (28% /
 31% over the measured figures, the file's sizing rule); UNKNOWN and the single-check backstop unchanged.
 
+## Phase 465 — a failing call past a try or a switch
+
+Phase 463 checks a call in a catch, a finally or a switch arm with what the try (or the arms falling in) may have
+written havocked, and a refutation resting on such a value named no failing call (Phase 373's note). The call is now
+sought along the exact ways in, as Phase 374 seeks one for a region's obligations.
+
+**How:** each Phase 463 summary marker carries its exact ways (`HAVOC_EXACT_KEY`, built in `collectPrefix`): for a
+catch, the try block up to each throw it takes (Phase 387's `catchWays`); for a finally, the try block run through
+(`tryThrough`), or a catch's way in and the catch run through; for an arm, each entry of the arms falling in (its
+`switchGuards` condition) and the arms run from it. `exactPaths` expands them as it does Phase 373's markers, and
+`verifyCallSite` re-checks the call along each with Phase 464's `exactPath`; the first refuted is shown. A re-check
+starts with no havoc labels or note: the outer check's (set by its summarised replay) withheld the call it found.
+
+- `case 1: n = n + 1` / `case 2: n = n - 1` / `case 3: return g(n)` fails on `f(1, 2)`; P463's fall-through and finally
+  cases name `f(1, 1)` and `f(1)`.
+- **The note stays** when no way in fails (`case 1: n = n + 1` falling into `g(n)` needing `n > 0`), when no run reaches
+  the catch (`a[n]` under `n < a.length`), or when the try's throws aren't known (P463's `h()`: a call, no exact way).
+
+**Not done:** an arm's ways in are every way in (each entry, and the arms from it), so when none fails the call holds —
+it could be proved rather than refuted with the note. A candidate.
+
+**Changed cases:** P463's fall-through and finally cases expect their failing calls in place of the note; its catch case
+also asserts no failing call.
+
+**Shipped tests:** group `P465 a failing call past a try or a switch`, 5 cases. Measured at the parent commit: three
+showed the note where a way in fails (a catch after a throw the try makes, a finally reached through the catch, the
+second of two arms falling in); two unchanged (every way into the arm holds, a catch no run reaches).
+Mutation-checked: without the catch's ways one case fails, the finally's catch route one, the fall-through's ways two
+(one in P463), without clearing the outer note five (two in P463).
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -28,7 +28,7 @@ import static cases.CaseDsl.*
 class G504_p463_call_in_try_or_switch {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = "Phase 463 (soundness): a call inside a `try`, a `catch`, a `finally` or a `switch` arm is checked after the writes before it there, where they were unseen (`try { n = n - 1; return g(n) }` was checked at the entry `n`); in a catch or a finally what the try may have written is unknown, in a switch arm what the arms falling into it may have."
+    static final String DESCRIPTION = "Phase 463 (soundness): a call inside a `try`, a `catch`, a `finally` or a `switch` arm is checked after the writes before it there, where they were unseen (`try { n = n - 1; return g(n) }` was checked at the entry `n`); in a catch or a finally what the try may have written is unknown, in a switch arm what the arms falling into it may have (a failing call sought along their exact ways in, Phase 465)."
 
     static final String HAVOC = 'no failing call: the failure rests on what a statement writes inside it'
 
@@ -66,7 +66,7 @@ class G504_p463_call_in_try_or_switch {
                         static int g(int n) { n }
                     }''')],
 
-        [group: "P463 a call inside a try or a switch", name: "an arm falling into the call's", expect: ['Cannot prove precondition of g', 'n (after a fall-through) = 0', HAVOC],
+        [group: "P463 a call inside a try or a switch", name: "an arm falling into the call's", expect: ['Cannot prove precondition of g', 'fails on: f(1, 1)'],
          src: tc('''class A {
                         @Requires({ n > 0 })
                         static int f(int n, int k) {
@@ -83,7 +83,7 @@ class G504_p463_call_in_try_or_switch {
                         static int g(int n) { n }
                     }''')],
 
-        [group: "P463 a call inside a try or a switch", name: "a catch after the try wrote", expect: ['Cannot prove precondition of g', 'm (in the catch) = 0', HAVOC],
+        [group: "P463 a call inside a try or a switch", name: "a catch after the try wrote", expect: ['Cannot prove precondition of g', 'm (in the catch) = 0', HAVOC], refute: 'fails on',
          src: tc('''class A {
                         @Requires({ n > 0 })
                         static int f(int n) {
@@ -101,7 +101,7 @@ class G504_p463_call_in_try_or_switch {
                         static int g(int m) { m }
                     }''')],
 
-        [group: "P463 a call inside a try or a switch", name: "a finally after the try wrote", expect: ['Cannot prove precondition of g', 'm (in the finally) = 0', HAVOC],
+        [group: "P463 a call inside a try or a switch", name: "a finally after the try wrote", expect: ['Cannot prove precondition of g', 'fails on: f(1)'],
          src: tc('''class A {
                         @Requires({ n > 0 })
                         static void f(int n) {

@@ -8452,7 +8452,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Statement st = stmts.get(i)
             if (skip.contains(st)) continue
             List<List<Statement>> ways
-            if (st.getNodeMetaData(HAVOC_NAMES_KEY) != null) {
+            if (st.getNodeMetaData(HAVOC_NAMES_KEY) != null || st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) {   // Phase 465
                 Statement own = (Statement) st.getNodeMetaData(HAVOC_STMT_KEY)
                 List<List<Statement>> alts = (List<List<Statement>>) st.getNodeMetaData(HAVOC_EXACT_KEY)
                 if (own != null) {
@@ -19502,6 +19502,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 464 — a witness: the state reached exactly, along a run from entry (nothing summarised); none if a
             // statement on it can't be replayed so
             if (exactPath != null) {
+                havocLabels = null   // Phase 465 — nothing on it summarised: the outer check's labels and note don't apply
+                havocCallNote = null
                 prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, null, leaf)
                 replayed.addAll(exactPath)
                 for (Statement st : exactPath) {
@@ -19565,7 +19567,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 //     precondition and the actual arguments (step 1, next) see the state *at the call*.
                 List<Statement> prefix = prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, null, leaf)
                 throughLoop = prefix.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }   // Phase 461
-                if (throughLoop) witnessPrefix = prefix
+                if (throughLoop || prefix.any { Statement st -> st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null }) witnessPrefix = prefix
                 replayed.addAll(prefix)
                 for (Statement st : prefix) {
                     if (st.getNodeMetaData(BRANCH_FACT_KEY) != null) branchFacts.add((String) st.getNodeMetaData(BRANCH_FACT_KEY))
@@ -19830,7 +19832,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status == CheckResult.Status.REFUTED && witnessPrefix != null && heldErrors == null &&
                     !currentChannelDesugared && currentChannelNames.isEmpty()) {
                 int tries = 0
-                for (List<Statement> way : inLoopCallPaths(witnessPrefix, callExpr)) {
+                // Phase 465 — or, past a catch, a finally or a fall-through, along each exact way in (Phase 374's paths)
+                List<List<Statement>> runs = throughLoop ? inLoopCallPaths(witnessPrefix, callExpr) : exactPaths(witnessPrefix, null)
+                for (List<Statement> way : runs) {
                     if (tries++ >= ENTRY_PATHS) break
                     Object[] w = held({ ->
                         try { verifyCallSite(target, formals, actuals, contractAst, callExpr, way) }
@@ -20972,7 +20976,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (tcs.tryStatement != null) ran.add(tcs.tryStatement)
             for (CatchStatement cs : tcs.catchStatements) {
                 if (cs.code != null && spans(cs.code, tl, tc)) {
-                    out.add(summaryMarker(ran, 'in the catch'))
+                    // Phase 465 — its exact ways in: the try block up to a throw it takes (Phase 387)
+                    List<List<Statement>> ways = new ArrayList<List<Statement>>()
+                    for (List<Statement> w : catchWays(tcs, cs)) ways.add(new ArrayList<Statement>(tcs.resourceStatements) + w)
+                    out.add(summaryMarker(ran, 'in the catch', ways))
                     collectPrefix(cs.code, tl, tc, out, stop, leaf)
                     return true
                 }
@@ -20980,7 +20987,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             Statement fin = tcs.finallyStatement
             if (fin != null && !(fin instanceof EmptyStatement) && spans(fin, tl, tc)) {
-                out.add(summaryMarker(ran, 'in the finally'))
+                // Phase 465 — its exact ways in: the try block run through, or a catch's way in and the catch run through
+                List<List<Statement>> ways = new ArrayList<List<Statement>>()
+                List<Statement> through = tcs.tryStatement == null ? null : tryThrough(topStatements(tcs.tryStatement))
+                if (through != null) ways.add(new ArrayList<Statement>(tcs.resourceStatements) + through)
+                for (CatchStatement cs : tcs.catchStatements) {
+                    List<Statement> body = cs.code == null ? null : tryThrough(topStatements(cs.code))
+                    if (body == null) continue
+                    for (List<Statement> w : catchWays(tcs, cs)) ways.add(new ArrayList<Statement>(tcs.resourceStatements) + w + body)
+                }
+                out.add(summaryMarker(ran, 'in the finally', ways))
                 collectPrefix(fin, tl, tc, out, stop, leaf)
                 return true
             }
@@ -21004,7 +21020,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         }
                         out.add(withAssume(Collections.<Statement> emptyList(), entered).get(0))
                     }
-                    if (from < i) out.add(summaryMarker(arms.subList(from, i), 'after a fall-through'))
+                    if (from < i) {
+                        // Phase 465 — its exact ways in: an arm's entry, and the arms run from it to this one
+                        List<List<Statement>> ways = new ArrayList<List<Statement>>()
+                        if (guards != null && guards.size() == arms.size()) {
+                            for (int k = from; k <= i; k++) {
+                                List<Statement> way = [assumeOnly(guards.get(k))] as List<Statement>
+                                for (int j = k; j < i; j++) way.addAll(topStatements(arms.get(j)))
+                                ways.add(way)
+                            }
+                        }
+                        out.add(summaryMarker(arms.subList(from, i), 'after a fall-through', ways))
+                    }
                     collectPrefix(arm, tl, tc, out, stop, leaf)
                     return true
                 }
@@ -21020,10 +21047,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  (and so the call is withheld, Phase 373's note). */
     static final String HAVOC_SUMMARY_KEY = 'verification.havocSummary'
 
-    private static Statement summaryMarker(List<Statement> stmts, String label) {
+    private static Statement summaryMarker(List<Statement> stmts, String label, List<List<Statement>> ways) {
         Statement m = new EmptyStatement()
         m.putNodeMetaData(HAVOC_SUMMARY_KEY, new ArrayList<Statement>(stmts))
         m.putNodeMetaData(HAVOC_LABEL_KEY, label)
+        m.putNodeMetaData(HAVOC_EXACT_KEY, ways)   // Phase 465 — the exact ways a witness takes in its place
         m
     }
 
