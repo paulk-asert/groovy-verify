@@ -51,6 +51,7 @@ class G119_p82_nested {
         // Nested tuple PARAMETER — t.v1.v2 flattens to a fresh entity t$v1$v2.
         [group: 'P82 nested', name: 'nested param: body access verifies', ok: true,
          src: tc('''class C {
+                        @Requires({ t != null })
                         @Ensures({ result == 0 })
                         static int f(Tuple2<Tuple2<Integer, Integer>, Integer> t) {
                             int x = t.v1.v2

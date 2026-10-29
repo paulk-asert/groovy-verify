@@ -2131,6 +2131,63 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * Map-typed names visible to {@code node}, each paired with a {@code [keyType, valueType]} pair.
      * Raw {@code Map} defaults to {@code [Integer, Integer]} for back-compat. (Phase 27.)
      */
+    /**
+     * Phase 479 — does {@code e}, wherever it holds, read a property of {@code result} ({@code result.p}, not
+     * {@code result?.p})? Both sides of a conjunction are read when it holds; of a disjunction, a negation or a
+     * conditional only what is always evaluated; a closure's body never.
+     */
+    private static boolean readsResultProperty(Expression e) {
+        if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            if (!pe.safe && !pe.spreadSafe && pe.objectExpression instanceof VariableExpression &&
+                ((VariableExpression) pe.objectExpression).name == 'result' && !(pe.propertyAsString in ['class', 'metaClass'])) return true
+            return readsResultProperty(pe.objectExpression)
+        }
+        if (e instanceof BooleanExpression) return readsResultProperty(((BooleanExpression) e).expression)
+        if (e instanceof NotExpression) return evaluatedFirst(((NotExpression) e).expression)
+        if (e instanceof TernaryExpression) return evaluatedFirst(((TernaryExpression) e).booleanExpression)
+        if (e instanceof CastExpression) return readsResultProperty(((CastExpression) e).expression)
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type == Types.LOGICAL_OR) return evaluatedFirst(be.leftExpression)
+            return readsResultProperty(be.leftExpression) || readsResultProperty(be.rightExpression)
+        }
+        if (e instanceof MethodCallExpression && !((MethodCallExpression) e).safe) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (readsResultProperty(mce.objectExpression)) return true
+            if (mce.arguments instanceof TupleExpression) for (Expression a : ((TupleExpression) mce.arguments).expressions) {
+                if (!(a instanceof ClosureExpression) && readsResultProperty(a)) return true
+            }
+        }
+        false
+    }
+
+    /** Phase 479 — {@link #readsResultProperty} over the part of {@code e} evaluated whatever its value: an and/or's left. */
+    private static boolean evaluatedFirst(Expression e) {
+        if (e instanceof BooleanExpression) return evaluatedFirst(((BooleanExpression) e).expression)
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
+            return evaluatedFirst(((BinaryExpression) e).leftExpression)
+        }
+        if (e instanceof NotExpression || e instanceof TernaryExpression) return false
+        readsResultProperty(e)
+    }
+
+    /** Phase 479 — marks a property a plain `=` stores through (`b.v = 1`): its null obligation says "set". A compound one
+     *  (`b.v += 1`, `b.v++`) reads it first, and says "get" (measured). */
+    static final String PROPERTY_STORE_KEY = 'verify.propertyStore'
+
+    private static void markPropertyStores(MethodNode node) {
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: node.code
+        body?.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof PropertyExpression) {
+                    be.leftExpression.putNodeMetaData(PROPERTY_STORE_KEY, Boolean.TRUE)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+    }
+
     private static Map<String, ClassNode[]> collectMapTypes(MethodNode node) {
         Map<String, ClassNode[]> out = new LinkedHashMap<String, ClassNode[]>()
         for (Parameter p : node.parameters) if (isMapType(p.type)) out.put(p.name, twoGenericsOrInt(p.type))
@@ -4797,6 +4854,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
         currentSetElementTypes = collectSetElementTypes(node)
         currentMapTypes = collectMapTypes(node)
+        markPropertyStores(node)   // Phase 479
         currentNestedSetValueTypes = collectNestedSetValueTypes(node)
         currentNonNullElementContainers = collectNonNullElementContainers(node)
         currentListNames = collectListNames(node)
@@ -5850,7 +5908,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             // callee's reference-oracle facts land on the local for downstream obligations
                             modelled = listLocalFromCall(s, enc, a.name, a.rhs, node)
                         } else {
-                            Object fresh = s.intVar('specw$' + Integer.toHexString(System.identityHashCode(a.rhs)))
+                            // Phase 479 — in the local's own sort: a carrier's (`Length r = Length.km(2.0)`) as an Int
+                            // crashed its @Ensures (`result.metres`), once the method had an obligation to replay it for
+                            ClassNode lt = currentScalarTypes.get(a.name)
+                            Object lsort = lt != null && !isIntElement(lt) ? enc.sortForType(lt) : null
+                            String fn = 'specw$' + Integer.toHexString(System.identityHashCode(a.rhs))
+                            Object fresh = lsort != null && lsort != s.intSort() ? s.varOfSort(fn, lsort) : s.intVar(fn)
                             if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
                                 s.assertExpr(s.eq(enc.varFor(a.name), fresh))
                                 enc.bindNullity(a.name, enc.lastCallResultNullity)   // Phase 421 — what its @Ensures says
@@ -7266,7 +7329,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             s.assertExpr(enc.nullityOf(df.receiver))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(df.receiver, df.property, r)
+                addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(df.receiver, df.property, r, df.propertySet)
                                                                      : df.safeUse ? Reporter.formatNullSafeUse(df.receiver, df.node.text, r)
                                                                      : Reporter.formatNullDereference(df.receiver, df.method, r)), r, 'NullPointerException'), df), df.node)
             }
@@ -12095,6 +12158,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression indexExpr   // null = scalar deref; non-null = indexed (Phase 37)
         /** Phase 415 — a property read rather than a call (`a.length`): Groovy's message names the property */
         String property
+        /** Phase 479 — the property is stored, not read (`b.v = 1`): "Cannot set property" */
+        boolean propertySet
         /** Phase 422 — a safe call's receiver, where the call's null value is used as a value that throws on null */
         boolean safeUse
     }
@@ -12370,14 +12435,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         @Override
         void visitPropertyExpression(PropertyExpression pe) {
             // Phase 415 — an array's `.length` on null throws as a call on it does ("Cannot get property 'length' on null
-            // object", measured): the receiver's nullity obligation
-            if (!pe.safe && pe.propertyAsString == 'length' && pe.objectExpression instanceof VariableExpression) {
+            // object", measured): the receiver's nullity obligation. Phase 479 — any property of a parameter or local, read
+            // or stored ("Cannot set property 'v' on null object"; measured on Groovy 6, dynamic and @TypeChecked;
+            // @CompileStatic throws the JVM's NPE on the accessor): `p.name` and a map's `m.x` had none
+            if (!pe.safe && !pe.spreadSafe && pe.propertyAsString != null && pe.objectExpression instanceof VariableExpression) {
                 VariableExpression v = (VariableExpression) pe.objectExpression
                 Variable accessed = v.accessedVariable
                 ClassNode vt = accessed != null ? accessed.getType() : null
-                if ((accessed instanceof Parameter || accessed instanceof VariableExpression) && vt != null && vt.isArray() &&
-                    v.name != 'this' && v.name != 'super') {
-                    derefSites.add(new DerefSite(node: pe, receiver: v.name, property: 'length'))
+                if ((accessed instanceof Parameter || accessed instanceof VariableExpression) && vt != null &&
+                    !ClassHelper.isPrimitiveType(vt) && v.name != 'this' && v.name != 'super') {
+                    derefSites.add(new DerefSite(node: pe, receiver: v.name, property: pe.propertyAsString,
+                        propertySet: pe.getNodeMetaData(PROPERTY_STORE_KEY) != null))
                 }
             }
             super.visitPropertyExpression(pe)
@@ -22163,6 +22231,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         for (List<String> ts : deferredTaints.values()) s.witnessTaints().addAll(ts)
         for (Object t : effectTerms) s.assertExpr(t)
+        // Phase 479 — a postcondition that reads a property of `result` wherever it holds (`result.metres == v * 1000.0`)
+        // throws on a null one: a call that returns has a non-null value (its `r.metres` named `fails on: m()`)
+        if (post != null && readsResultProperty(ensuresAst)) {
+            s.assertExpr(s.not(resultNull))
+            if (resultTupleName != null) s.assertExpr(s.not(enc.nullityOf(resultTupleName)))   // its `result` is that local
+        }
 
         // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
         savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }   // Phase 323

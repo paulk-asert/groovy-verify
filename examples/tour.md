@@ -854,11 +854,12 @@ but the verifier **refuses** it — because if `a` and `b` are the *same* accoun
     counterexample: a$id = 3, b$id = 3      // same identity ⇒ a and b are the same object
 ```
 
-Adding the distinctness precondition — Groovy's identity operator `!==` — makes it verify:
+Adding the distinctness precondition — Groovy's identity operator `!==` — beside the non-null receivers the two writes
+need (each throws on a null one), makes it verify:
 
 <!-- doclint:case p89-field-write/setboth-verifies-with-a-b -->
 ```groovy
-@Requires({ a !== b })
+@Requires({ a != null && b != null && a !== b })
 @Ensures({ a.balance == 100 && b.balance == 200 })
 static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
 ```

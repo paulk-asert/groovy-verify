@@ -966,8 +966,8 @@ class Reporter {
     }
 
     /** Phase 415 — Groovy's message for a property read on null: "Cannot get property 'length' on null object". */
-    static String formatNullPropertyRead(String receiver, String property, CheckResult result) {
-        implicit("Possible NullPointerException: Cannot get property '${property}' on null object",
+    static String formatNullPropertyRead(String receiver, String property, CheckResult result, boolean set = false) {
+        implicit("Possible NullPointerException: Cannot ${set ? 'set' : 'get'} property '${property}' on null object",
             "${receiver} != null",
             "Could not decide receiver non-null", result)
     }

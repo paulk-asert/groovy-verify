@@ -32,6 +32,7 @@ class G061_p89_field_write {
          src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
                     final class C {
+                        @Requires({ a != null })
                         @Ensures({ a.balance == 100 })
                         static void setHundred(Account a, Account b) { a.balance = 100 }
                     }''')],
@@ -41,7 +42,7 @@ class G061_p89_field_write {
          src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
                     final class C {
-                        @Requires({ a.is(b) })
+                        @Requires({ a != null && a.is(b) })
                         @Ensures({ b.balance == 100 })
                         static void setHundred(Account a, Account b) { a.balance = 100 }
                     }''')],
@@ -68,7 +69,7 @@ class G061_p89_field_write {
          src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
                     final class C {
-                        @Requires({ a !== b })
+                        @Requires({ a != null && b != null && a !== b })
                         @Ensures({ a.balance == 100 && b.balance == 200 })
                         static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
                     }''')],

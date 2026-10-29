@@ -17989,7 +17989,7 @@ Groovy 6, dynamic and `@TypeChecked`; `@CompileStatic` throws the JVM's "Cannot 
   paths; a condition `trueDerefs` sees through an `if`'s `BooleanExpression` now.
 
 **Not changed:** a field's `.length` (`arr.length`, `this.arr.length`, `h.arr.length`) has no null obligation, as a
-field's subscript and call have none; nor does any other property read (`p.name` on a null `p` throws too). A
+field's subscript and call have none; nor does any other property read (`p.name` on a null `p` throws too); Phase 479). A
 statement-level call (`xs.clear(); xs.size()`) leaves no survival fact, only an assignment or a condition. The
 unannotated `for (int i = 0; i < a.length; i++) s += a[i]` still reports its loop-summary bounds error (`i = -1`), as
 before.
@@ -19792,6 +19792,45 @@ without dropping the record on a havoc one.
 
 **Not changed here:** `m.x` on a map *parameter* that may be null gets no null check (`m.get('x')` does); obligations
 print `m.get(x)` for `m.get('x')`, for parameters too.
+
+## Phase 479 — a property read on null  *(shipped — soundness)*
+
+Phase 415 gave an array's `.length` its receiver's null obligation and noted the rest: no other property read had one,
+so `p.v` on a null `p` — and a map's `m.x` (Phase 478) — went unchecked. Measured on Groovy 6.0.0, dynamic and
+`@TypeChecked`: a read throws "Cannot get property 'v' on null object", a plain store "Cannot set property 'v' on null
+object", a compound one (`b.v += 1`, `b.v++`) reads first and says "get"; `@CompileStatic` throws the JVM's NPE on the
+accessor (`Cannot invoke "B.getV()"`).
+
+- **Any property of a parameter or local is a dereference** (`ObligationCollector.visitPropertyExpression`, Phase 415's
+  site with the array test dropped): not `?.` or `*.`, not a primitive (`n.class` boxes), not `this`/`super`, not a
+  field (as a field's call and subscript have none). A property a plain `=` stores through is marked per method
+  (`PROPERTY_STORE_KEY`), and its message says "set" (`Reporter.formatNullPropertyRead`).
+- **A callee's postcondition that reads `result.p` wherever it holds** (`readsResultProperty`: both sides of an `&&`, an
+  `||`'s or a condition's left, never a closure's body) would throw on a null result, so a call that returns has a
+  non-null value — the call's own flag (Phase 421), and a tuple local's that its `result` is renamed to (Phase 113).
+  Without it the new obligation named a call that doesn't fail: `Length r = Length.km(2.0); r.metres` gave `fails on:
+  m()`.
+- **A carrier local's contracted call in the value-flow replay** (`Length r = Length.km(2.0)`) is minted in the
+  carrier's sort: as an Int it crashed its `@Ensures`' `result.metres` ("Sort mismatch … content$Length") once the
+  method had an obligation to replay it for — latent, since `m()` had none before.
+
+**Not changed:** a field's property (`this.h.v`, `h.v` for a field `h`), as before. `a.is(b)` doesn't give `b` the
+nullity of `a` (P89's alias cases now state both). A contract that allows a null its body never returns
+(`@Ensures({ n < 0 || result.v == n })`) names a call from the contract (`fails on: f(-1)`), as Phase 421's witnesses
+are.
+
+**Changed cases (8):** each now states the precondition its receiver needs — P89 ref-identity's `a.is(b)` and "no
+identity" (`a != null && b != null`), P89 field-write's three (`a != null`, `a != null && a.is(b)`, `a != null && b !=
+null && a !== b`), P80's `t.v1` and `t[0]`, P82's nested parameter (`t != null`): each threw on a null receiver. The tour's setBoth
+example shows the new precondition.
+
+**Shipped tests:** group `P479 a property read on null`, 15 cases. Measured at the parent commit: eight compiled with
+no null obligation (an object's property read, stored, compound-stored; a map parameter's `m.x` read, stored; a local
+from a call; a callee whose contract allows a null, two ways); seven unchanged (a guard, a precondition, safe
+navigation, a literal local, a primitive's property, a callee whose postcondition reads `result.v`, on an `||`'s left).
+Mutation-checked: Phase 415's array-only site fails eight cases; without the primitive test one; without "set" two;
+marking a compound store as a set one; without the callee's non-null result two; the `||`'s right counted two; the
+carrier's sort as an Int four (and P142c's one); without the tuple local's (P113) three.
 
 ## Definition of done, per increment
 

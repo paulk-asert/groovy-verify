@@ -34,6 +34,7 @@ class G117_p80_tuple_params {
         // use comparisons on slots, not arithmetic).
         [group: 'P80 tuple params', name: 'tuple param: result == t.v1', ok: true,
          src: tc('''class C {
+                        @Requires({ t != null })
                         @Ensures({ result == t.v1 })
                         static int firstOf(Tuple2<Integer, Integer> t) { t.v1 }
                     }''')],
@@ -53,6 +54,7 @@ class G117_p80_tuple_params {
         // Constant-index access on a tuple parameter.
         [group: 'P80 tuple params', name: 'tuple param: constant index t[0]', ok: true,
          src: tc('''class C {
+                        @Requires({ t != null })
                         @Ensures({ result == t[0] })
                         static int first(Tuple2<Integer, Integer> t) { t.v1 }
                     }''')],

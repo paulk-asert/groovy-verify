@@ -34,7 +34,7 @@ class G060_p89_ref_identity {
          src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
                     final class C {
-                        @Requires({ a.is(b) })
+                        @Requires({ a != null && b != null && a.is(b) })
                         @Ensures({ result == 2 * a.balance })
                         static int twice(Account a, Account b) { a.balance + b.balance }
                     }''')],
@@ -53,6 +53,7 @@ class G060_p89_ref_identity {
          src: tc('''final class Account { int balance }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
                     final class C {
+                        @Requires({ a != null && b != null })
                         @Ensures({ result == 2 * a.balance })
                         static int twice(Account a, Account b) { a.balance + b.balance }
                     }''')],
