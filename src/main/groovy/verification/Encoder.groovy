@@ -2114,7 +2114,7 @@ class Encoder implements TheoryApi {
     Object[] saveListOracles(String name) {
         [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name), arrEnv.get(name + '$nullElem'),   // Phase 446
          setEnv.get(name), arrEnv.get(mapValsKey(name)), setEnv.get(mapKeysKey(name)),                       // Phase 447
-         shadowSuffix.get(name)] as Object[]                                                                    // Phase 448
+         shadowSuffix.get(name), arrEnv.get(mapVnullKey(name))] as Object[]                                     // Phase 448, 483
     }
 
     void restoreListOracles(String name, Object[] saved) {
@@ -2128,6 +2128,7 @@ class Encoder implements TheoryApi {
             if (saved[6] != null) setEnv.put(mapKeysKey(name), saved[6]) else setEnv.remove(mapKeysKey(name))
         }
         if (saved.length > 7) { if (saved[7] != null) shadowSuffix.put(name, (String) saved[7]) else shadowSuffix.remove(name) }
+        if (saved.length > 8) { if (saved[8] != null) arrEnv.put(mapVnullKey(name), saved[8]) else arrEnv.remove(mapVnullKey(name)) }   // Phase 483
     }
 
     /**
@@ -2291,6 +2292,7 @@ class Encoder implements TheoryApi {
         setEnv.remove(name)
         arrEnv.remove(mapValsKey(name))
         setEnv.remove(mapKeysKey(name))
+        arrEnv.remove(mapVnullKey(name))   // Phase 483
     }
 
     /** Phase 450 — while above 0, a contracted call is its @Ensures' value (see {@link #translateCondition}) */
@@ -2429,6 +2431,11 @@ class Encoder implements TheoryApi {
      * Default Int/Int when not classified as non-Int, preserving the existing untyped-list path.
      */
     private Object[] arraySortsFor(String name) {
+        if (name.startsWith('map$vnull$')) {   // Phase 483 — a map's value-null flags: key sort → Int (1 = a null value)
+            String logical = name.substring('map$vnull$'.length())
+            if (logical.startsWith('old$')) logical = logical.substring('old$'.length())
+            return [mapKeySort(logical), session.intSort()] as Object[]
+        }
         if (name.startsWith('map$vals$')) {
             String logical = name.substring('map$vals$'.length())
             if (logical.startsWith('old$')) logical = logical.substring('old$'.length())
@@ -3430,14 +3437,14 @@ class Encoder implements TheoryApi {
         List<Object> ks = new ArrayList<Object>(), vs = new ArrayList<Object>()
         for (int k = 0; k < keys.size(); k++) {
             Object kt = null, vt = null
-            try { kt = translateInSort(keys.get(k), kSort); vt = translateInSort(values.get(k), vSort) } catch (Exception ignored) {}
+            try { kt = translateInSort(keys.get(k), kSort); vt = mapValueOf(name, values.get(k)) } catch (Exception ignored) {}
             if (kt == null || vt == null) { havocMap(name); return }
             ks.add(kt); vs.add(vt)
         }
         Object empty = session.constArray(kSort, session.intLit(0L))
         session.assertExpr(session.eq(cardOf(empty), session.intLit(0L)))
         putMapKeys(name, empty)
-        for (int k = 0; k < ks.size(); k++) mapPut(name, ks.get(k), vs.get(k))
+        for (int k = 0; k < ks.size(); k++) mapPut(name, ks.get(k), vs.get(k), values.get(k))
     }
 
     /**
@@ -3450,6 +3457,8 @@ class Encoder implements TheoryApi {
         Object[] sorts = arraySortsFor(name)
         Object arr = sorts[0] == session.intSort() && sorts[1] == session.intSort() ?
             session.arrayVar(name + '$lit' + quantCounter) : session.arrayVarOfSort(name + '$lit' + quantCounter, sorts[0], sorts[1])
+        // Phase 484 — and its elements' nullity: `[null]`'s element is null, a primitive's or a literal's isn't
+        Object nulls = session.arrayVar(name + '$nullElem$lit' + quantCounter)
         quantCounter++
         for (int k = 0; k < elems.size(); k++) {
             try {
@@ -3458,8 +3467,12 @@ class Encoder implements TheoryApi {
             } catch (Exception ignored) {
                 // an untranslatable element: its slot stays unknown
             }
+            Object nul = storedNullity(elems.get(k))
+            if (nul != null) session.assertExpr(session.eq(session.select(nulls, session.intLit((long) k)),
+                session.ite(nul, session.intLit(1L), session.intLit(0L))))
         }
         bindArray(name, arr)
+        bindArray(name + '$nullElem', nulls)
     }
 
     /**
@@ -4197,6 +4210,7 @@ class Encoder implements TheoryApi {
         // untranslatable after a call, and the assertion over it was dropped
         localFactories.remove(name)   // Phase 478
         havocContents(mapValsKey(name))
+        havocContents(mapVnullKey(name))   // Phase 483
         putMapKeys(name, freshSetLike(mapKeysKey(name), mapKeysKey(name) + '$havoc$' + (havocCounter++)))
     }
 
@@ -4211,9 +4225,14 @@ class Encoder implements TheoryApi {
      * {@code j != k} is unchanged, both via Z3's array theory. Shared by the straight-line replay
      * (VerifyChecker) and the loop-body executor (LoopEncoder) so both spellings and positions agree.
      */
-    void mapPut(String logical, Object key, Object val) {
+    void mapPut(String logical, Object key, Object val, Expression valueExpr = null) {
         localFactories.remove(logical)   // Phase 478 — the literal no longer describes it: reads go through the model
         putMapVals(logical, session.store(mapValsFor(logical), key, val))
+        // Phase 483 — the value's nullity at its key (unknown when the value's is)
+        Object nul = valueExpr == null ? null : storedNullity(valueExpr)
+        Object flag = nul != null ? session.ite(nul, session.intLit(1L), session.intLit(0L)) :
+            session.intVar('map$vnull$' + logical + '$st' + (havocCounter++))
+        putMapVnull(logical, session.store(mapVnullFor(logical), key, flag))
         Object oldKeys = mapKeysFor(logical)
         Object memOld = member(oldKeys, key)
         Object newKeys = session.store(oldKeys, key, session.intLit(1L))
@@ -4775,11 +4794,42 @@ class Encoder implements TheoryApi {
     // cardinality law come straight from {@link #cardOf}/{@link #member}.
     private static String mapValsKey(String logical) { 'map$vals$' + logical }
     private static String mapKeysKey(String logical) { 'map$keys$' + logical }
+    private static String mapVnullKey(String logical) { 'map$vnull$' + logical }
 
     /** The value-array handle ({@code m[k]} reads) for a map's logical name. */
     Object mapValsFor(String logical) { arrayFor(mapValsKey(logical)) }
     /** The key-set handle ({@code containsKey}/{@code size}) for a map's logical name. */
     Object mapKeysFor(String logical) { setFor(mapKeysKey(logical)) }
+    /** Phase 483 — a map's value-null flags (key → 1 when the value stored there is null), and their re-binding */
+    Object mapVnullFor(String logical) { arrayFor(mapVnullKey(logical)) }
+    void putMapVnull(String logical, Object handle) { bindArray(mapVnullKey(logical), handle) }
+
+    /**
+     * Phase 483 — {@code m.get(k)} / {@code m[k]} is null when {@code k} isn't a key, or the value put there is null.
+     */
+    Object mapValueNullity(String logical, Object key) {
+        session.or([session.not(member(mapKeysFor(logical), key)),
+                    session.eq(session.select(mapVnullFor(logical), key), session.intLit(1L))])
+    }
+
+    /** Phase 483 — a value put into map {@code logical}: a null literal is a fresh value (its flag says null), else its
+     *  translation in the map's value sort (null when it doesn't translate) */
+    Object mapValueOf(String logical, Expression v) {
+        isNullLiteral(v) ? session.varOfSort('map$null$' + logical + '$' + (havocCounter++), mapValueSort(logical)) :
+            translateInSort(v, mapValueSort(logical))
+    }
+
+    /** Phase 483 — a stored value's nullity: a primitive's is never null (an {@code int n} has a nullity flag of its own) */
+    Object storedNullity(Expression v) {
+        if (v instanceof VariableExpression) {
+            ClassNode t = scalarTypes?.get(((VariableExpression) v).name)
+            if (t != null && ClassHelper.isPrimitiveType(t)) return session.boolLit(false)
+        }
+        Object inferred = v.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
+        if (inferred instanceof ClassNode && ClassHelper.isPrimitiveType((ClassNode) inferred)) return session.boolLit(false)
+        nullityOfExpr(v)
+    }
+
     /** Re-bind a map's value array — threads {@code m[k] = v} / {@code m.put(k,v)} on the value side. */
     void putMapVals(String logical, Object handle) { bindArray(mapValsKey(logical), handle) }
     /** Re-bind a map's key-set — threads the key added by a put (with the cardinality law). */
@@ -4866,6 +4916,12 @@ class Encoder implements TheoryApi {
         if (e instanceof ArrayExpression || isArrayClone(e)) return session.boolLit(false)
         // Phase 445 — an element read is null when the element is: a for-in's `x = xs[i]` and a `String y = xs[0]`
         // carry the flag a `@Requires({ xs[0] != null })` (or a non-null element type) fixes, not a fresh one
+        // Phase 483 — a map's read (`m.get(k)`, `m[k]`, a String-keyed `m.x`): null for a missing key or a null value
+        IndexedNullTarget mt = indexedAccessTarget(mapPropertySubscript(e))
+        if (mt != null && isMapName(mt.containerName)) {
+            Object kH = translateInSort(mt.indexExpr, mapKeySort(mt.containerName))
+            return kH == null ? null : mapValueNullity(mt.containerName, kH)
+        }
         IndexedNullTarget ind = indexedAccessTarget(e)
         if (ind != null && hasElementNullity(ind.containerName)) {
             if (nonNullElementContainers.contains(ind.containerName)) return session.boolLit(false)
@@ -6386,6 +6442,14 @@ class Encoder implements TheoryApi {
             // Phase 37 — xs[i] == null / xs.get(i) == null and their `!=` mirrors: lower to the
             // per-element nullity oracle. Lets a @Requires({ xs[i] != null }) constrain the same
             // flag the implicit deref obligation later asserts the negation of.
+            // Phase 483 — a map's read: its key's presence and value-null flag
+            if (other != null) {
+                IndexedNullTarget mt = indexedAccessTarget(mapPropertySubscript(other))
+                if (mt != null && isMapName(mt.containerName)) {
+                    Object nul = nullityOfExpr(other)
+                    if (nul != null) return op == Types.COMPARE_EQUAL ? nul : session.not(nul)
+                }
+            }
             // Phase 482 — a list's or an array's only: a map's `m.get(1) != null` read flags `m.put(1, null)` never
             // cleared, and a String key's crashed the method's checks
             IndexedNullTarget ind = indexedNullComparisonTarget(be)
@@ -8297,7 +8361,7 @@ class Encoder implements TheoryApi {
     /** Phase 469 — a container name's contents, added to {@code out}: a map's values and keys, a set's members, an
      *  array's or a list's elements and size. False when {@code n} names none of them. */
     private boolean contentsSnapshot(String n, List<Object> out) {
-        if (isMapName(n)) { out.add(mapValsFor(n)); out.add(mapKeysFor(n)); return true }
+        if (isMapName(n)) { out.add(mapValsFor(n)); out.add(mapKeysFor(n)); out.add(mapVnullFor(n)); return true }   // Phase 483 — its nulls too
         if (isSetName(n)) { out.add(setFor(n)); return true }
         if (isArrayTyped(n) || isListTyped(n)) { out.add(arrayFor(n)); out.add(sizeOf(n)); return true }
         false

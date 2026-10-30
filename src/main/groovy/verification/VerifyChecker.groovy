@@ -2988,8 +2988,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return r
         }
         reproBreaksRequires = false
+        reproMapShown = false
         r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
-        if (reproBreaksRequires && !r.notes.contains(REPRO_BREAKS_REQUIRES)) r.notes.add(REPRO_BREAKS_REQUIRES)
+        String breaks = reproBreaksRequires && reproMapShown ? REPRO_MAP_BREAKS_REQUIRES : REPRO_BREAKS_REQUIRES   // Phase 483
+        if (reproBreaksRequires && !r.notes.contains(breaks)) r.notes.add(breaks)
         // Phase 380 — a range this model runs backwards: Groovy iterates `lo..<hi` with hi < lo downwards (`0..<-1` is
         // [0]), which a contract written for an ascending range rarely means
         r.counterexample.each { String k, Long v ->
@@ -3411,12 +3413,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // over one is re-checked too (P337's re-check covered only the quantified conjuncts a VC drops)
         Map<String, Boolean> written = writtenParams()
         boolean overWritten = !Collections.disjoint(freeNames(reqAst), written.keySet())
-        if (!hasQuantifier(reqAst) && !overWritten) return ce
+        // Phase 483 — a map renders `[:]` whatever the model holds: a precondition over one is re-checked against that
+        Set<String> free = freeNames(reqAst)
+        boolean overMap = currentMethod.parameters.any { Parameter p -> isMapType(p.type) && free.contains(p.name) }
+        reproMapShown = overMap
+        if (!hasQuantifier(reqAst) && !overWritten && !overMap) return ce
         List<String> shape = new ArrayList<String>(), elements = new ArrayList<String>()
         reproPins(ce, Collections.<String, Boolean> emptyMap(), shape, elements)
         CheckResult whole = requiresWith(reqAst, shape + elements)
         if (whole == null || whole.status != CheckResult.Status.VERIFIED) return ce   // met, or undecided: keep
-        if (elements.isEmpty() && !overWritten) return null
+        if (elements.isEmpty() && !overWritten) return null   // (a map's `[:]` is pinned whole: nothing to repair)
         // pin what the failure fixes (an unwritten parameter's value and size, a written array's length and nullness)
         // and take the rest from a model of the precondition: the elements, and a written parameter's input value
         List<String> loose = new ArrayList<String>(), ignored = new ArrayList<String>()
@@ -3447,6 +3453,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean nulled = ce.get(p.name + '?null') == 1L
             Boolean reassigned = loose.get(p.name)
             if (reassigned == Boolean.TRUE) continue
+            // Phase 483 — a map is rendered `[:]` (its input, whatever the method then puts): pinned so (its key-set
+            // empty, in requiresWith — a size of 0 alone doesn't empty an uninterpreted cardinality's set)
+            if (!nulled && isMapType(p.type)) { shape.add("${p.name} != null".toString()); continue }
             if (nulled && (tn in INT_TYPE_NAMES || tn in BOOL_TYPE_NAMES) && !ClassHelper.isPrimitiveType(p.type)) {
                 shape.add("${p.name} == null".toString())   // Phase 424 — a boxed one's null
             } else if (tn in INT_TYPE_NAMES) {
@@ -3533,6 +3542,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             assumeIntJvmBounds(s, enc)
             s.assertExpr(pre)
             if (pin != null) s.assertExpr(pin)
+            // Phase 483 — a non-null map parameter is rendered `[:]`: no keys
+            for (String m : pins.findAll { it.endsWith(' != null') }.collect { it.substring(0, it.length() - ' != null'.length()) }) {
+                if (enc.isMapName(m)) s.assertExpr(s.eq(enc.mapKeysFor(m), s.constArray(enc.mapKeySort(m), s.intLit(0L))))
+            }
             for (Parameter p : currentMethod.parameters) {   // name the elements so the model walk reports them
                 if (p.type?.isArray() || isCollectionType(p.type)) try { enc.arrayFor(p.name) } catch (Throwable ignored) { }
             }
@@ -3548,8 +3561,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Set by {@link #buildFailingCall} when it withheld the call because its arguments break {@code @Requires}. */
     private boolean reproBreaksRequires = false
+    /** Phase 483 — set by {@link #reproUnderRequires} when a precondition over a map parameter was re-checked */
+    private boolean reproMapShown = false
     /** Phase 380 — this method's possibly-reversed ranges' hidden indicators → their text ({@link Encoder#reversedRanges}). */
     private Map<String, String> currentReversedRanges = new HashMap<String, String>()
+
+    static final String REPRO_MAP_BREAKS_REQUIRES =
+        'no failing call: a map argument is shown as [:], and that breaks the @Requires (its entries aren\'t rendered yet)'
 
     static final String REPRO_BREAKS_REQUIRES =
         'no failing call: these arguments break the @Requires, which this check assumed only in part (it may not be reachable)'
@@ -5936,9 +5954,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     ArrayStore st = (ArrayStore) step
                     boolean isMap = currentMapTypes.containsKey(st.arr)
                     Object idx = isMap ? enc.translateInSort(st.index, enc.mapKeySort(st.arr)) : enc.indexTerm(st.arr, st.index)
-                    Object val = enc.translateInSort(st.value, isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr))
+                    Object val = isMap ? enc.mapValueOf(st.arr, st.value) : enc.translateInSort(st.value, enc.listElementSort(st.arr))
                     if (idx == null || val == null) { if (isMap) enc.havocMap(st.arr) else enc.havocArray(st.arr) }
-                    else if (isMap) doMapPut(s, enc, st.arr, idx, val)
+                    else if (isMap) doMapPut(s, enc, st.arr, idx, val, st.value)
                     else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storeElementNullity(st.arr, idx, st.value); enc.storedInto(st.arr) }   // Phase 445
                 } else if (step instanceof FieldAssign) {
                     // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
@@ -7309,7 +7327,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (currentHeldSelectLocalNames.contains(df.receiver)) return
             // Phase 277 — and a local bound to a `new …`: a constructor yields an object or throws.
             // Phase 386 — or to a GDK fresh-collection call (`List r = xs.toList()`): the lazy superset.
-            if (currentNewLocalNames.contains(df.receiver) || freshCollectionLocalNames().contains(df.receiver)) return
+            // Phase 483/484 — the receiver's, not a value read through it: `[x: 'a'].get('y')` and `[null][0]` are null
+            if (df.indexExpr == null &&
+                (currentNewLocalNames.contains(df.receiver) || freshCollectionLocalNames().contains(df.receiver))) return
             // Phase 396 — a call a null receiver answers rather than throws on (`null.collect { }` is [] when dispatched
             // dynamically, measured): no obligation
             if (df.indexExpr == null && df.node instanceof MethodCallExpression && nullSafeCall((MethodCallExpression) df.node)) return
@@ -7318,8 +7338,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
                 // obligation fires. (No quantifier needed to encode the "trust"; we just skip.)
                 if (currentNonNullElementContainers.contains(df.receiver)) return
-                // Phase 482 — a map's value (`m.get(k).foo()`, `m[k].foo()`) is null for a missing key or a null put;
-                // its nullity isn't modelled, so the check is skipped loudly (a list's element flags read it unsoundly)
+                // Phase 483 — a map's value (`m.get(k).foo()`, `m[k].foo()`) is null for a missing key or a null put
+                if (enc.isMapName(df.receiver)) {
+                    Expression read = ((MethodCallExpression) df.node).objectExpression
+                    Object nul = enc.nullityOfExpr(read)
+                    if (nul == null) {
+                        addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
+                            "key '${asWritten(df.indexExpr)}' is outside fragment"), df.node)
+                        return
+                    }
+                    s.assertExpr(nul)
+                    CheckResult r = shown(s.check())
+                    if (r.status != CheckResult.Status.VERIFIED) {
+                        addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
+                            asWritten(read), df.method, r), r, 'NullPointerException'), df), df.node)
+                    }
+                    explainIfVerified(s, r, "${asWritten(read)} != null")
+                    return
+                }
+                // Phase 482 — any other container's value (a map not modelled as one): its nullity isn't modelled, so
+                // the check is skipped loudly (a list's element flags read it unsoundly)
                 if (!enc.hasElementNullity(df.receiver)) {
                     addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
                         "'${df.receiver}' isn't a list or an array: the nullity of ${asWritten(((MethodCallExpression) df.node).objectExpression)} isn't modelled"), df.node)
@@ -14702,14 +14740,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object idxSort = isMap ? enc.mapKeySort(st.arr) : session.intSort()
                     Object valSort = isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr)
                     Object idx = isMap ? enc.translateInSort(st.index, idxSort) : enc.indexTerm(st.arr, st.index)   // Phase 369
-                    Object val = enc.translateInSort(st.value, valSort)
+                    Object val = isMap ? enc.mapValueOf(st.arr, st.value) : enc.translateInSort(st.value, valSort)   // Phase 483
                     if (idx == null || val == null) {
                         throw new UnsupportedConstructException(
                             "array store '${st.arr}[${st.index.text}] = ${st.value.text}' is outside fragment")
                     }
                     if (isMap) {
                         // m[k] = v on a map: value store + key-set add + cardinality law.
-                        doMapPut(session, enc, st.arr, idx, val)
+                        doMapPut(session, enc, st.arr, idx, val, st.value)
                     } else {
                         // a := (store a idx val): subsequent reads of a see the update.
                         Object oldA = enc.arrayFor(st.arr)
@@ -15493,9 +15531,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code j != k} is unchanged, both via Z3's array theory. Shared by the {@code m.put} (lemma) and
      * {@code m[k] = v} (array-store) spellings.
      */
-    private void doMapPut(SmtSession s, Encoder enc, String logical, Object key, Object val) {
+    private void doMapPut(SmtSession s, Encoder enc, String logical, Object key, Object val, Expression value) {
         // The put semantics live in Encoder.mapPut (shared with the loop-body executor — Phase 186).
-        enc.mapPut(logical, key, val)
+        enc.mapPut(logical, key, val, value)   // Phase 483 — with the value's nullity
     }
 
     /** Apply a {@code m.put(k, v)} call as a map mutation; false (fall through to lemma handling) if not one. */
@@ -15511,9 +15549,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 27 — route key and value through the map's declared sorts so a String-keyed
         // / Enum-keyed map's `put("admin", 5)` lands as a constant of the right element sort.
         Object key = enc.translateInSort(args.get(0), enc.mapKeySort(name))
-        Object val = enc.translateInSort(args.get(1), enc.mapValueSort(name))
+        Object val = enc.mapValueOf(name, args.get(1))   // Phase 483 — a null value too
         if (key == null || val == null) return false
-        doMapPut(s, enc, name, key, val)
+        doMapPut(s, enc, name, key, val, args.get(1))
         return true
     }
 
@@ -20576,9 +20614,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object idxSort = isMap ? enc.mapKeySort(st.arr) : s.intSort()
                     Object valSort = isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr)
                     Object idx = isMap ? enc.translateInSort(st.index, idxSort) : enc.indexTerm(st.arr, st.index)   // Phase 369
-                    Object val = enc.translateInSort(st.value, valSort)
+                    Object val = isMap ? enc.mapValueOf(st.arr, st.value) : enc.translateInSort(st.value, valSort)   // Phase 483
                     if (idx != null && val != null) {
-                        if (isMap) doMapPut(s, enc, st.arr, idx, val)
+                        if (isMap) doMapPut(s, enc, st.arr, idx, val, st.value)
                         else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storeElementNullity(st.arr, idx, st.value); enc.storedInto(st.arr) }   // Phase 404/445
                     }
                 } else if (step instanceof LemmaCall) {
@@ -21534,9 +21572,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object idxSort = isMap ? enc.mapKeySort(name) : s.intSort()
                 Object valSort = isMap ? enc.mapValueSort(name) : enc.listElementSort(name)
                 Object idx = enc.translateInSort(((BinaryExpression) lhs).rightExpression, idxSort)
-                Object val = enc.translateInSort(be.rightExpression, valSort)
+                Object val = isMap ? enc.mapValueOf(name, be.rightExpression) : enc.translateInSort(be.rightExpression, valSort)   // Phase 483
                 if (idx == null || val == null) { havocLocation(enc, name); return true }
-                if (isMap) doMapPut(s, enc, name, idx, val)
+                if (isMap) doMapPut(s, enc, name, idx, val, be.rightExpression)
                 else { enc.bindArray(name, s.store(enc.arrayFor(name), idx, val)); enc.storeElementNullity(name, idx, be.rightExpression); enc.storedInto(name) }   // Phase 404/445
                 return true
             }
@@ -21962,9 +22000,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (located != null && located != formals[i].name && !(modSet != null && formals[i].name in modSet)) {
                 if (currentSetElementTypes.containsKey(located)) enc.bindSet(formals[i].name, callerView { enc.setFor(located) })
                 if (currentMapTypes.containsKey(located)) {
-                    Object[] mh = (Object[]) callerView { [enc.mapValsFor(located), enc.mapKeysFor(located)] as Object[] }
+                    Object[] mh = (Object[]) callerView { [enc.mapValsFor(located), enc.mapKeysFor(located), enc.mapVnullFor(located)] as Object[] }
                     enc.putMapVals(formals[i].name, mh[0])
                     enc.putMapKeys(formals[i].name, mh[1])
+                    enc.putMapVnull(formals[i].name, mh[2])   // Phase 483
                 }
             }
             if (h == null) {   // can't faithfully substitute → don't assume
@@ -22136,6 +22175,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         if (!savedListOracles.containsKey(loc)) savedListOracles.put(loc, enc.saveListOracles(loc))
                         enc.putMapVals(loc, enc.mapValsFor(callerLoc))
                         enc.putMapKeys(loc, enc.mapKeysFor(callerLoc))
+                        enc.putMapVnull(loc, enc.mapVnullFor(callerLoc))   // Phase 483
                     }
                 }
                 // Phase 349 — a bodied callee that may RESIZE a collection (`xs << v`, `add`, `clear`, an unknown

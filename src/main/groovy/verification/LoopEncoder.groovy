@@ -1011,9 +1011,9 @@ class LoopEncoder {
                 // and sort-crashed to a loud skip on any non-Int-keyed map.
                 if (enc.isMapName(arr)) {
                     Object k = enc.translateInSort(sub.rightExpression, enc.mapKeySort(arr))
-                    Object mv = enc.translateInSort(be.rightExpression, enc.mapValueSort(arr))
+                    Object mv = enc.mapValueOf(arr, be.rightExpression)   // Phase 483 — a null value too
                     if (k == null || mv == null) enc.havocMap(arr)   // unmodelable put → map unknown (sound)
-                    else enc.mapPut(arr, k, mv)
+                    else enc.mapPut(arr, k, mv, be.rightExpression)
                     return
                 }
                 Object idx = enc.indexTerm(arr, sub.rightExpression)   // Phase 369 — `a[-1] = v` stores the last slot

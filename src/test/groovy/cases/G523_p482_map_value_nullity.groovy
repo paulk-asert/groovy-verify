@@ -32,7 +32,7 @@ class G523_p482_map_value_nullity {
     static final List<Map> CASES = [
 
         // ---------- an Integer-keyed map: a null put ----------
-        [group: "P482 a map value's nullity", name: "a null put, then a call on the value", expect: ['Skipped element dereference', 'm.get(1)'],
+        [group: "P482 a map value's nullity", name: "a null put, then a call on the value", expect: ['Cannot invoke method length() on null object', 'obligation: m.get(1) != null'], refute: 'fails on:',
          src: tc('''class A {
                         @Requires({ m != null && m.get(1) != null })
                         static int f(Map<Integer, String> m) {
@@ -40,7 +40,7 @@ class G523_p482_map_value_nullity {
                             return m.get(1).length()
                         }
                     }''')],
-        [group: "P482 a map value's nullity", name: "… an assertion it's non-null", expect: ["condition '(m.get(1) != null)' is outside fragment"],
+        [group: "P482 a map value's nullity", name: "… an assertion it's non-null", expect: ['Assertion may not hold: (m.get(1) != null)'], refute: 'fails on:',
          src: tc('''class A {
                         @Requires({ m != null && m.get(1) != null })
                         static int f(Map<Integer, String> m) {
@@ -51,17 +51,17 @@ class G523_p482_map_value_nullity {
                     }''')],
 
         // ---------- a String-keyed map: no internal error ----------
-        [group: "P482 a map value's nullity", name: "a String key's value, a call on it", expect: ['Skipped element dereference', "m.get('x')"], refute: 'internal error',
+        [group: "P482 a map value's nullity", name: "a String key's value, a call on it", expect: ['Cannot invoke method length() on null object', "obligation: m.get('x') != null", 'fails on: f([:])'], refute: 'internal error',
          src: tc('''class A {
                         @Requires({ m != null })
                         static int f(Map<String, String> m) { m.get('x').length() }
                     }''')],
-        [group: "P482 a map value's nullity", name: "… by subscript", expect: ['Skipped element dereference', "m['x']"], refute: 'internal error',
+        [group: "P482 a map value's nullity", name: "… by subscript", expect: ['Cannot invoke method length() on null object', "obligation: m['x'] != null", 'fails on: f([:])'], refute: 'internal error',
          src: tc('''class A {
                         @Requires({ m != null })
                         static int f(Map<String, String> m) { m['x'].length() }
                     }''')],
-        [group: "P482 a map value's nullity", name: "… an assertion it's non-null", expect: ["condition '(m.get('x') != null)' is outside fragment"], refute: 'internal error',
+        [group: "P482 a map value's nullity", name: "… an assertion it's non-null", ok: true,
          src: tc('''class A {
                         static int f(int n) {
                             Map<String, String> m = [x: 'a']
@@ -69,7 +69,7 @@ class G523_p482_map_value_nullity {
                             return 1
                         }
                     }''')],
-        [group: "P482 a map value's nullity", name: "… and the method's other checks run", expect: ['Division by zero', "obligation: n != 0", "the precondition's 'm.get('x') != null'"], refute: 'internal error',
+        [group: "P482 a map value's nullity", name: "… and the method's other checks run", expect: ['Division by zero', "obligation: n != 0"], refute: 'internal error',
          src: tc('''class A {
                         @Requires({ m != null && m.get('x') != null })
                         static int f(Map<String, String> m, int n) {

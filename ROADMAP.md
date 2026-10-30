@@ -19885,11 +19885,74 @@ precondition stating it is a witness taint. Two messages also lost a string's qu
 assertion's condition, and a precondition part the model couldn't assume (its conjuncts now carry the contract's source).
 
 **Not changed here:** a map value's nullity isn't modelled — null when the key is absent or the stored value is null, which
-a per-map flag array in the key's sort could carry through puts, literals, havocs, `old.m` and call framing. `m['x'][0]`
+a per-map flag array in the key's sort could carry through puts, literals, havocs, `old.m` and call framing (Phase 483
+models it). `m['x'][0]`
 reports a bounds failure (`f([:])`), which at runtime is the NPE of a missing key's null. A list's `xs.get(0)` prints as
 `xs[0]` in its null obligation.
 
 **Shipped tests:** group `P482 a map value's nullity`, 11 cases.
+
+## Phase 483 — a map's null values  *(shipped — soundness)*
+
+Phase 482's stopgap skipped a map value's dereference loudly. Measured on Groovy 6.0.0: `m.get(k)` / `m[k]` is null when
+`k` isn't a key or a null was put there — `[x: 'a'].get('y').length()` and `[x: null].get('x').length()` both throw
+"Cannot invoke method length() on null object".
+
+**The model:** each map carries a value-null array beside its value array and key-set (`map$vnull$m`, the key's sort →
+Int, 1 for a null value), and a read's nullity is `k ∉ keys ∨ vnull[k] = 1` (`Encoder.mapValueNullity`). A put stores the
+value's nullity at its key (`storedNullity`: a primitive's is never null — an `int n` has a free flag of its own — else
+`nullityOfExpr`, unknown when that is); a put of `null` is modelled (it didn't translate, so the map was havocked); a
+literal's entries are puts; a havoc freshens it; a read-only or written map formal is bound to the caller's, and the
+shadow, save/restore and pure-call snapshot (Phase 469) carry it. `m.get(k) == null` / `!= null` (and a String-keyed
+`m.x`) read it, in contracts too, and so do the element dereference `m.get(k).foo()` / `m[k].foo()` — its obligation
+as written, `m.get('x') != null` — and a string subscript's non-null assumption.
+
+**Found on the way:**
+- a local bound to a literal or `new` is never null (Phase 277/386), and the dereference check returned early for it —
+  for a map's value read through it too, so `Map<String, String> m = [x: 'a']; m.get('y').length()` passed. A map's value
+  read now carries its own obligation.
+- a failing call renders every map `[:]`, whatever the model holds, so `@Requires({ m.get('x') != null })` showed
+  `fails on: f([:])`, which breaks it. Phase 337's re-check now runs when the precondition names a map parameter, pins each
+  non-null one's key-set empty (a size of 0 alone doesn't empty an uninterpreted cardinality's set), and a call that breaks
+  the precondition is withheld: "no failing call: a map argument is shown as [:], and that breaks the @Requires (its entries
+  aren't rendered yet)".
+
+**Changed cases (6):** Phase 482's map cases now check — a null put then a call, and its assertion, refute (no failing
+call: `[:]` breaks the `@Requires`); a String key's value and its subscript refute with `fails on: f([:])`; the literal's
+`assert m.get('x') != null` proves; the method whose other checks ran no longer notes the precondition as unmodelled.
+
+**Not changed here:** a map's entries aren't rendered in a failing call. `old.m.get(k)`'s nullity isn't read. A list
+literal's elements have no null flags, and the same early return covers a list local: `List<String> xs = [null];
+xs[0].length()` passes (Phase 484 fixes it). A call-site precondition over a map argument shows `counterexample: m = 0` (as it did before,
+for `m.size() > 0` too).
+
+**Shipped tests:** group `P483 a map's null values`, 23 cases. Measured at the parent commit: twenty-two failed (each a
+skipped dereference, an unmodelled precondition or comparison, or — a missing key, a literal's null value — a silent
+pass); one unchanged (a literal's key, which folded). Mutation-checked: without a map read's nullity nineteen cases fail;
+without it in a comparison nine; without it at the dereference sixteen; without a put's value nullity six; without a
+primitive's never-null one; without the havoc one (a key kept, its value nulled by a callee); without the formal's binding
+one (a callee's postcondition over it); without a null put's fresh value one; without the early return's exception two;
+without the re-check's empty key-set one, its trigger one, its note one; without the loop executor's value one.
+
+## Phase 484 — a literal's null element  *(shipped — soundness)*
+
+Phase 483 recorded it: `List<String> xs = [null]; xs[0].length()` passed. Measured on Groovy 6.0.0, `[null][0].length()`
+throws "Cannot invoke method length() on null object". Two causes: a local bound to a literal (or `new`, or a fresh
+collection) is never null (Phases 277/386), and the dereference check returned early for it — for an element read
+through it too (Phase 483 narrowed that for a map's value only); and Phase 477 bound a literal's element values, not
+their nullity.
+
+**The fix:** the early return is the receiver's alone (`df.indexExpr == null`); and a list literal's elements bind
+`xs$nullElem` — each slot the element's nullity (`storedNullity`, Phase 483: `null` is null, a primitive's or a
+literal's isn't, a parameter's is its own), unknown where that is. So `xs[k].m()`, `xs.get(k).m()`, `String y = xs[k]`
+and `assert xs[k] != null` read it, and `xs[0] = 'a'` (Phase 445) overwrites it.
+
+**Shipped tests:** group `P484 a literal's null element`, 12 cases. Measured at the parent commit: six failed — five passed
+silently (a null element's call, by `get`, the second element, a parameter's element, a fresh collection's element) and
+one false alarm (`List<Integer> xs = [n]; assert xs[0] != null`, its flag unknown); six unchanged (a null element copied to
+a local, and its assertion, already failed on the unknown flag; string elements, a parameter stated non-null, a null
+overwritten, a guard). Mutation-checked: without the literal's flags five cases fail (every non-null proof, and a
+parameter's own nullity); reading a primitive's with `nullityOfExpr` one; with the early return as it was five.
 
 ## Definition of done, per increment
 
