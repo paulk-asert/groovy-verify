@@ -19887,7 +19887,7 @@ assertion's condition, and a precondition part the model couldn't assume (its co
 **Not changed here:** a map value's nullity isn't modelled — null when the key is absent or the stored value is null, which
 a per-map flag array in the key's sort could carry through puts, literals, havocs, `old.m` and call framing (Phase 483
 models it). `m['x'][0]`
-reports a bounds failure (`f([:])`), which at runtime is the NPE of a missing key's null. A list's `xs.get(0)` prints as
+reports a bounds failure (`f([:])`), which at runtime is the NPE of a missing key's null (Phase 485 shows `f([x: ""])`). A list's `xs.get(0)` prints as
 `xs[0]` in its null obligation.
 
 **Shipped tests:** group `P482 a map value's nullity`, 11 cases.
@@ -19921,7 +19921,7 @@ as written, `m.get('x') != null` — and a string subscript's non-null assumptio
 call: `[:]` breaks the `@Requires`); a String key's value and its subscript refute with `fails on: f([:])`; the literal's
 `assert m.get('x') != null` proves; the method whose other checks ran no longer notes the precondition as unmodelled.
 
-**Not changed here:** a map's entries aren't rendered in a failing call. `old.m.get(k)`'s nullity isn't read. A list
+**Not changed here:** a map's entries aren't rendered in a failing call (Phase 485 renders them). `old.m.get(k)`'s nullity isn't read. A list
 literal's elements have no null flags, and the same early return covers a list local: `List<String> xs = [null];
 xs[0].length()` passes (Phase 484 fixes it). A call-site precondition over a map argument shows `counterexample: m = 0` (as it did before,
 for `m.size() > 0` too).
@@ -19953,6 +19953,47 @@ one false alarm (`List<Integer> xs = [n]; assert xs[0] != null`, its flag unknow
 a local, and its assertion, already failed on the unknown flag; string elements, a parameter stated non-null, a null
 overwritten, a guard). Mutation-checked: without the literal's flags five cases fail (every non-null proof, and a
 parameter's own nullity); reading a primitive's with `nullityOfExpr` one; with the early return as it was five.
+
+## Phase 485 — a map's entries shown
+
+Phase 483 recorded it: a failing call rendered every map `[:]`, whatever the model held, so a precondition over a map's
+entries withheld the call ("a map argument is shown as [:], and that breaks the @Requires"), and a failure that needed
+an entry showed a call that fails another way (`m['x'][0]` as `f([:])`, an NPE where a bounds failure was reported).
+
+**The fix:** the backend reads each entry-state map (`map$keys$m`, its values and value-null flags) from the model as the
+literal that builds it — `[x: ""]`, `[x: null]`, `[3: 6]`, `[(-1): 2]`, `["a b": "c"]` — and the failing call shows it.
+Three things make the model's map one a literal can be:
+- **a member is `select == 1`** (Encoder.member), and the model fills the rest with any other number, or makes every
+  key a member (a default of 1) when only one matters;
+- **its size is uninterpreted**, so a model gave the key "x" and `card` 0; where they disagree the query is re-solved
+  with the key-set pinned to its keys and `card` to their count (`Z3Session.consistentMapModel`), the original model kept
+  when that's unsatisfiable (the map then isn't shown, and a precondition it breaks withholds the call as before);
+- **an all-keys key-set** is cut to the keys the query selects or stores at in it (outside quantifiers, through stores
+  and branch merges) that the model makes members — the only keys it tells apart.
+
+A map's literal is pinned in Phase 337's precondition re-check (its key-set, size, values and value-null flags), so a call
+whose map breaks the `@Requires` is still withheld. The counterexample no longer shows a map's scalar placeholder (`m = 0`).
+
+A key the query reads only through the value array (`m.get(-1) == 2`, a map read in arithmetic) is a member of the shown
+map: the encoding reads a map's value as present (`m.get(k)` is the value array's), so `@Requires({ m.get(-1) == 2 })` was
+met by `[:]`, whose `get(-1)` is null — the re-solve pins such keys as members too, and a map whose key-set the query
+never reads is shown with the keys its values are read at. (Reading `m.get(k) == v` with `k`'s nullity instead broke
+Phase 170's ticket lock, whose map reads in arithmetic take every key as present.) A shadowed map formal's value-null flags take the
+shadow's symbol suffix too (Phase 483 left them on the caller's symbol; no case observes it, a bound formal overriding
+the shadow).
+
+**Changed cases (7):** P340's nested-loop map case shows `f(1, 1, [0: 0])` (it put 0 before the loop; `[:]` fails too);
+P482's Integer-keyed null put and its assertion show `f([1: ""])` (they were withheld), its character of a value
+`f([x: ""])` (a `StringIndexOutOfBoundsException`, as reported); P483's null put `f([x: ""])` (withheld), a parameter's put
+`f([x: ""], null)`, and the unwritten map's stated value `f([x: ""], 0)` (withheld). Each rendered call was run on Groovy
+6.0.0 and throws what its diagnostic reports.
+
+**Shipped tests:** group `P485 a map's entries shown`, 14 cases. Measured at the parent commit: twelve failed (eleven
+showed `[:]` or withheld the call where the model held entries, one showed `m = 0`); two unchanged (a size its keys don't
+make still withholds the call, and a map the failure doesn't read is still `[:]`). Mutation-checked: rendering `[:]`
+again eleven cases fail; without the re-solve eight; without cutting an all-keys key-set eight; without a value-only
+key one; without a map whose key-set isn't read three; without the re-solve's size pin one; pinning `[:]` in the
+re-check seven; showing the placeholder one; without declaring the value array at a nullity read two.
 
 ## Definition of done, per increment
 

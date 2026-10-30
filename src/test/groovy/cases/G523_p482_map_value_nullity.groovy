@@ -32,7 +32,7 @@ class G523_p482_map_value_nullity {
     static final List<Map> CASES = [
 
         // ---------- an Integer-keyed map: a null put ----------
-        [group: "P482 a map value's nullity", name: "a null put, then a call on the value", expect: ['Cannot invoke method length() on null object', 'obligation: m.get(1) != null'], refute: 'fails on:',
+        [group: "P482 a map value's nullity", name: "a null put, then a call on the value", expect: ['Cannot invoke method length() on null object', 'obligation: m.get(1) != null', 'fails on: f([1: ""])'],
          src: tc('''class A {
                         @Requires({ m != null && m.get(1) != null })
                         static int f(Map<Integer, String> m) {
@@ -40,7 +40,7 @@ class G523_p482_map_value_nullity {
                             return m.get(1).length()
                         }
                     }''')],
-        [group: "P482 a map value's nullity", name: "… an assertion it's non-null", expect: ['Assertion may not hold: (m.get(1) != null)'], refute: 'fails on:',
+        [group: "P482 a map value's nullity", name: "… an assertion it's non-null", expect: ['Assertion may not hold: (m.get(1) != null)', 'fails on: f([1: ""])'],
          src: tc('''class A {
                         @Requires({ m != null && m.get(1) != null })
                         static int f(Map<Integer, String> m) {
@@ -77,7 +77,7 @@ class G523_p482_map_value_nullity {
                             return 100.intdiv(n)
                         }
                     }''')],
-        [group: "P482 a map value's nullity", name: "… a character of the value", expect: ['fails on: f([:])'], refute: 'internal error',
+        [group: "P482 a map value's nullity", name: "… a character of the value", expect: ['fails on: f([x: ""])'], refute: 'internal error',
          src: tc('''class A {
                         @Requires({ m != null })
                         static String f(Map<String, String> m) { m['x'][0] }

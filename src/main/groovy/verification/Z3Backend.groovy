@@ -1822,7 +1822,146 @@ class Z3Session implements SmtSession {
             Z3Backend.recordSolverCheck(0L, true)
             return CheckResult.unknown(reason)
         }
-        refutationFromModel(solver.getModel())
+        refutationFromModel(consistentMapModel(solver.getModel()))
+    }
+
+    /** Phase 485 — for each of {@code keySets} (a map's key-set, value or value-null array), the index terms the asserted
+     *  query selects or stores at in it (through stores and branch merges): the keys it constrains there */
+    private Map<ArrayExpr, Set<Expr>> keysMentioned(Collection<ArrayExpr> keySets) {
+        Map<ArrayExpr, Set<Expr>> out = new HashMap<ArrayExpr, Set<Expr>>()
+        Set<Expr> visited = new HashSet<Expr>()
+        Deque<Expr> todo = new ArrayDeque<Expr>()
+        for (BoolExpr a : solver.getAssertions()) todo.push(a)
+        while (!todo.isEmpty()) {
+            Expr e = todo.pop()
+            if (!visited.add(e)) continue
+            if (e.isQuantifier()) continue   // its indices are bound: the ground ones are outside
+            if (!e.isApp()) continue
+            if (e.isSelect() || e.isStore()) {
+                Expr[] a = e.getArgs()
+                for (ArrayExpr ks : keySets) {
+                    if (rootedAt(a[0], ks)) {
+                        Set<Expr> got = out.get(ks)
+                        if (got == null) { got = new LinkedHashSet<Expr>(); out.put(ks, got) }
+                        got.add(a[1])
+                    }
+                }
+            }
+            for (Expr x : e.getArgs()) todo.push(x)
+        }
+        out
+    }
+
+    /** Phase 485 — {@code e} is {@code keys}, or stores into it, or a branch merge of such */
+    private static boolean rootedAt(Expr e, ArrayExpr keys) {
+        if (e == keys) return true
+        if (e.isStore()) return rootedAt(e.getArgs()[0], keys)
+        if (e.isITE()) return rootedAt(e.getArgs()[1], keys) || rootedAt(e.getArgs()[2], keys)
+        false
+    }
+
+    /** Phase 485 — {@code e}'s value when it is an integer numeral, else null */
+    private static Long intValueOf(Object e) { e instanceof IntNum ? ((IntNum) e).getInt64() : null }
+
+    /** Phase 485 — the entry-state maps this session declared any of (a key-set, values, value-null flags), by name */
+    private Set<String> mapLogicals() {
+        Set<String> out = new LinkedHashSet<String>()
+        for (String k : sets.keySet() + arrays.keySet() + sortedArrays.keySet()) {
+            String n = k.indexOf(':') >= 0 ? k.substring(0, k.indexOf(':')) : k
+            for (String pre : ['map$keys$', 'map$vals$', 'map$vnull$']) {
+                if (n.startsWith(pre) && n.substring(pre.length()) ==~ /[A-Za-z_][A-Za-z0-9_]*/) out.add(n.substring(pre.length()))
+            }
+        }
+        out
+    }
+
+    /** Phase 485 — the entry-state key-sets of the maps this session declared ({@code map$keys$m}), by name */
+    private Map<String, ArrayExpr> mapKeySets() {
+        Map<String, ArrayExpr> out = new LinkedHashMap<String, ArrayExpr>()
+        sets.each { String name, ArrayExpr arr -> if (name.startsWith('map$keys$')) out.put(name, arr) }
+        sortedArrays.each { String key, ArrayExpr arr -> if (key.startsWith('map$keys$')) out.put(key.substring(0, key.indexOf(':')), arr) }
+        out.findAll { String name, ArrayExpr arr -> name.substring('map$keys$'.length()) ==~ /[A-Za-z_][A-Za-z0-9_]*/ }
+    }
+
+    /** Phase 485 — the keys {@code m} puts in key-set {@code keys} (a member is exactly {@code select == 1}, Encoder.member),
+     *  by their text; null when they aren't finitely many (a default of 1, an unreadable shape) or more than 16 */
+    private static Map<String, Expr> presentKeys(Model m, ArrayExpr keys) {
+        List<Expr[]> entries = new ArrayList<Expr[]>()
+        Expr dflt = arrayEntries(m, m.evaluate(keys, true), entries)
+        if (!(dflt instanceof IntNum) || ((IntNum) dflt).getInt64() == 1L) return null
+        Map<String, Expr> present = new LinkedHashMap<String, Expr>()
+        Set<String> seen = new HashSet<String>()
+        for (Expr[] kv : entries) {   // the outermost store first: it wins
+            if (!seen.add(kv[0].toString())) continue
+            if (!(kv[1] instanceof IntNum)) return null
+            if (((IntNum) kv[1]).getInt64() == 1L) present.put(kv[0].toString(), kv[0])
+        }
+        present.size() > 16 ? null : present
+    }
+
+    /**
+     * Phase 485 — a model whose maps' sizes are their keys' count. A map's cardinality is uninterpreted at entry, so a
+     * model can give {@code map$keys$m} the key "x" and {@code card} 0; the failing call shows its keys, so where they
+     * disagree the query is re-solved with each such key-set pinned to its keys and its size to their count. The
+     * original model when that isn't satisfiable (its maps then aren't shown).
+     */
+    private Model consistentMapModel(Model m) {
+        List<BoolExpr> pins = new ArrayList<BoolExpr>()
+        Map<String, ArrayExpr> keySets = mapKeySets()
+        if (keySets.isEmpty()) return m
+        List<ArrayExpr> read = new ArrayList<ArrayExpr>()
+        keySets.each { String name, ArrayExpr keys ->
+            read.add(keys)
+            String logical = name.substring('map$keys$'.length())
+            for (String a : ['map$vals$' + logical, 'map$vnull$' + logical]) { ArrayExpr x = namedArray(a); if (x != null) read.add(x) }
+        }
+        Map<ArrayExpr, Set<Expr>> mentioned = keysMentioned(read)
+        keySets.each { String name, ArrayExpr keys ->
+            String logical = name.substring('map$keys$'.length())
+            FuncDecl card = cardFnsByElemSort.get(keys.getSort().getDomain().getName().toString())
+            Map<String, Expr> present = presentKeys(m, keys)
+            Long c = card == null ? null : intValueOf(m.evaluate(ctx.mkApp(card, keys), false))
+            Set<String> asKeys = new HashSet<String>()
+            for (Expr k : mentioned.get(keys) ?: Collections.<Expr> emptySet()) asKeys.add(m.evaluate(k, true).toString())
+            boolean infinite = present == null
+            if (infinite) {
+                // every key but a few is a member (`m.get('x') != null` needs only "x"): the keys the query reads or
+                // writes are the only ones it tells apart, so the map is those of them the model makes members
+                present = new LinkedHashMap<String, Expr>()
+                for (Expr k : mentioned.get(keys) ?: Collections.<Expr> emptySet()) {
+                    Expr kv = m.evaluate(k, true)
+                    if (intValueOf(m.evaluate((Expr) select(keys, kv), true)) == 1L) present.put(kv.toString(), kv)
+                }
+            }
+            // a key the query reads only through the value array (`m.get(-1) == 2`, an arithmetic read) holds the value
+            // it reads there: the encoding reads a map's value as present, so the call's map has it
+            boolean added = false
+            for (String a : ['map$vals$' + logical, 'map$vnull$' + logical]) {
+                ArrayExpr x = namedArray(a)
+                for (Expr k : x == null ? Collections.<Expr> emptySet() : (mentioned.get(x) ?: Collections.<Expr> emptySet())) {
+                    Expr kv = m.evaluate(k, true)
+                    if (!asKeys.contains(kv.toString()) && !present.containsKey(kv.toString())) { present.put(kv.toString(), kv); added = true }
+                }
+            }
+            if (present.size() > 16) return
+            if (!infinite && !added && (c == null || c == (long) present.size())) return
+            Object set = constArray(keys.getSort().getDomain(), ctx.mkInt(0))
+            for (Expr k : present.values()) set = store(set, k, ctx.mkInt(1))
+            pins.add(ctx.mkEq(keys, (Expr) set))
+            if (card != null) pins.add(ctx.mkEq(ctx.mkApp(card, keys), ctx.mkInt(present.size())))
+        }
+        if (pins.isEmpty()) return m
+        long t0 = System.nanoTime()
+        solver.push()
+        try {
+            for (BoolExpr p : pins) solver.add(p)
+            if (solver.check() == Status.SATISFIABLE) return solver.getModel()
+        } catch (Throwable ignored) {
+        } finally {
+            solver.pop()
+            Z3Backend.recordSolverCheck((long) ((System.nanoTime() - t0) / 1_000_000L), false)
+        }
+        m
     }
 
     /** Phase 384 — the widest range a bounded sum witness unrolls: arrays of up to this many elements. */
@@ -1894,6 +2033,69 @@ class Z3Session implements SmtSession {
         } finally {
             Z3Backend.recordSolverCheck((long) ((System.nanoTime() - t0) / 1_000_000L), false)
         }
+    }
+
+    /** Phase 485 — the Int→Int or sorted array declared as {@code name}, or null */
+    private ArrayExpr namedArray(String name) {
+        ArrayExpr a = arrays.get(name)
+        if (a != null) return a
+        for (Map.Entry<String, ArrayExpr> e : sortedArrays.entrySet()) if (e.key.startsWith(name + ':')) return e.value
+        null
+    }
+
+    /**
+     * Phase 485 — the map {@code keys}/{@code vals}/{@code vnull} hold in {@code m}, as a Groovy literal ({@code [x: 'a',
+     * y: null]}, {@code [:]}); null when the model doesn't give one: infinitely many keys, more than 16, a key or value
+     * that isn't an Int or a String, or a size the model fixed apart from them (the cardinality is uninterpreted).
+     */
+    private String mapLiteral(Model m, ArrayExpr keys, ArrayExpr vals, ArrayExpr vnull, Map<String, Expr> readOnly) {
+        Map<String, Expr> present = keys == null ? readOnly : presentKeys(m, keys)
+        if (present == null || present.size() > 16) return null
+        FuncDecl card = keys == null ? null : cardFnsByElemSort.get(keys.getSort().getDomain().getName().toString())
+        if (card != null) {
+            Expr c = m.evaluate(ctx.mkApp(card, keys), false)
+            if (c instanceof IntNum && ((IntNum) c).getInt64() != (long) present.size()) return null
+        }
+        List<String> out = new ArrayList<String>()
+        for (Expr k : present.values()) {
+            String kt
+            if (k instanceof IntNum) kt = ((IntNum) k).getInt64() < 0L ? "(${k})".toString() : k.toString()
+            else if (k.isString()) {
+                String ks = cleanZ3String(k.getString())
+                kt = ks ==~ /[A-Za-z_][A-Za-z0-9_]*/ ? ks : VerifyChecker.groovyStringLiteral(ks)
+            } else return null
+            String vt
+            Expr nul = vnull == null ? null : m.evaluate((Expr) select(vnull, k), true)
+            if (nul instanceof IntNum && ((IntNum) nul).getInt64() == 1L) vt = 'null'
+            else {
+                if (vals == null) return null
+                Expr v = m.evaluate((Expr) select(vals, k), true)
+                if (v instanceof IntNum) vt = v.toString()
+                else if (v.isString()) vt = VerifyChecker.groovyStringLiteral(cleanZ3String(v.getString()))
+                else return null
+            }
+            out.add(kt + ': ' + vt)
+        }
+        out.isEmpty() ? '[:]' : '[' + out.join(', ') + ']'
+    }
+
+    /** Phase 485 — an array value's explicit entries into {@code out} (index, value), outermost first; its default, or
+     *  null for a shape it can't read (a lambda) */
+    private static Expr arrayEntries(Model m, Expr e, List<Expr[]> out) {
+        if (e.isStore()) {
+            Expr[] a = e.getArgs()
+            out.add([a[1], a[2]] as Expr[])
+            return arrayEntries(m, a[0], out)
+        }
+        if (e.isConstantArray()) return e.getArgs()[0]
+        if (e.isAsArray()) {
+            FuncDecl f = e.getFuncDecl().getParameters()[0].getFuncDecl()
+            com.microsoft.z3.FuncInterp fi = m.getFuncInterp(f)
+            if (fi == null) return null
+            for (com.microsoft.z3.FuncInterp.Entry en : fi.getEntries()) out.add([en.getArgs()[0], en.getValue()] as Expr[])
+            return fi.getElse()
+        }
+        null
     }
 
     /** Phase 384 — the sum function's own base/step axioms (their bound variables are `sum$…`, Encoder.sumOf). */
@@ -2020,6 +2222,24 @@ class Z3Session implements SmtSession {
         fpVars.each { String name, Expr var ->   // Phase 440
             String lit = fpLiteral(m, var)
             if (lit != null) sce[name] = lit
+        }
+        // Phase 485 — a map's entries at entry (its key-set, values and value-null flags), as the literal that builds it
+        Map<String, ArrayExpr> keySets = mapKeySets()
+        Map<ArrayExpr, Set<Expr>> valueReads = null
+        for (String logical : mapLogicals()) {   // an entry-state map, not a snapshot, havoc or shadow
+            ArrayExpr keys = keySets.get('map$keys$' + logical)
+            ArrayExpr vals = namedArray('map$vals$' + logical), vnull = namedArray('map$vnull$' + logical)
+            Map<String, Expr> readOnly = null
+            if (keys == null) {   // its key-set never read: the keys its values are read at
+                if (valueReads == null) valueReads = keysMentioned([vals, vnull].findAll { it != null })
+                readOnly = new LinkedHashMap<String, Expr>()
+                for (ArrayExpr x : [vals, vnull]) {
+                    if (x == null) continue
+                    for (Expr k : valueReads.get(x) ?: Collections.<Expr> emptySet()) { Expr kv = m.evaluate(k, true); readOnly.put(kv.toString(), kv) }
+                }
+            }
+            String lit = mapLiteral(m, keys, vals, vnull, readOnly)
+            sce[logical + '{}'] = lit != null ? lit : '?'   // `?`: the model holds the map, but not as a literal
         }
         CheckResult r = CheckResult.refuted(ce)
         r.sortedCounterexample = sce

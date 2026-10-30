@@ -182,7 +182,7 @@ class G384_p340_nested_loop_writes {
                             }
                         }
                     }''')],
-        [group: 'P340 nested loop writing a field or collection', name: 'a map key the nested loop overwrites refutes the old value', expect: ['Cannot prove postcondition', 'fails on: f(1, 1, [:])'],
+        [group: 'P340 nested loop writing a field or collection', name: 'a map key the nested loop overwrites refutes the old value', expect: ['Cannot prove postcondition', 'fails on: f(1, 1, [0: 0])'],
          src: tc('''class C {
                         @Requires({ n >= 1 && m >= 1 && mp != null })
                         @Ensures({ mp.get(0) == 7 })

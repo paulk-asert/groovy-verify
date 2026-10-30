@@ -3168,6 +3168,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (k.endsWith('?null') || k.contains('#') || k.startsWith('$')) return
             // Phase 351 — an object receiver's own handle (its fields show as `c$count`) is an internal value
             if (currentObjectParams.containsKey(k) || currentObjectAliases.containsKey(k)) return
+            if (currentMapTypes.containsKey(k)) return   // Phase 485 — nor is a map's scalar placeholder (`m = 0`)
             if (k.endsWith('$id') && currentObjectParams.containsKey(k - '$id')) return   // Phase 434 — its identity: a note says it
             if (k.endsWith(']')) {
                 int br = k.indexOf('[')
@@ -3384,11 +3385,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Parameter p : currentMethod.parameters) {
             if ((p.type?.isArray() || isCollectionType(p.type)) && sizeOf(p.name, ce) > MAX_REPRO_SIZE) return null
         }
+        reproMapLiterals = new HashMap<String, String>()   // Phase 485 — the maps the call shows with their entries
+        sortedCe?.each { String k, String v -> if (k.endsWith('{}') && v != '?') reproMapLiterals.put(k.substring(0, k.length() - 2), v) }
         ce = reproUnderRequires(ce)
         if (ce == null) { reproBreaksRequires = true; return null }
+        Map<String, String> shownSorted = new HashMap<String, String>(sortedCe ?: [:])
+        reproMapLiterals.each { String k, String v -> shownSorted.put(k + '{}', v) }
         List<String> args = new ArrayList<String>()
         for (Parameter p : currentMethod.parameters) {
-            String a = renderArg(p, ce, sortedCe)
+            String a = renderArg(p, ce, shownSorted)
             if (a == null) return null   // Phase 369 — an argument it can't build: no call, rather than a wrong one
             args.add(a)
         }
@@ -3416,13 +3421,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 483 — a map renders `[:]` whatever the model holds: a precondition over one is re-checked against that
         Set<String> free = freeNames(reqAst)
         boolean overMap = currentMethod.parameters.any { Parameter p -> isMapType(p.type) && free.contains(p.name) }
-        reproMapShown = overMap
+        reproMapShown = currentMethod.parameters.any { Parameter p -> isMapType(p.type) && free.contains(p.name) && !reproMapLiterals.containsKey(p.name) }
         if (!hasQuantifier(reqAst) && !overWritten && !overMap) return ce
         List<String> shape = new ArrayList<String>(), elements = new ArrayList<String>()
         reproPins(ce, Collections.<String, Boolean> emptyMap(), shape, elements)
         CheckResult whole = requiresWith(reqAst, shape + elements)
         if (whole == null || whole.status != CheckResult.Status.VERIFIED) return ce   // met, or undecided: keep
-        if (elements.isEmpty() && !overWritten) return null   // (a map's `[:]` is pinned whole: nothing to repair)
+        if (elements.isEmpty() && !overWritten) return null   // (a map's literal is pinned whole: nothing to repair)
         // pin what the failure fixes (an unwritten parameter's value and size, a written array's length and nullness)
         // and take the rest from a model of the precondition: the elements, and a written parameter's input value
         List<String> loose = new ArrayList<String>(), ignored = new ArrayList<String>()
@@ -3542,9 +3547,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             assumeIntJvmBounds(s, enc)
             s.assertExpr(pre)
             if (pin != null) s.assertExpr(pin)
-            // Phase 483 — a non-null map parameter is rendered `[:]`: no keys
+            // Phase 483 — a non-null map parameter is rendered `[:]`: no keys; Phase 485 — or the model's entries
             for (String m : pins.findAll { it.endsWith(' != null') }.collect { it.substring(0, it.length() - ' != null'.length()) }) {
-                if (enc.isMapName(m)) s.assertExpr(s.eq(enc.mapKeysFor(m), s.constArray(enc.mapKeySort(m), s.intLit(0L))))
+                if (enc.isMapName(m) && !pinMapLiteral(s, enc, m, reproMapLiterals.get(m) ?: '[:]')) return null
             }
             for (Parameter p : currentMethod.parameters) {   // name the elements so the model walk reports them
                 if (p.type?.isArray() || isCollectionType(p.type)) try { enc.arrayFor(p.name) } catch (Throwable ignored) { }
@@ -3555,19 +3560,47 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
+    /** Phase 485 — map {@code m} is exactly {@code literal}: its key-set (and its size), each value, and each value's
+     *  nullity; false when an entry doesn't translate */
+    private boolean pinMapLiteral(SmtSession s, Encoder enc, String m, String literal) {
+        Expression e = parseContract(literal)
+        if (!(e instanceof MapExpression)) return false
+        Object kSort = enc.mapKeySort(m)
+        Object keys = s.constArray(kSort, s.intLit(0L))
+        List<MapEntryExpression> entries = ((MapExpression) e).mapEntryExpressions
+        for (MapEntryExpression me : entries) {
+            Object k = enc.translateInSort(me.keyExpression, kSort)
+            if (k == null) return false
+            keys = s.store(keys, k, s.intLit(1L))
+            boolean isNull = me.valueExpression instanceof ConstantExpression && ((ConstantExpression) me.valueExpression).value == null
+            s.assertExpr(s.eq(s.select(enc.mapVnullFor(m), k), s.intLit(isNull ? 1L : 0L)))
+            if (!isNull) {
+                Object v = enc.translateInSort(me.valueExpression, enc.mapValueSort(m))
+                if (v == null) return false
+                s.assertExpr(s.eq(s.select(enc.mapValsFor(m), k), v))
+            }
+        }
+        s.assertExpr(s.eq(enc.mapKeysFor(m), keys))
+        s.assertExpr(s.eq(enc.cardOf(enc.mapKeysFor(m)), s.intLit((long) entries.size())))
+        true
+    }
+
     private static final long MAX_PINNED_ELEMENTS = 64L
     /** Phase 337 — the timeout of a repro's precondition re-check, which decides only whether a call is shown. */
     private static final int AUX_TIMEOUT_MS = 500
 
     /** Set by {@link #buildFailingCall} when it withheld the call because its arguments break {@code @Requires}. */
     private boolean reproBreaksRequires = false
-    /** Phase 483 — set by {@link #reproUnderRequires} when a precondition over a map parameter was re-checked */
+    /** Phase 483 — set by {@link #reproUnderRequires} when a precondition over a map parameter whose entries the model
+     *  didn't give (shown `[:]`) was re-checked */
     private boolean reproMapShown = false
+    /** Phase 485 — the map parameters a failing call shows with the model's entries: name → its literal */
+    private Map<String, String> reproMapLiterals = new HashMap<String, String>()
     /** Phase 380 — this method's possibly-reversed ranges' hidden indicators → their text ({@link Encoder#reversedRanges}). */
     private Map<String, String> currentReversedRanges = new HashMap<String, String>()
 
     static final String REPRO_MAP_BREAKS_REQUIRES =
-        'no failing call: a map argument is shown as [:], and that breaks the @Requires (its entries aren\'t rendered yet)'
+        'no failing call: a map argument is shown as [:], and that breaks the @Requires (the model gave no entries to show)'
 
     static final String REPRO_BREAKS_REQUIRES =
         'no failing call: these arguments break the @Requires, which this check assumed only in part (it may not be reachable)'
@@ -3731,7 +3764,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return modelVal != null ? "${simpleEnumName(t)}.${modelVal}".toString() : 'null'
         }
         if (isSetType(t)) return nulled ? 'null' : '[] as Set'
-        if (isMapType(t)) return nulled ? 'null' : '[:]'
+        if (isMapType(t)) {   // Phase 485 — its entries, when the model (or the precondition's, repaired) gives them
+            String lit = sortedCe?.get(p.name + '{}')
+            return nulled ? 'null' : lit != null && lit != '?' ? lit : '[:]'
+        }
         if (isCollectionType(t)) {
             long n = sizeOf(p.name, ce)
             List<Long> elems = pinnedElements(p.name, n, ce)

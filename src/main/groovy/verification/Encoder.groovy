@@ -2312,7 +2312,8 @@ class Encoder implements TheoryApi {
         if (shadowSuffix.isEmpty()) return key
         String base = key.endsWith('.size') ? key.substring(0, key.length() - 5) :
             key.endsWith('$nullElem') ? key.substring(0, key.length() - '$nullElem'.length()) :
-            key.startsWith('map$vals$') || key.startsWith('map$keys$') ? key.substring(9) : key
+            key.startsWith('map$vals$') || key.startsWith('map$keys$') ? key.substring(9) :
+            key.startsWith('map$vnull$') ? key.substring(10) : key   // Phase 485 — a shadow's value-null flags too
         String suf = shadowSuffix.get(base)
         suf == null ? key : key + suf
     }
@@ -4808,6 +4809,7 @@ class Encoder implements TheoryApi {
      * Phase 483 — {@code m.get(k)} / {@code m[k]} is null when {@code k} isn't a key, or the value put there is null.
      */
     Object mapValueNullity(String logical, Object key) {
+        mapValsFor(logical)   // Phase 485 — declared, so a model that shows the map has its values
         session.or([session.not(member(mapKeysFor(logical), key)),
                     session.eq(session.select(mapVnullFor(logical), key), session.intLit(1L))])
     }

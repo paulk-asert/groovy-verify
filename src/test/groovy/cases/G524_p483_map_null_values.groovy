@@ -69,7 +69,7 @@ class G524_p483_map_null_values {
                         @Requires({ m != null })
                         static int f(Map<String, String> m) { m.put('x', 'ab'); m.get('x').length() }
                     }''')],
-        [group: "P483 a map's null values", name: "a null put", expect: ['Cannot invoke method length() on null object', "obligation: m.get('x') != null", 'a map argument is shown as [:]'], refute: 'fails on:',
+        [group: "P483 a map's null values", name: "a null put", expect: ['Cannot invoke method length() on null object', "obligation: m.get('x') != null", 'fails on: f([x: ""])'],
          src: tc('''class A {
                         @Requires({ m != null && m.get('x') != null })
                         static int f(Map<String, String> m) { m.put('x', null); m.get('x').length() }
@@ -93,7 +93,7 @@ class G524_p483_map_null_values {
                             return 1
                         }
                     }''')],
-        [group: "P483 a map's null values", name: "a parameter's put is its nullity", expect: ['Cannot invoke method length() on null object', 'fails on: f([:], null)'],
+        [group: "P483 a map's null values", name: "a parameter's put is its nullity", expect: ['Cannot invoke method length() on null object', 'fails on: f([x: ""], null)'],
          src: tc('''class A {
                         @Requires({ m != null })
                         static int f(Map<String, String> m, String s) { m.put('x', s); m.get('x').length() }
@@ -185,7 +185,7 @@ class G524_p483_map_null_values {
                             return t
                         }
                     }''')],
-        [group: "P483 a map's null values", name: "an unwritten map's stated value: no [:] call", expect: ['Division by zero', 'a map argument is shown as [:]'], refute: 'fails on:',
+        [group: "P483 a map's null values", name: "an unwritten map's stated value", expect: ['Division by zero', 'fails on: f([x: ""], 0)'],
          src: tc('''class A {
                         @Requires({ m != null && m.get('x') != null })
                         static int f(Map<String, String> m, int n) { m.get('x').length() + 100.intdiv(n) }
