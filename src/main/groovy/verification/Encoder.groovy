@@ -4867,7 +4867,7 @@ class Encoder implements TheoryApi {
         // Phase 445 — an element read is null when the element is: a for-in's `x = xs[i]` and a `String y = xs[0]`
         // carry the flag a `@Requires({ xs[0] != null })` (or a non-null element type) fixes, not a fresh one
         IndexedNullTarget ind = indexedAccessTarget(e)
-        if (ind != null && (isListTyped(ind.containerName) || isArrayTyped(ind.containerName))) {
+        if (ind != null && hasElementNullity(ind.containerName)) {
             if (nonNullElementContainers.contains(ind.containerName)) return session.boolLit(false)
             Object idxH = translate(ind.indexExpr)
             return idxH == null ? null : session.eq(session.select(elementNullityFor(ind.containerName), idxH), session.intLit(1L))
@@ -4892,6 +4892,10 @@ class Encoder implements TheoryApi {
      * which discharges the implicit per-element NPE obligation at a later {@code xs[i].method()}.
      */
     Object elementNullityFor(String name) { arrayFor(name + '$nullElem') }
+
+    /** Phase 482 — {@code name} is a list or an array, whose elements' nullity {@link #elementNullityFor} models; a map's
+     *  {@code m.get(k)} / {@code m[k]} isn't one (its key needn't be an Int, and a put never updated the flags) */
+    boolean hasElementNullity(String name) { isListTyped(name) || isArrayTyped(name) }
 
     private final Set<BinaryExpression> literalEqInProgress =
         Collections.newSetFromMap(new IdentityHashMap<BinaryExpression, Boolean>())
@@ -6382,8 +6386,10 @@ class Encoder implements TheoryApi {
             // Phase 37 — xs[i] == null / xs.get(i) == null and their `!=` mirrors: lower to the
             // per-element nullity oracle. Lets a @Requires({ xs[i] != null }) constrain the same
             // flag the implicit deref obligation later asserts the negation of.
+            // Phase 482 — a list's or an array's only: a map's `m.get(1) != null` read flags `m.put(1, null)` never
+            // cleared, and a String key's crashed the method's checks
             IndexedNullTarget ind = indexedNullComparisonTarget(be)
-            if (ind != null) {
+            if (ind != null && hasElementNullity(ind.containerName)) {
                 Object idxH = translate(ind.indexExpr)
                 if (idxH != null) {
                     Object flag = session.select(elementNullityFor(ind.containerName), idxH)

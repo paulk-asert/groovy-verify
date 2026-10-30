@@ -19868,6 +19868,29 @@ double-quoted.
 
 **Shipped tests:** group `P481 keys as written`, 11 cases.
 
+## Phase 482 — a map value's nullity  *(shipped — soundness)*
+
+Found checking Phase 481: Phase 37 lowers `xs.get(i) != null` / `xs[i] != null` (and the dereference `xs.get(i).m()`)
+to a list's per-element null flags (`xs$nullElem`, an Int-indexed array), by shape — for any container, a map's too. A
+map put never touched those flags, so with `Map<Integer, String> m` under `@Requires({ m != null && m.get(1) != null })`,
+after `m.put(1, null)`, both `m.get(1).length()` and `assert m.get(1) != null` passed. A String key read the Int-indexed
+array with a String and stopped the method's implicit checks with an internal error ("domain sort String and parameter
+Int do not match"): `m.get('x').length()`, `m['x'].length()`, `assert m.get('x') != null`.
+
+**The fix (a stopgap):** only a list's or an array's elements have the flags (`Encoder.hasElementNullity`, the test
+Phase 445's `nullityOfExpr` already made) — in the comparison, the element dereference and a string subscript's
+non-null assumption. A map value's dereference is skipped loudly ("'m' isn't a list or an array: the nullity of
+m.get('x') isn't modelled"); `m.get(k) != null` is outside the fragment, so an assertion of it is skipped and a
+precondition stating it is a witness taint. Two messages also lost a string's quotes (Phase 481's cause): a skipped
+assertion's condition, and a precondition part the model couldn't assume (its conjuncts now carry the contract's source).
+
+**Not changed here:** a map value's nullity isn't modelled — null when the key is absent or the stored value is null, which
+a per-map flag array in the key's sort could carry through puts, literals, havocs, `old.m` and call framing. `m['x'][0]`
+reports a bounds failure (`f([:])`), which at runtime is the NPE of a missing key's null. A list's `xs.get(0)` prints as
+`xs[0]` in its null obligation.
+
+**Shipped tests:** group `P482 a map value's nullity`, 11 cases.
+
 ## Definition of done, per increment
 
 An increment is done when:

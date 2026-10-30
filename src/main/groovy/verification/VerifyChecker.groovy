@@ -6005,11 +6005,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         List<Expression> parts = new ArrayList<Expression>()
         splitConjuncts(req, parts)
+        Object src = req.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY)   // Phase 482 — each part's literals as written
         for (Expression c : parts) {
+            if (src != null && c.getNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY) == null) {
+                c.putNodeMetaData(ContractExpansionTransform.SOURCE_TEXT_KEY, src)
+            }
             Object t = null
             try { t = enc.translateBool(c) } catch (Throwable ignored) { t = null }
             if (t != null) s.assertExpr(t)
-            else s.witnessTaints().add('pre:' + clip(Reporter.ungrouped(c.text)))   // Phase 412 — as written: `h.arr != null`
+            else s.witnessTaints().add('pre:' + clip(Reporter.ungrouped(shownText(c))))   // Phase 412 — as written: `h.arr != null`, `m.get('x')`
         }
     }
 
@@ -6360,7 +6364,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  list's element by its element nullity, Phase 37; else what the expression's own nullity says) */
     private static void assumeStringNonNull(SmtSession s, Encoder enc, Expression e) {
         Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e)
-        if (ind != null) {
+        if (ind != null && enc.hasElementNullity(ind.containerName)) {   // Phase 482 — not a map's value
             Object idx = enc.translate(ind.indexExpr)
             if (idx != null) s.assertExpr(s.eq(s.select(enc.elementNullityFor(ind.containerName), idx), s.intLit(0L)))
             return
@@ -7161,7 +7165,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (p == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
-                    "condition '${asite.cond.text}' is outside fragment" + (why != null ? " (${why})" : '')), asite.node)
+                    "condition '${asWritten(asite.cond)}' is outside fragment" + (why != null ? " (${why})" : '')), asite.node)
                 return
             }
             s.assertExpr(s.not(p))                       // negation of the asserted predicate
@@ -7314,6 +7318,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
                 // obligation fires. (No quantifier needed to encode the "trust"; we just skip.)
                 if (currentNonNullElementContainers.contains(df.receiver)) return
+                // Phase 482 — a map's value (`m.get(k).foo()`, `m[k].foo()`) is null for a missing key or a null put;
+                // its nullity isn't modelled, so the check is skipped loudly (a list's element flags read it unsoundly)
+                if (!enc.hasElementNullity(df.receiver)) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
+                        "'${df.receiver}' isn't a list or an array: the nullity of ${asWritten(((MethodCallExpression) df.node).objectExpression)} isn't modelled"), df.node)
+                    return
+                }
                 Object idx = enc.translate(df.indexExpr)
                 if (idx == null) {
                     addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
