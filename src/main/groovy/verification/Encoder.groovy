@@ -496,8 +496,17 @@ class Encoder implements TheoryApi {
     /** Phase 434 — {@link #isAliasModeled}, for the checker's field-write step. */
     boolean aliasModeled(String name) { isAliasModeled(name) }
 
-    /** Phase 89 — the object identity of an alias-modelled reference: an unconstrained {@code name$id} Int. */
-    private Object objId(String name) { varForRaw(name + '$id') }
+    /**
+     * Phase 89 — the object identity of an alias-modelled reference: a {@code name$id} Int. Phase 480 — null is identity
+     * 0, and only null: `a.is(b)` holds when both are null ({@code null.is(b)} is {@code b == null}) or both are one
+     * object, so with {@code a != null} it gives {@code b != null} (an unconstrained identity said nothing of nullity).
+     */
+    private Object objId(String name) {
+        Object id = varForRaw(name + '$id')
+        if (idNullLinked.add(name)) session.assertExpr(session.eq(nullityOf(name), session.eq(id, session.intLit(0L))))
+        id
+    }
+    private final Set<String> idNullLinked = new HashSet<String>()
 
     /** Phase 89 — the per-(class, field) heap map for an Int field — an {@code Int → Int} array.
      *  Routed through {@link #arrayFor} (the SSA-able array env) so a field *write* (Phase 89 slice 2)

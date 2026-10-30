@@ -19815,7 +19815,7 @@ accessor (`Cannot invoke "B.getV()"`).
   method had an obligation to replay it for — latent, since `m()` had none before.
 
 **Not changed:** a field's property (`this.h.v`, `h.v` for a field `h`), as before. `a.is(b)` doesn't give `b` the
-nullity of `a` (P89's alias cases now state both). A contract that allows a null its body never returns
+nullity of `a` (P89's alias cases now state both; Phase 480 links them). A contract that allows a null its body never returns
 (`@Ensures({ n < 0 || result.v == n })`) names a call from the contract (`fails on: f(-1)`), as Phase 421's witnesses
 are.
 
@@ -19831,6 +19831,28 @@ navigation, a literal local, a primitive's property, a callee whose postconditio
 Mutation-checked: Phase 415's array-only site fails eight cases; without the primitive test one; without "set" two;
 marking a compound store as a set one; without the callee's non-null result two; the `||`'s right counted two; the
 carrier's sort as an Int four (and P142c's one); without the tuple local's (P113) three.
+
+## Phase 480 — identity and nullity
+
+Phase 479 recorded it: Phase 89 reads `a.is(b)` / `a === b` between two alias-modelled references as their identities
+(`a$id`, `b$id`) being equal, and an identity said nothing of nullity — so under `@Requires({ a != null && a.is(b) })`,
+`b.balance` carried a null obligation, and P89's alias case had to state `b != null` too. At runtime `a.is(b)` holds when
+both are null (`null.is(b)` is `b == null`) or both are one object.
+
+**The fix:** null is identity 0, and only null (`Encoder.objId`: `name?null ⇔ name$id == 0`, asserted the first time a
+reference's identity is minted). Identity equality is then exactly `is`: one non-null makes the other non-null, one null
+the other null, a null and a non-null are distinct — and two nulls share a heap cell, so P89's `(a === b) ==> (a.balance
+== b.balance)` still proves. (Encoding `is` as "both null, or both non-null and one identity" instead refuted it with
+`f(null, null)`, two nulls' unconstrained identities reading different cells.)
+
+**Changed cases (1):** P89's `a.is(b) ⇒ fields coincide` is back to `@Requires({ a != null && a.is(b) })` (Phase 479 had
+added `b != null`).
+
+**Shipped tests:** group `P480 identity and nullity`, 9 cases. Measured at the parent commit: six failed (one non-null
+makes the other non-null — by `is`, by `===`, the other way round, in a guard; one null makes the other null; a null and
+a non-null are distinct); three unchanged (identity alone leaves both maybe null, a null's property throws, distinct says
+nothing of the other's nullity). Mutation-checked: without the link six cases fail; with only `null ⇒ id 0`, or only `id 0 ⇒ null`,
+the same six.
 
 ## Definition of done, per increment
 
