@@ -19978,7 +19978,8 @@ A key the query reads only through the value array (`m.get(-1) == 2`, a map read
 map: the encoding reads a map's value as present (`m.get(k)` is the value array's), so `@Requires({ m.get(-1) == 2 })` was
 met by `[:]`, whose `get(-1)` is null — the re-solve pins such keys as members too, and a map whose key-set the query
 never reads is shown with the keys its values are read at. (Reading `m.get(k) == v` with `k`'s nullity instead broke
-Phase 170's ticket lock, whose map reads in arithmetic take every key as present.) A shadowed map formal's value-null flags take the
+Phase 170's ticket lock, whose map reads in arithmetic take every key as present; Phase 486 checks that arithmetic, and
+reads a number map's comparisons with the null.) A shadowed map formal's value-null flags take the
 shadow's symbol suffix too (Phase 483 left them on the caller's symbol; no case observes it, a bound formal overriding
 the shadow).
 
@@ -19994,6 +19995,55 @@ make still withholds the call, and a map the failure doesn't read is still `[:]`
 again eleven cases fail; without the re-solve eight; without cutting an all-keys key-set eight; without a value-only
 key one; without a map whose key-set isn't read three; without the re-solve's size pin one; pinning `[:]` in the
 re-check seven; showing the placeholder one; without declaring the value array at a nullity read two.
+
+## Phase 486 — a map's value unboxed  *(shipped — soundness)*
+
+Phase 485 recorded it: a map's read in arithmetic was taken as present. Measured on Groovy 6.0.0 (@TypeChecked), a
+missing key's or a null value's unboxing throws: `m.get('x') + 1` "Cannot execute null+1" (an arithmetic operation's
+left operand, a negation, an `intdiv`/`remainder`/`mod`'s receiver: `NullPointerException`); `1 + m.get('x')`
+"Ambiguous method overloading" (a right operand, such a call's argument: `GroovyRuntimeException`; a `%`'s right is a
+`NullPointerException`); `int v = m.get('x')` "Cannot cast 'null' to class 'int'" (a primitive's value — a
+primitive-returning method's result, a primitive variable's initial or assigned value: `GroovyCastException`). None of
+them had an obligation.
+
+**The fix:** each such read of a boxed number (`m.get(k)`, `m[k]`, a String-keyed `m.x`), found through a ternary's arms
+and an if's last statements (`VerifyChecker.unboxedReads`), is a dereference site whose obligation is the read's
+nullity (Phase 483's `k ∉ keys ∨ vnull[k] = 1`), as written — `m.get('x') != null` — with the position's exception named
+in the head and the repro, and a catch of it covering the site. An Elvis's left, a comparison, a String's concatenation
+and a boxed or `boolean` value take the null (measured: `null ?: 0`, `null < 3`, `'v' + null`, a null `Boolean` as
+`boolean` is false).
+
+**Comparisons:** a number map's read now compares as Groovy compares a null — below every number, equal only to null
+(measured: `null < 3`, `null <= 3`, `null != 3`, `null == null` hold; `null > 3`, `null >= 3`, `null == 3`, `3 < null`
+don't). So `@Requires({ m.sum == 3 })`, `m.x >= 5` or a loop invariant's `m[State.DONE] == 7` makes the value non-null,
+and the body's unboxing of it is met; `m[k] < 1000` doesn't. A comparison inside a quantifier (`(0..<n).every { 0 <=
+next[it] }`) and one that reads `old.m[k]` (a snapshot has no value-null flags) read the value as present, as before —
+wrapping the quantified ones turned two refutations into timeouts. (Phase 485's attempt to read `m.get(k) == v` with
+the key's presence broke the ticket lock, whose maps hold enums; this one is a number map's only.)
+
+**Found on the way:** P186's mutator `@Requires({ m[k] < 1000 }) void bump(State k) { m[k] = m[k] + 1 }` under
+`@Invariant({ m[State.IDLE] >= 0 && m[State.RUNNING] >= 0 })` throws for `bump(State.DONE)` — `null < 1000` holds, so the
+contracts pass, and the body's `null + 1` throws (run on Groovy 6.0.0 with groovy-contracts). It is now a P486 case.
+
+**Changed cases (2):** P186's `bump` states `0 <= m[k]`; its loop that frames the other keys states `m[State.IDLE] >= 0`
+in the invariant (the loop body unboxes it, and the invariant said nothing of it).
+
+**Not changed here:** a list's element (`List<Integer> xs; xs[0] + 1`), a boxed parameter (`Integer x; x + 1`) and an
+object's boxed property unboxed aren't checked; nor a map read unboxed as an argument to a primitive parameter, an
+index, a cast, or in a compound assignment (`m['x'] += 1`, `m['x']++`).
+
+**Shipped tests:** group `P486 a map's value unboxed`, 31 cases. Every failing call was run on Groovy 6.0.0 and throws
+what its diagnostic reports; every harmless one returns. Measured at the parent commit: eighteen failed (each a silent
+pass of a throwing read, or of `bump(State.DONE)`); thirteen unchanged (a value stated non-null, a put's, a literal's
+key, a guard, two caught exceptions, an Elvis, a comparison, a String's concatenation, boxed, `Boolean` and String
+values, and a comparison's non-null — `m.x >= 5 && 3 == m.y` then `m.x + m.y` — which held there as a read taken as
+present). Mutation-checked: without the sites eighteen cases fail; without the comparisons two; with a null literal's
+comparison wrapped three; `<` as `>` one; a right operand's `NullPointerException` one; a `%`'s `GroovyRuntimeException`
+one; without the ternary's arms one; without the last statement's value three; without the explicit return one; without
+a declaration one; an assignment one; a negation one; `intdiv` two; without the String exclusion one; without the boxed
+gate one; without the `ClassCastException` catch one; wrapping `old.m[k]`'s comparison fails P17's put framing, a
+quantifier's P18's refutation (a timeout). Without the map-only gate no case fails: a list's element would read its
+own flags, which the next slice checks.
 
 ## Definition of done, per increment
 

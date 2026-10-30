@@ -87,7 +87,7 @@ class G267_p186_map_mutation {
                     class Counters {
                         enum State { IDLE, RUNNING, DONE }
                         Map<State,Integer> m
-                        @Requires({ m[k] < 1000 })
+                        @Requires({ 0 <= m[k] && m[k] < 1000 })   // Phase 486 — `null < 1000` holds: bump(State.DONE) threw
                         void bump(State k) { m[k] = m[k] + 1 }
                     }''')],
         // …and a clobber refutes.
@@ -144,7 +144,7 @@ class G267_p186_map_mutation {
                         @Ensures({ result == 7 })
                         static int g(Map<State,Integer> m, int n) {
                             int i = 0
-                            @Invariant({ 0 <= i && i <= n && m[State.DONE] == 7 })
+                            @Invariant({ 0 <= i && i <= n && m[State.DONE] == 7 && m[State.IDLE] >= 0 })   // Phase 486 — IDLE's unboxed
                             @Decreases({ n - i })
                             while (i < n) { m[State.IDLE] = m[State.IDLE] + 1; i = i + 1 }
                             return m[State.DONE]

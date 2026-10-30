@@ -1643,7 +1643,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  types, their JDK supertypes (NFE <: IllegalArgumentException; the broad RuntimeException /
      *  Exception / Throwable), nothing inferred. */
     private static final List<String> RUNTIME_OBLIGATION_EXCEPTIONS = ['NullPointerException', 'ArithmeticException',
-        'IndexOutOfBoundsException', 'NumberFormatException', 'IllegalArgumentException', 'NoSuchElementException']
+        'IndexOutOfBoundsException', 'NumberFormatException', 'IllegalArgumentException', 'NoSuchElementException',
+        'GroovyRuntimeException', 'GroovyCastException']
     private static final Map<String, List<String>> CATCH_COVERS = [
         'NullPointerException'          : ['NullPointerException'],
         'ArithmeticException'           : ['ArithmeticException'],
@@ -1651,9 +1652,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         'NumberFormatException'         : ['NumberFormatException'],
         'IllegalArgumentException'      : ['NumberFormatException', 'IllegalArgumentException'],
         'NoSuchElementException'        : ['NoSuchElementException'],   // Phase 370 — a spec's @ThrowsIf throws it
+        'GroovyRuntimeException'        : ['GroovyRuntimeException'],   // Phase 486 — a null unboxed throws these
+        'GroovyCastException'           : ['GroovyCastException'],
+        'ClassCastException'            : ['GroovyCastException'],
         'RuntimeException'              : RUNTIME_OBLIGATION_EXCEPTIONS,
         'Exception'                     : RUNTIME_OBLIGATION_EXCEPTIONS,
         'Throwable'                     : RUNTIME_OBLIGATION_EXCEPTIONS,
+    ]
+
+    /** Phase 486 — an unboxed null's exception as a repro names it: the Groovy ones qualified, so a JUnit repro compiles */
+    private static final Map<String, String> UNBOX_REPRO_EXCEPTIONS = [
+        'NullPointerException'  : 'NullPointerException',
+        'GroovyRuntimeException': 'groovy.lang.GroovyRuntimeException',
+        'GroovyCastException'   : 'org.codehaus.groovy.runtime.typehandling.GroovyCastException',
     ]
 
     /** Walk the clean body for try blocks and their handlers' coverage (see {@link #currentCatchCoverage}). */
@@ -1702,7 +1713,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return 'IndexOutOfBoundsException'
         if (site instanceof DivideSite) return 'ArithmeticException'
         if (site instanceof ParseSite) return 'NumberFormatException'
-        if (site instanceof DerefSite) return 'NullPointerException'
+        if (site instanceof DerefSite) return ((DerefSite) site).unboxThrows ?: 'NullPointerException'   // Phase 486
         null   // AssertSite (the developer\'s own spec) and OverflowSite (wraps, never throws) stay checked
     }
 
@@ -1735,6 +1746,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         col.specSite = { Expression call -> specThrowSiteFor(call) }
         col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
         col.harmlessSafeCalls = harmlessSafeCalls(currentMethod)   // Phase 422
+        col.unboxedReads = unboxedReads(currentMethod)   // Phase 486
         Set<String> ras = receiverArraysOf(currentMethod)   // Phase 413
         if (!ras.isEmpty()) col.receiverArray = { PropertyExpression pe ->
             pe.objectExpression instanceof VariableExpression && ras.contains(
@@ -5515,6 +5527,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (site instanceof DerefSite) {
             DerefSite df = (DerefSite) site
+            if (df.unboxed != null) return isEntryName(df.receiver) && referencesOnlyEntryState(df.indexExpr) ?   // Phase 486
+                "${asWritten(df.unboxed)} != null".toString() : null
             if (df.indexExpr == null) return isEntryName(df.receiver) ? "${df.receiver} != null".toString() : null
             return (isEntryName(df.receiver) && referencesOnlyEntryState(df.indexExpr)) ?
                 "${df.receiver}[${df.indexExpr.text}] != null".toString() : null
@@ -6379,6 +6393,97 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
     private static final String HARMLESS_SAFE_CALLS_KEY = 'verification.harmlessSafeCalls'
+
+    /**
+     * Phase 486 — the reads in {@code m} (by {@link #safeCallKey}) of a boxed number through a subscript, a {@code get} or
+     * a property ({@code m['x']}, {@code m.get('x')}, {@code m.x}) whose value is unboxed where it's used, and what a null
+     * there throws (measured, Groovy 6, @TypeChecked): an arithmetic operation's left operand, a negation, an
+     * {@code intdiv}/{@code remainder}/{@code mod}'s receiver ({@code NullPointerException}); its right operand or such a
+     * call's argument ({@code GroovyRuntimeException}, "Ambiguous method overloading"; a {@code %}'s is a
+     * {@code NullPointerException}); a primitive's value — a primitive-returning method's result, a primitive variable's
+     * initial or assigned value ({@code GroovyCastException}, "Cannot cast 'null' to class 'int'"). Through a ternary's
+     * arms; not an Elvis's left, whose null is replaced. Each value is {exception, the position's wording}. Memoised.
+     */
+    private static Map<Object, String[]> unboxedReads(MethodNode m) {
+        if (m == null || m.code == null) return null
+        Map<Object, String[]> memo = (Map<Object, String[]>) m.getNodeMetaData(UNBOXED_READS_KEY)
+        if (memo != null) return memo
+        Map<Object, String[]> out = new HashMap<Object, String[]>()
+        Closure reg
+        reg = { Expression e, String exc, String how ->
+            if (e instanceof TernaryExpression && !(e instanceof ElvisOperatorExpression)) {
+                reg(((TernaryExpression) e).trueExpression, exc, how)
+                reg(((TernaryExpression) e).falseExpression, exc, how)
+                return
+            }
+            ClassNode t = Encoder.staticTypeOf(e)
+            boolean boxedNumber = t != null && !ClassHelper.isPrimitiveType(t) &&
+                (ClassHelper.isNumberType(t) || t.name in ['java.math.BigInteger', 'java.math.BigDecimal'])
+            boolean read = Encoder.indexedAccessTarget(e) != null && !(e instanceof MethodCallExpression && ((MethodCallExpression) e).safe) ||
+                e instanceof PropertyExpression && !((PropertyExpression) e).safe && !((PropertyExpression) e).spreadSafe &&
+                ((PropertyExpression) e).objectExpression instanceof VariableExpression && ((PropertyExpression) e).propertyAsString != null
+            if (boxedNumber && read) out.putIfAbsent(safeCallKey(e), [exc, how] as String[])
+        }
+        String npe = 'NullPointerException', gre = 'GroovyRuntimeException', gce = 'GroovyCastException'
+        String operand = 'a null operand throws'
+        Closure<String> cast = { ClassNode p -> "a null can't be cast to ${p.name}".toString() }
+        boolean primRet = !m.isVoidMethod() && ClassHelper.isPrimitiveType(m.returnType)
+        if (primRet) {
+            // the method's result as a last statement's value (a block's, an if's arms'); an explicit return's is below
+            Closure last
+            last = { Statement st ->
+                if (st instanceof BlockStatement && !((BlockStatement) st).statements.isEmpty()) last(((BlockStatement) st).statements.last())
+                else if (st instanceof IfStatement) { last(((IfStatement) st).ifBlock); last(((IfStatement) st).elseBlock) }
+                else if (st instanceof ExpressionStatement) reg(((ExpressionStatement) st).expression, gce, cast(m.returnType))
+            }
+            last(m.code)
+        }
+        Closure<ClassNode> primitiveOf = { Expression target ->
+            if (!(target instanceof VariableExpression)) return null
+            VariableExpression v = (VariableExpression) target
+            ClassNode t = v.accessedVariable != null ? (v.accessedVariable.originType ?: v.accessedVariable.type) : v.originType
+            t != null && ClassHelper.isPrimitiveType(t) ? t : null
+        }
+        m.code.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement r) {
+                if (primRet) reg(r.expression, gce, cast(m.returnType))
+                super.visitReturnStatement(r)
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression d) {
+                ClassNode p = d.leftExpression instanceof VariableExpression ? ((VariableExpression) d.leftExpression).originType : null
+                if (p != null && ClassHelper.isPrimitiveType(p)) reg(d.rightExpression, gce, cast(p))
+                super.visitDeclarationExpression(d)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                String sym = be.operation.text
+                if (be.operation.type == Types.ASSIGN && !(be instanceof DeclarationExpression)) {
+                    ClassNode p = primitiveOf(be.leftExpression)
+                    if (p != null) reg(be.rightExpression, gce, cast(p))
+                } else if (sym in ['+', '-', '*', '/', '%'] &&
+                           ((ClassNode) be.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE))?.name != 'java.lang.String') {
+                    reg(be.leftExpression, npe, operand)
+                    reg(be.rightExpression, sym == '%' ? npe : gre, operand)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitUnaryMinusExpression(UnaryMinusExpression u) {
+                reg(u.expression, npe, operand)
+                super.visitUnaryMinusExpression(u)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression c) {
+                List<Expression> args = c.arguments instanceof ArgumentListExpression ?
+                    ((ArgumentListExpression) c.arguments).expressions : Collections.<Expression>emptyList()
+                if (c.methodAsString in ['intdiv', 'remainder', 'mod'] && args.size() == 1 && !c.safe && !c.implicitThis) {
+                    reg(c.objectExpression, npe, operand)
+                    reg(args.get(0), gre, operand)
+                }
+                super.visitMethodCallExpression(c)
+            }
+        })
+        m.putNodeMetaData(UNBOXED_READS_KEY, out)
+        out
+    }
+    private static final String UNBOXED_READS_KEY = 'verification.unboxedReads'
 
     /** Phase 422 — a safe call by its source span: the discharge visits copies of a condition (an identity set missed
      *  them); one with no position is itself. */
@@ -7353,6 +7458,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (site instanceof DerefSite) {
             DerefSite df = (DerefSite) site
+            // Phase 486 — a map's value unboxed where it's used (`m.get('x') + 1`, `int v = m['x']`) is null for a missing
+            // key or a null put, and throws; a list's element or an object's property isn't checked here
+            if (df.unboxed != null) {
+                if (!enc.isMapName(df.receiver) || currentNonNullElementContainers.contains(df.receiver)) return
+                Object nul = enc.nullityOfExpr(df.unboxed)
+                if (nul == null) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("unboxed value",
+                        "key '${asWritten(df.indexExpr)}' is outside fragment"), df.node)
+                    return
+                }
+                s.assertExpr(nul)
+                CheckResult r = shown(s.check())
+                if (r.status != CheckResult.Status.VERIFIED) {
+                    addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullUnboxed(asWritten(df.unboxed), df.unboxThrows,
+                        df.unboxHow, r), r, UNBOX_REPRO_EXCEPTIONS.get(df.unboxThrows)), df), df.node)
+                }
+                explainIfVerified(s, r, "${asWritten(df.unboxed)} != null")
+                return
+            }
             // Phase 245 — a locally-CONSTRUCTED channel (create()/subscribe()/a pipeline op) is a
             // factory result and never null: an un-rewritten call on it (send/close/toList in a
             // drain shape the scalar model refuses) carries no deref obligation. A channel PARAM
@@ -12253,6 +12377,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean propertySet
         /** Phase 422 — a safe call's receiver, where the call's null value is used as a value that throws on null */
         boolean safeUse
+        /** Phase 486 — a read of {@code receiver}'s value ({@code m.get(k)}, {@code m[k]}, {@code m.x}) unboxed where it's
+         *  used: the read, what its null throws there, and the position's wording ({@link #unboxedReads}) */
+        Expression unboxed
+        String unboxThrows
+        String unboxHow
     }
 
     /**
@@ -12304,6 +12433,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         /** Phase 422 — the safe calls whose null value is harmless where it's used ({@link #harmlessSafeCalls}); null: none */
         Set<Object> harmlessSafeCalls = null
+        /** Phase 486 — the reads unboxed where they're used ({@link #unboxedReads}); null: none */
+        Map<Object, String[]> unboxedReads = null
+
+        /** Phase 486 — {@code e}'s value unboxed where it's used: an obligation that it isn't null */
+        private void unboxedSite(Expression e) {
+            String[] at = unboxedReads?.get(safeCallKey(e))
+            if (at == null) return
+            Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e)
+            String recv = ind != null ? ind.containerName : ((VariableExpression) ((PropertyExpression) e).objectExpression).name
+            Expression key = ind != null ? ind.indexExpr : new ConstantExpression(((PropertyExpression) e).propertyAsString)
+            derefSites.add(new DerefSite(node: e, receiver: recv, indexExpr: key, unboxed: e, unboxThrows: at[0], unboxHow: at[1]))
+        }
 
         /** Phase 411 — per site (by identity), the guards it runs under inside the visited expression: a ternary
          *  arm's condition or its negation, the left operand of {@code &&}, or its negation for {@code ||}. */
@@ -12387,6 +12528,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         @Override
         void visitBinaryExpression(BinaryExpression be) {
+            unboxedSite(be)   // Phase 486
             // Match by operator text rather than token id: the parser assigns `%`
             // a token outside the Types.MOD constant, so text is the robust key.
             String sym = be.operation.text
@@ -12525,6 +12667,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         @Override
         void visitPropertyExpression(PropertyExpression pe) {
+            unboxedSite(pe)   // Phase 486
             // Phase 415 — an array's `.length` on null throws as a call on it does ("Cannot get property 'length' on null
             // object", measured): the receiver's nullity obligation. Phase 479 — any property of a parameter or local, read
             // or stored ("Cannot set property 'v' on null object"; measured on Groovy 6, dynamic and @TypeChecked;
@@ -12551,6 +12694,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         @Override
         void visitMethodCallExpression(MethodCallExpression mce) {
+            unboxedSite(mce)   // Phase 486
             if (!mce.safe || mce.implicitThis) { visitCall(mce); return }
             // Phase 422 — `x?.m(args)` on a null x is null: no call, and its arguments aren't evaluated (measured, Groovy 6,
             // dynamic, @TypeChecked and @CompileStatic). So what the call itself and its arguments oblige — x's own null

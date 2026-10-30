@@ -965,6 +965,14 @@ class Reporter {
             "Could not decide receiver non-null", result)
     }
 
+    /** Phase 486 — a map's value unboxed where it's used (`m.get('x') + 1`, `int v = m['x']`), null for a missing key or a
+     *  null put: what that null throws there */
+    static String formatNullUnboxed(String read, String exception, String how, CheckResult result) {
+        implicit("Possible ${exception}: ${read} is null for a missing key or a null value, and ${how}",
+            "${read} != null",
+            "Could not decide value non-null", result)
+    }
+
     /** Phase 415 — Groovy's message for a property read on null: "Cannot get property 'length' on null object". */
     static String formatNullPropertyRead(String receiver, String property, CheckResult result, boolean set = false) {
         implicit("Possible NullPointerException: Cannot ${set ? 'set' : 'get'} property '${property}' on null object",

@@ -4814,6 +4814,28 @@ class Encoder implements TheoryApi {
                     session.eq(session.select(mapVnullFor(logical), key), session.intLit(1L))])
     }
 
+    /** Phase 486 — does {@code e} read the pre-state ({@code old.m[k]})? */
+    static boolean mentionsOld(Expression e) {
+        boolean[] found = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (isOldReceiver(pe.objectExpression)) found[0] = true
+                super.visitPropertyExpression(pe)
+            }
+        })
+        found[0]
+    }
+
+    /** Phase 486 — the nullity of a read of a map whose values are numbers ({@code m.get(k)}, {@code m[k]}, {@code m.x}),
+     *  or null for any other expression */
+    Object numberMapReadNullity(Expression e) {
+        IndexedNullTarget mt = indexedAccessTarget(mapPropertySubscript(e))
+        if (mt == null || !isMapName(mt.containerName)) return null
+        ClassNode v = mapTypes.get(mt.containerName)[1]
+        boolean number = v != null && (ClassHelper.isNumberType(v) || v.name in ['java.math.BigInteger', 'java.math.BigDecimal'])
+        number ? nullityOfExpr(e) : null
+    }
+
     /** Phase 483 — a value put into map {@code logical}: a null literal is a fresh value (its flag says null), else its
      *  translation in the map's value sort (null when it doesn't translate) */
     Object mapValueOf(String logical, Expression v) {
@@ -6399,6 +6421,34 @@ class Encoder implements TheoryApi {
             Object rangeMem = translateIntRangeContains(inRecv, be.leftExpression)
             if (rangeMem == null) rangeMem = translateStringRangeContains(inRecv, be.leftExpression)
             if (rangeMem != null) return sym == 'in' ? rangeMem : session.not(rangeMem)
+        }
+
+        // Phase 486 — a number map's read compares as Groovy compares a null: below every number, equal only to null
+        // (measured on Groovy 6.0.0: `null < 3`, `null <= 3`, `null != 3` and `null == null` hold; `null > 3`, `null >= 3`,
+        // `null == 3` and `3 < null` don't). So `@Requires({ m.get('x') == 3 })` or `m.x >= 5` makes the value non-null,
+        // and `m[k] < 1000` doesn't — the body's unboxing of it then has its obligation met, or not
+        if (op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN, Types.COMPARE_LESS_THAN_EQUAL,
+                   Types.COMPARE_GREATER_THAN, Types.COMPARE_GREATER_THAN_EQUAL] && !literalEqInProgress.contains(be) &&
+            !isNullLiteral(be.leftExpression) && !isNullLiteral(be.rightExpression) &&   // `m.get(k) == null` is Phase 483's
+            quantDepth == 0 && !mentionsOld(be)) {   // a quantifier's reads, and a snapshot's (no value-null flags), as before
+            Object ln = numberMapReadNullity(be.leftExpression), rn = numberMapReadNullity(be.rightExpression)
+            if (ln != null || rn != null) {
+                Object f = session.boolLit(false)
+                ln = ln ?: f; rn = rn ?: f
+                Object core
+                literalEqInProgress.add(be)
+                try { core = translate(be) } finally { literalEqInProgress.remove(be) }
+                if (core == null) return null
+                Object either = session.or([ln, rn])
+                switch (op) {
+                    case Types.COMPARE_EQUAL:              return session.ite(either, session.and([ln, rn]), core)
+                    case Types.COMPARE_NOT_EQUAL:          return session.not(session.ite(either, session.and([ln, rn]), session.not(core)))
+                    case Types.COMPARE_LESS_THAN:          return session.ite(either, session.and([ln, session.not(rn)]), core)
+                    case Types.COMPARE_LESS_THAN_EQUAL:    return session.ite(either, ln, core)
+                    case Types.COMPARE_GREATER_THAN:       return session.ite(either, session.and([rn, session.not(ln)]), core)
+                    default:                               return session.ite(either, rn, core)
+                }
+            }
         }
 
         // Phase 445 — a String equal to a String literal isn't null (`null == 'ab'` is false, `null != 'ab'` true): the
