@@ -3577,6 +3577,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 481 — {@code e} from this method's body as an implicit check's obligation shows it: a string keeps its
+     *  quotes ({@code m.get('x') != 0}, not {@code m.get(x) != 0}) */
+    private String asWritten(Expression e) {
+        shownText(e, typeCheckingVisitor.typeCheckingContext.source)
+    }
+
     private static String quoted(Expression e, Closure<String> line) {
         try {
             new Quoting(line: line).transform(e).text
@@ -7214,7 +7220,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (idx == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped(ix.string ? "string index" : "array index",
-                    "index '${ix.index.text}' is outside fragment"), ix.node)
+                    "index '${asWritten(ix.index)}' is outside fragment"), ix.node)
                 return
             }
             // Phase 414 — a null receiver throws before any index, and that is its DerefSite's to report
@@ -7231,12 +7237,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     ix.stringExpr instanceof ConstantExpression ? "'${ix.receiver}'.length()".toString() :   // Phase 417
                     ix.string ? ix.receiver + sizeAccessors.getOrDefault(ix.receiver, '.length()') :   // Phase 416
                     ix.receiver + sizeAccessor(ix.receiver)   // Phase 413
-                String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : ix.index.text
+                String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : asWritten(ix.index)
                 boolean listSubscript = neg == null && ix.node instanceof BinaryExpression && currentListNames.contains(ix.receiver)
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
                     idxText, sizeText, r, listSubscript), r, listSubscript ? null : 'IndexOutOfBoundsException'), ix), ix.node)
             }
-            explainIfVerified(s, r, "${ix.receiver}[${ix.index.text}] in bounds")
+            explainIfVerified(s, r, "${ix.receiver}[${asWritten(ix.index)}] in bounds")
             return
         }
         if (site instanceof DivideSite) {
@@ -7250,7 +7256,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object divisor = decimalDiv ? enc.asRealValue(dv.divisor) : enc.translate(dv.divisor)
             if (divisor == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("division",
-                    "divisor '${dv.divisor.text}' is outside fragment"), dv.node)
+                    "divisor '${asWritten(dv.divisor)}' is outside fragment"), dv.node)
                 return
             }
             Object zero = decimalDiv ? enc.asRealValue(new ConstantExpression(0.0G)) : s.intLit(0L)
@@ -7259,16 +7265,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 s.assertExpr(s.not(s.gt(divisor, zero)))   // negation of (divisor > 0)
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(Reporter.formatModulusNotPositive(dv.divisor.text, r), dv.node)
+                    addStaticTypeError(Reporter.formatModulusNotPositive(asWritten(dv.divisor), r), dv.node)
                 }
                 return
             }
             s.assertExpr(s.not(s.ne(divisor, zero)))   // negation of (divisor != 0)
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withSuggestion(withRepro(Reporter.formatDivisionByZero(dv.divisor.text, r), r, 'ArithmeticException'), dv), dv.node)
+                addStaticTypeError(withSuggestion(withRepro(Reporter.formatDivisionByZero(asWritten(dv.divisor), r), r, 'ArithmeticException'), dv), dv.node)
             }
-            explainIfVerified(s, r, "${dv.divisor.text} != 0")
+            explainIfVerified(s, r, "${asWritten(dv.divisor)} != 0")
             return
         }
         if (site instanceof ParseSite) {
@@ -7276,15 +7282,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object str = enc.translateInSort(ps.arg, s.declareSort('String'))
             if (str == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("parse",
-                    "argument '${ps.arg.text}' is outside fragment"), ps.node)
+                    "argument '${asWritten(ps.arg)}' is outside fragment"), ps.node)
                 return
             }
             s.assertExpr(s.not(s.parseIntValid(str)))   // negation of "is a valid numeral"
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatNumberFormat(ps.arg.text, r), ps.node)
+                addStaticTypeError(Reporter.formatNumberFormat(asWritten(ps.arg), r), ps.node)
             }
-            explainIfVerified(s, r, "${ps.arg.text} parses as int")
+            explainIfVerified(s, r, "${asWritten(ps.arg)} parses as int")
             return
         }
         if (site instanceof DerefSite) {
@@ -7311,7 +7317,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object idx = enc.translate(df.indexExpr)
                 if (idx == null) {
                     addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
-                        "index '${df.indexExpr.text}' is outside fragment"), df.node)
+                        "index '${asWritten(df.indexExpr)}' is outside fragment"), df.node)
                     return
                 }
                 Object flag = s.select(enc.elementNullityFor(df.receiver), idx)
@@ -7319,9 +7325,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
                     addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
-                        "${df.receiver}[${df.indexExpr.text}]", df.method, r), r, 'NullPointerException'), df), df.node)
+                        "${df.receiver}[${asWritten(df.indexExpr)}]", df.method, r), r, 'NullPointerException'), df), df.node)
                 }
-                explainIfVerified(s, r, "${df.receiver}[${df.indexExpr.text}] != null")
+                explainIfVerified(s, r, "${df.receiver}[${asWritten(df.indexExpr)}] != null")
                 return
             }
             // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
@@ -7330,7 +7336,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(df.receiver, df.property, r, df.propertySet)
-                                                                     : df.safeUse ? Reporter.formatNullSafeUse(df.receiver, df.node.text, r)
+                                                                     : df.safeUse ? Reporter.formatNullSafeUse(df.receiver, df.node instanceof Expression ? asWritten((Expression) df.node) : df.node.text, r)
                                                                      : Reporter.formatNullDereference(df.receiver, df.method, r)), r, 'NullPointerException'), df), df.node)
             }
             explainIfVerified(s, r, "${df.receiver} != null")
@@ -7345,7 +7351,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object idx = enc.translate(cs.indexExpr)
             if (idx == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("charAt index",
-                    "index '${cs.indexExpr.text}' is outside fragment"), cs.node)
+                    "index '${asWritten(cs.indexExpr)}' is outside fragment"), cs.node)
                 return
             }
             Object recvHandle = enc.varForOfSort(cs.receiver, s.declareSort('String'))
@@ -7355,9 +7361,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(withRepro(Reporter.formatIndexBounds(
-                    cs.indexExpr.text, cs.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), cs.node)
+                    asWritten(cs.indexExpr), cs.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), cs.node)
             }
-            explainIfVerified(s, r, "${cs.receiver}.charAt(${cs.indexExpr.text}) in bounds")
+            explainIfVerified(s, r, "${cs.receiver}.charAt(${asWritten(cs.indexExpr)}) in bounds")
             return
         }
         if (site instanceof StringSubstringSite) {
@@ -7367,7 +7373,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object begin = enc.translate(ss.beginExpr)
             if (begin == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("substring begin",
-                    "argument '${ss.beginExpr.text}' is outside fragment"), ss.node)
+                    "argument '${asWritten(ss.beginExpr)}' is outside fragment"), ss.node)
                 return
             }
             Object recvHandle = enc.varForOfSort(ss.receiver, s.declareSort('String'))
@@ -7380,7 +7386,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object end = enc.translate(ss.endExpr)
                 if (end == null) {
                     addStaticTypeError(Reporter.formatImplicitSkipped("substring end",
-                        "argument '${ss.endExpr.text}' is outside fragment"), ss.node)
+                        "argument '${asWritten(ss.endExpr)}' is outside fragment"), ss.node)
                     return
                 }
                 // Two-arg: 0 <= begin <= end <= length
@@ -7390,12 +7396,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 String accessor = ss.endExpr == null
-                    ? "${ss.beginExpr.text}"
-                    : "${ss.beginExpr.text}, ${ss.endExpr.text}"
+                    ? "${asWritten(ss.beginExpr)}"
+                    : "${asWritten(ss.beginExpr)}, ${asWritten(ss.endExpr)}"
                 addStaticTypeError(withRepro(Reporter.formatIndexBounds(
                     accessor, ss.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), ss.node)
             }
-            explainIfVerified(s, r, "${ss.receiver}.substring(${ss.beginExpr.text}${ss.endExpr != null ? ', ' + ss.endExpr.text : ''}) in bounds")
+            explainIfVerified(s, r, "${ss.receiver}.substring(${asWritten(ss.beginExpr)}${ss.endExpr != null ? ', ' + asWritten(ss.endExpr) : ''}) in bounds")
             return
         }
         if (site instanceof OverflowSite) {

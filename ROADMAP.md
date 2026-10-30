@@ -19791,7 +19791,7 @@ rewrite in the value-flow steps one, in the prefix replay one, in the loop execu
 without dropping the record on a havoc one.
 
 **Not changed here:** `m.x` on a map *parameter* that may be null gets no null check (`m.get('x')` does); obligations
-print `m.get(x)` for `m.get('x')`, for parameters too.
+print `m.get(x)` for `m.get('x')`, for parameters too (Phase 481 prints it as written).
 
 ## Phase 479 — a property read on null  *(shipped — soundness)*
 
@@ -19853,6 +19853,20 @@ makes the other non-null — by `is`, by `===`, the other way round, in a guard;
 a non-null are distinct); three unchanged (identity alone leaves both maybe null, a null's property throws, distinct says
 nothing of the other's nullity). Mutation-checked: without the link six cases fail; with only `null ⇒ id 0`, or only `id 0 ⇒ null`,
 the same six.
+
+## Phase 481 — keys as written
+
+Phase 478 recorded it: an implicit check's obligation printed `m.get(x) != 0` for `m.get('x')`. The implicit checks
+built their obligation from Groovy's `.text`, which prints a string constant's bare value — so a map's key, a subscript
+`m['x']` (`m[x]`), an index `s.indexOf(':')` (`s.indexOf(:)`) and a parse argument `s.replace('_', '')` (`s.replace(_, )`)
+all lost their quotes. Assertions and contracts already showed them as written (Phases 428 and 441).
+
+**The fix:** the implicit checks show their expressions with the same quoting (`VerifyChecker.asWritten`, Phase 441's
+`shownText` over the method's own source): a divisor, an array, list or string index, a substring's arguments, a parse
+argument, an element dereference and a safe call's value. A literal is cut from its line as written (`'x'`, `"x"`), else
+double-quoted.
+
+**Shipped tests:** group `P481 keys as written`, 11 cases.
 
 ## Definition of done, per increment
 
