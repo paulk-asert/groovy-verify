@@ -3514,15 +3514,20 @@ class Encoder implements TheoryApi {
             Object elem = session.select(arr, k)
             Object pk = translateWith(body, [(param): elem] as Map<String, Object>)
             if (pk == null) return false
+            // Phase 487 — and its nullity, the source element's (it was fresh)
+            Object nulls = session.arrayVar(name + '$findAll$null' + n)
             Object idx = session.applyUF('findAllIdx$' + n, [k], session.intSort())
+            Object srcNull = nonNullElementContainers.contains(src) ? session.intLit(0L) :
+                session.select(elementNullityFor(src), idx)
             Object kept = session.and([pk, session.le(zero, idx), session.lt(idx, srcSize),
-                                       session.eq(elem, session.select(srcArr, idx))])
+                                       session.eq(elem, session.select(srcArr, idx)),
+                                       session.eq(session.select(nulls, k), srcNull)])
             session.assertExpr(session.and([session.ge(size, zero), session.le(size, srcSize)]))
             session.assertExpr(session.forall([k],
                 session.implies(session.and([session.le(zero, k), session.lt(k, size)]), kept), [elem]))
             localFactories.remove(name)
             bindArray(name, arr)
-            freshElementNullity(name)   // Phase 445 — another array's elements
+            arrEnv.put(name + '$nullElem', nulls)   // Phase 487 — was fresh (Phase 445)
             bindSize(name, size)
             session.assertExpr(session.not(nullityOf(name)))
             return true
@@ -3825,7 +3830,7 @@ class Encoder implements TheoryApi {
         }
         localFactories.remove(name)
         bindArray(name, arr)
-        freshElementNullity(name)   // Phase 445
+        arrEnv.put(name + '$nullElem', zeroArray())   // Phase 487 — a range's elements are numbers, none null
         bindSize(name, session.intLit((long) size))
         session.assertExpr(session.not(nullityOf(name)))
         if (immutable) immutableRangeLocals.add(name) else immutableRangeLocals.remove(name)
@@ -4826,6 +4831,11 @@ class Encoder implements TheoryApi {
         found[0]
     }
 
+    /** Phase 487 — a number type, primitive or boxed */
+    private static boolean isNumber(ClassNode t) {
+        t != null && (ClassHelper.isNumberType(t) || t.name in ['java.math.BigInteger', 'java.math.BigDecimal'])
+    }
+
     /** Phase 486 — the nullity of a read of a map whose values are numbers ({@code m.get(k)}, {@code m[k]}, {@code m.x}),
      *  or null for any other expression */
     Object numberMapReadNullity(Expression e) {
@@ -4927,6 +4937,12 @@ class Encoder implements TheoryApi {
             return own == null ? null : session.or([recvNull, own])
         }
         if (e instanceof CastExpression) return nullityOfExpr(((CastExpression) e).expression)   // Phase 393 — a coercion keeps null
+        // Phase 487 — a primitive's value isn't null (`a[0] = h(n)` with an int `h`, `xs.add(v)` with an int `v`)
+        // — by its declaration, not a flow-typed `Integer x = 5`'s inferred int
+        Object tgt = e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+        org.codehaus.groovy.ast.Variable dv = e instanceof VariableExpression ? ((VariableExpression) e).accessedVariable : null
+        ClassNode pt = dv != null ? (dv.originType ?: dv.type) : tgt instanceof MethodNode ? ((MethodNode) tgt).returnType : null
+        if (pt != null && ClassHelper.isPrimitiveType(pt) && !ClassHelper.isPrimitiveVoid(pt)) return session.boolLit(false)
         if (e instanceof ConstantExpression) return session.boolLit(((ConstantExpression) e).value == null)
         if (e instanceof VariableExpression) {
             String n = ((VariableExpression) e).name
@@ -4954,6 +4970,11 @@ class Encoder implements TheoryApi {
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
             isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
+        // Phase 487 — nor is a number's arithmetic: a null operand throws instead (`out.add(2 * xs[i])`); another
+        // type's `plus` may return anything
+        if ((e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in
+                [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD] || e instanceof UnaryMinusExpression) &&
+            isNumber(staticTypeOf(e))) return session.boolLit(false)
         // Phase 420 — nor is a String's own method's String (`s.substring(2)`, `s.trim()`; a GDK one, `s.find(re)`, may be)
         if (e instanceof MethodCallExpression) {
             Object t = e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
@@ -4979,6 +5000,21 @@ class Encoder implements TheoryApi {
 
     private final Set<BinaryExpression> literalEqInProgress =
         Collections.newSetFromMap(new IdentityHashMap<BinaryExpression, Boolean>())
+
+    /** Phase 487 — {@code name} is a parameter or a field of the method's class, a list or an array of a boxed type */
+    private boolean boxedElementFormal(String name) {
+        MethodNode m = vcMethod
+        if (m == null) return false
+        ClassNode t = m.parameters.find { it.name == name }?.type
+        for (ClassNode c = m.declaringClass; t == null && c != null && c.name != 'java.lang.Object'; c = c.superClass) {
+            t = c.getDeclaredField(name)?.type
+        }
+        t != null && !(t.isArray() && ClassHelper.isPrimitiveType(t.componentType))
+    }
+
+    private static boolean isNumberLiteral(Expression e) {
+        e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number
+    }
 
     private static boolean isNonNullStringLiteral(Expression e) {
         e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof String
@@ -6460,7 +6496,18 @@ class Encoder implements TheoryApi {
             // `s.reverse()`) isn't tied to its value, and would make `result == 'cba'` unprovable
             boolean stated = indexedAccessTarget(other) != null || (other instanceof VariableExpression &&
                 vcMethod?.parameters?.any { it.name == ((VariableExpression) other).name })
-            if (other != null && stated && isStringReceiver(other)) {
+            // Phase 487 — and a list's or a boxed array's element equal to a number literal (`null == 7` is false), so
+            // `xs[1] == 7` makes it non-null; a map's read is Phase 486's. A parameter's or a field's only: a computed
+            // list's flags (a channel's `toList()`, `result`) aren't tied to what was put in it
+            Expression num = isNumberLiteral(be.rightExpression) ? be.leftExpression :
+                             isNumberLiteral(be.leftExpression) ? be.rightExpression : null
+            IndexedNullTarget nt = num != null ? indexedAccessTarget(num) : null
+            if (other == null && nt != null && hasElementNullity(nt.containerName) && !isMapName(nt.containerName) &&
+                boxedElementFormal(nt.containerName)) {
+                other = num
+                stated = true
+            }
+            if (other != null && stated && (other.is(num) || isStringReceiver(other))) {
                 Object nul = nullityOfExpr(other)
                 if (nul != null) {
                     Object core

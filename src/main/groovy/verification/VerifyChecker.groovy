@@ -3743,8 +3743,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<Long> elems = pinnedElements(p.name, n, ce)
             // Render explicit contents only when the model committed to a non-zero element and the
             // component is numeric; otherwise `new T[n]` (which already *is* the all-zero array).
-            if (elems != null && comp in NUMERIC_COMPONENT_NAMES && elems.any { it != 0L }) {
-                return "[${elems.join(', ')}] as ${comp}[]"
+            // Phase 487 — or to a null element of a boxed component (`new Integer[n]` is all null, too)
+            List<String> shown = ClassHelper.isPrimitiveType(t.componentType) ? elems*.toString() : withNullElements(p.name, elems, ce)
+            if (elems != null && comp in NUMERIC_COMPONENT_NAMES && (elems.any { it != 0L } || shown.contains('null'))) {
+                return "[${shown.join(', ')}] as ${comp}[]"
             }
             List<String> strs = pinnedStrings(p.name, n, ce, sortedCe)   // Phase 443
             if (strs != null && comp == 'String') return "[${strs.join(', ')}] as String[]"
@@ -3783,7 +3785,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (isCollectionType(t)) {
             long n = sizeOf(p.name, ce)
             List<Long> elems = pinnedElements(p.name, n, ce)
-            if (elems != null && elems.any { it != 0L }) return "[${elems.join(', ')}]"
+            List<String> shown = withNullElements(p.name, elems, ce)   // Phase 487
+            if (elems != null && (elems.any { it != 0L } || shown.contains('null'))) return "[${shown.join(', ')}]"
             List<String> strs = pinnedStrings(p.name, n, ce, sortedCe)   // Phase 443
             if (strs != null) return "[${strs.join(', ')}]"
             return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
@@ -3863,6 +3866,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             out.add(v != null ? v : 0L)
         }
         any ? out : null
+    }
+
+    /** Phase 487 — pinned numeric elements as written, one the model made null ({@code xs$nullElem[k]}) as {@code null}
+     *  (it showed its value: `fails on: f([4])` for a null element) */
+    private static List<String> withNullElements(String name, List<Long> elems, Map<String, Long> ce) {
+        if (elems == null) return null
+        List<String> out = new ArrayList<String>()
+        for (int k = 0; k < elems.size(); k++) out.add(ce.get(name + '$nullElem[' + k + ']') == 1L ? 'null' : String.valueOf(elems.get(k)))
+        out
     }
 
     /** Phase 443 — a String sequence's elements as Groovy literals, when the model committed to one: a pinned element

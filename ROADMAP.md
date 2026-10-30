@@ -20028,7 +20028,7 @@ contracts pass, and the body's `null + 1` throws (run on Groovy 6.0.0 with groov
 **Changed cases (2):** P186's `bump` states `0 <= m[k]`; its loop that frames the other keys states `m[State.IDLE] >= 0`
 in the invariant (the loop body unboxes it, and the invariant said nothing of it).
 
-**Not changed here:** a list's element (`List<Integer> xs; xs[0] + 1`), a boxed parameter (`Integer x; x + 1`) and an
+**Not changed here:** a list's element (`List<Integer> xs; xs[0] + 1` — Phase 487 readies its flags), a boxed parameter (`Integer x; x + 1`) and an
 object's boxed property unboxed aren't checked; nor a map read unboxed as an argument to a primitive parameter, an
 index, a cast, or in a compound assignment (`m['x'] += 1`, `m['x']++`).
 
@@ -20044,6 +20044,53 @@ a declaration one; an assignment one; a negation one; `intdiv` two; without the 
 gate one; without the `ClassCastException` catch one; wrapping `old.m[k]`'s comparison fails P17's put framing, a
 quantifier's P18's refutation (a timeout). Without the map-only gate no case fails: a list's element would read its
 own flags, which the next slice checks.
+
+## Phase 487 — element nullity kept  *(shipped — precision)*
+
+Phase 486's check, extended to a list's or an array's boxed element unboxed (`List<Integer> xs; xs[0] + 1` — measured
+on Groovy 6.0.0, the same exceptions as a map's value: `[null]`'s `xs[0] + 1` "Cannot execute null+1", `1 + xs.get(0)`
+"Ambiguous method overloading", `int v = xs[0]` "Cannot cast 'null' to class 'int'"; and a compound assignment's right
+operand, `s += xs[0]`, is a `GroovyRuntimeException`, `s %= xs[0]` a `NullPointerException`), failed 45 corpus cases.
+About thirty are real: a `List<Integer>` or `Integer[]` parameter may hold a null, and nothing said it doesn't (the
+HumanEval and Verus ports' running totals, `sum_product`, `get_positive`; `@NotEmpty List<Integer>` — `[null]` isn't
+empty; and the sorted-diff pair, whose `(0..<n - 1).every { a[it] <= a[it + 1] }` holds for `[null, null]`, `null <=
+null`, so `a[k] - a[k + 1]` throws). The rest were the element nullity flags (Phase 445) not knowing what they could
+have. Paul's call: strict, in two slices — this one fixes those flags, with the check off; Phase 488 turns it on.
+
+**The fix:** an element's nullity is known where it was fresh —
+- a primitive's value isn't null (`xs.add(v)` with an `int v`; `a[0] = h(n)` with an `int`-returning `h`), by the
+  variable's declaration or the call's target, not a flow-typed `Integer x = 5`'s inferred `int`;
+- nor is a number's arithmetic (`out.add(2 * xs[i])`, `-x`): a null operand throws instead; another type's `plus` may
+  return anything;
+- a range's elements (`(0<..3).toList()`) are numbers, none null;
+- a `findAll`'s elements are its source's, flags and all (`xs.every { it != null }` carries to `xs.findAll { … }`);
+- a list or boxed-array parameter's or field's element equal to a number literal isn't null (`xs[1] == 7`; `null == 7`
+  is false), as Phase 445 has a String element equal to a String literal. Not an `int[]`'s (its flags mean nothing),
+  nor a computed list's — a channel's `toList()` or `result`, whose flags aren't tied to what was put in;
+- a failing call's list or array shows a null element as `null` (`f([null, 7])`), not the value the model gave it —
+  `f([4])` was shown for a `findAll` whose element was null, a call that returns.
+
+**Tried, not shipped:** reading every comparison of a boxed-number element as Groovy compares a null, as Phase 486 does
+a number map's (`xs[0] >= 0` would exclude it, `xs[0] < 5` not). With the check off it failed 71 cases: the list
+models that order or relate values — `isSorted()`'s gap fact, `max`/`min`, `binarySearch`'s precondition, the
+channel queues, `result == xs[i]` after `int f(…) { xs[i] }` — read values as present, and proved what they proved
+because nothing said the unboxing throws first. Each would need its own null reading, and Phase 488 a path fact that
+an unboxed element is non-null afterwards.
+
+**Found on the way:** `xs << v` as a statement isn't an append: it havocs the list (Phase 405), so `xs << 'ab';
+xs[0].size()` on an empty `xs` fails its bounds check.
+
+**Shipped tests:** group `P487 element nullity kept`, 15 cases. Every failing call was run on Groovy 6.0.0 and throws
+`NullPointerException` ("Cannot invoke method intValue() on null object"); every `ok` one returns. Measured at the
+parent commit: eleven failed (a primitive added, a primitive call's value stored, a number's arithmetic and a negation's,
+a range's elements, a `findAll` of a source without nulls, an element equal to a number literal — false alarms; a
+`findAll`'s, a not-equal's and two `[null, 7]` repros, whose null was shown as a number); four unchanged (a boxed value
+added, a boxed call's value, an `int[]`'s comparison, a parameter's element). Mutation-checked: without the primitive
+rule two cases fail, the declaration's one, the call's one; without the arithmetic two, the negation one; without the
+range one; without the `findAll` tie two, with its elements taken as non-null one; without the literal equality three;
+applying it to an `int[]`'s element fails three corpus cases (the three-way partition, the in-loop swap helper,
+`parameter int[] element values shown in counterexample`), to a computed list P255's priming send; without the null
+rendering three.
 
 ## Definition of done, per increment
 
