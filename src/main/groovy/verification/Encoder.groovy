@@ -270,6 +270,19 @@ class Encoder implements TheoryApi {
      */
     private String receiverPrefix = null
     private Set<String> receiverFields = Collections.<String>emptySet()
+
+    /**
+     * Phase 496 — under a receiver context, a name rooted at a receiver field is the receiver's ({@code xs} →
+     * {@code b$xs}, {@code xs$nullElem} → {@code b$xs$nullElem}), for every oracle: only {@link #varFor} mapped it, so a
+     * foreign invariant's {@code xs != null} (its nullity, size, elements) read the CALLER's own {@code xs}. The
+     * body's {@code b.xs} is {@code b$xs} too (Phase 413's receiver arrays). Otherwise the name itself.
+     */
+    private String scoped(String name) {
+        if (receiverPrefix == null || name == null || receiverFields.isEmpty()) return name
+        int cut = name.indexOf('$')
+        String base = cut < 0 ? name : name.substring(0, cut)
+        receiverFields.contains(base) ? receiverPrefix + '$' + name : name
+    }
     /**
      * Phase 45 — class-typed (object) parameter names visible to the current method, each
      * paired with its declared {@link ClassNode}. Lets {@code b.field} on a known-class
@@ -1057,6 +1070,7 @@ class Encoder implements TheoryApi {
 
     /** Phase 341 — a list-typed parameter or field, or a local declared with a List type ({@code List<Integer> out = []}). */
     boolean isListTyped(String name) {
+        name = scoped(name)   // Phase 496
         if (name == null) return false
         if (isListName(name) || listElementTypes.containsKey(name)) return true
         if (listLocals == null) listLocals = declaredListLocals(vcMethod)
@@ -1087,6 +1101,7 @@ class Encoder implements TheoryApi {
 
     /** Phase 375 — an array-typed parameter, local or field of the method (or a pre-call snapshot of one). */
     boolean isArrayTyped(String name) {
+        name = scoped(name)   // Phase 496
         if (name == null) return false
         if (arraySnapshots.contains(name)) return true
         if (arrayNames == null) arrayNames = declaredArrayNames(vcMethod)
@@ -1240,6 +1255,7 @@ class Encoder implements TheoryApi {
     }
 
     boolean isListName(String name) {
+        name = scoped(name)   // Phase 496
         if (name == null) return false
         // Strip old$ for snapshot keys — they still refer to a List.
         String bare = name.startsWith('old$') ? name.substring('old$'.length()) : name
@@ -2358,6 +2374,7 @@ class Encoder implements TheoryApi {
      * so a contract that bounds the size and an indexing check agree.
      */
     Object sizeOf(String recv) {
+        recv = scoped(recv)   // Phase 496
         String key = recv + '.size'
         Object cached = sizeEnv.get(key)
         if (cached != null) return cached
@@ -2410,6 +2427,7 @@ class Encoder implements TheoryApi {
      * continues to pin contents the way it does today.
      */
     Object arrayFor(String name) {
+        name = scoped(name)   // Phase 496
         Object cached = arrEnv.get(name)
         if (cached != null) return cached
         Object[] sorts = arraySortsFor(name)
@@ -2535,6 +2553,7 @@ class Encoder implements TheoryApi {
      * the map's key type, not its value type.
      */
     Object setFor(String key) {
+        key = scoped(key)   // Phase 496
         Object cached = setEnv.get(key)
         if (cached != null) return cached
         Object elemSort = setKeySortForKey(key)
@@ -4239,7 +4258,7 @@ class Encoder implements TheoryApi {
     Object peekSet(String key) { setEnv.get(key) }
 
     /** Phase 342 — a set-typed name (parameter, field or local), modelled by the set env, not the list oracles. */
-    boolean isSetName(String n) { n != null && setElementTypes.containsKey(n) }
+    boolean isSetName(String n) { n = scoped(n); n != null && setElementTypes.containsKey(n) }   // Phase 496 — scoped
 
     /** Set analogue of {@link #havocArray}: re-bind a set name's contents to a fresh, unconstrained set. */
     Object havocSet(String key) {
@@ -4260,7 +4279,7 @@ class Encoder implements TheoryApi {
 
     /** True iff {@code n} is a known map-typed name (so a subscript store on it is a map put, not an
      *  Int-indexed array store) — the routing test the store/havoc paths share. */
-    boolean isMapName(String n) { mapTypes.containsKey(n) }
+    boolean isMapName(String n) { mapTypes.containsKey(scoped(n)) }   // Phase 496 — scoped
 
     /**
      * Thread a map put {@code m[k] = v} / {@code m.put(k, v)}: store {@code v} into the value array, add
@@ -4854,11 +4873,11 @@ class Encoder implements TheoryApi {
     private static String mapVnullKey(String logical) { 'map$vnull$' + logical }
 
     /** The value-array handle ({@code m[k]} reads) for a map's logical name. */
-    Object mapValsFor(String logical) { arrayFor(mapValsKey(logical)) }
+    Object mapValsFor(String logical) { arrayFor(mapValsKey(scoped(logical))) }
     /** The key-set handle ({@code containsKey}/{@code size}) for a map's logical name. */
-    Object mapKeysFor(String logical) { setFor(mapKeysKey(logical)) }
+    Object mapKeysFor(String logical) { setFor(mapKeysKey(scoped(logical))) }
     /** Phase 483 — a map's value-null flags (key → 1 when the value stored there is null), and their re-binding */
-    Object mapVnullFor(String logical) { arrayFor(mapVnullKey(logical)) }
+    Object mapVnullFor(String logical) { arrayFor(mapVnullKey(scoped(logical))) }
     void putMapVnull(String logical, Object handle) { bindArray(mapVnullKey(logical), handle) }
 
     /**
@@ -4957,6 +4976,7 @@ class Encoder implements TheoryApi {
 
     /** The nullity oracle: a boolean that is true exactly when {@code recv} is null. */
     Object nullityOf(String recv) {
+        recv = scoped(recv)   // Phase 496
         Object cached = nullEnv.get(recv)
         if (cached != null) return cached
         Object v = session.boolVar(symFor(recv) + '?null')
@@ -5045,8 +5065,11 @@ class Encoder implements TheoryApi {
         if ((e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in
                 [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD] || e instanceof UnaryMinusExpression) &&
             isNumber(staticTypeOf(e))) return session.boolLit(false)
-        // Phase 492 — nor an untyped number's (`k - 1 + 0` in a generated invariant, `seen.contains(-l[i])`)
-        if ((e instanceof BinaryExpression || e instanceof UnaryMinusExpression) && isNumberValued(e)) return session.boolLit(false)
+        // Phase 492 — nor an untyped number's (`k - 1 + 0` in a generated invariant, `seen.contains(-l[i])`). Phase 496 —
+        // arithmetic's only: a subscript is a binary expression too, and `b.xs[0]` (an Integer) read as never null
+        if ((e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in
+                [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD] || e instanceof UnaryMinusExpression) &&
+            isNumberValued(e)) return session.boolLit(false)
         // Phase 420 — nor is a String's own method's String (`s.substring(2)`, `s.trim()`; a GDK one, `s.find(re)`, may be)
         if (e instanceof MethodCallExpression) {
             Object t = e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
@@ -5203,6 +5226,7 @@ class Encoder implements TheoryApi {
     }
 
     private ClassNode declaredTypeOf(String name) {
+        if (scoped(name) != name) return null   // Phase 496 — a receiver's field isn't the method's name
         ClassNode ft = calleeFormalTypes.get(name)
         if (ft != null) return ft
         MethodNode m = vcMethod

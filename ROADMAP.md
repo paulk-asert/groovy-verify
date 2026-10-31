@@ -20454,6 +20454,43 @@ held priority select). One mutant is equivalent: reading a name's type through `
 did, now that a callee's declarations are registered, gives the same answers on the corpus; the narrower lookup is
 kept, as it can't take a contract name for the method's.
 
+## Phase 496 — contract scope  *(shipped — soundness)*
+
+A name in a contract written elsewhere is that contract's, not the method's. Phase 495 fixed one case of this, a
+callee's `@Ensures` at its call. This phase looked at the others, and found two more holes.
+
+**A foreign invariant's fields.** A class's invariant assumed for a receiver `b` is translated under a receiver
+context, where a bare field name is the receiver's (`count` → `b$count`, Phase 45). Only `varFor` honoured it: a
+collection field's nullity, size and elements, and a reference field's nullity, read the CALLER's own same-named
+variable. So `@Invariant({ xs != null && xs.size() > 0 })` on `B` proved `f(B b, List<Integer> xs)`'s own
+`xs != null`. Now one mapping (`Encoder.scoped`) puts every oracle's name for a receiver field under the receiver
+(`b$xs`, `b$xs$nullElem`, a map's and a set's too), and the type predicates and Phase 492's declaration lookup with
+it. The body's `b.xs` is `b$xs` too (Phase 413's receiver arrays), so where both are modelled they now meet. A
+receiver's collection field isn't in the fragment in a body yet, so the invariant can't yet prove anything about it.
+The fix is that it no longer proves things about the caller's own names.
+
+**A subscript isn't arithmetic.** Phase 492's "a number's arithmetic is never null" took any binary expression of a
+number type, a subscript included. So `b.xs[0]` (an Integer) read as never null, and with Phase 495's comparison of a
+known value with null, `b.xs[0] != null` proved. It takes the arithmetic operators only now, as Phase 487's typed
+rule does.
+
+**Found and left open: a field a parameter or local shadows.** Inside a method, a field and a parameter of the same
+name are one SMT name. So:
+- `@Invariant({ count >= 0 })` assumed at entry of `f(int count)` constrains the parameter: `count >= 0` proves.
+- A same-class callee's `@Requires({ v == 5 })` on the field is met by the caller's parameter: `if (v == 5) g()` passes.
+This predates Phase 492, which only added a nullity consequence (an element compared with the shadowed field).
+Fixing it needs the field to have its own name where it's shadowed: in class invariants, same-class callee
+contracts, `this.f` reads and writes, and `old.f`. That is a design change for its own phase.
+
+**Shipped tests:** group `P496 contract scope`, 6 cases. Five failed at the parent commit: the four foreign-invariant
+captures proved there (a list's nullity, size and element, a String's nullity), and so did `b.xs[0] != null`. The
+int field's case passed there too: it guards the receiver qualification `varFor` already had.
+
+Mutation-checked: the subscript taken for arithmetic (1), no scoping at all (4), the nullity's (2), the size's (1),
+the elements' (1). Two survive and are kept for consistency with the data they type: the type predicates' scoping
+(`isListTyped` and the rest), and Phase 492's declaration lookup declining a receiver's field. Neither is reachable
+while a receiver's collection field isn't in a body's fragment.
+
 ## Definition of done, per increment
 
 An increment is done when:
