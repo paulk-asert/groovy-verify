@@ -6789,7 +6789,13 @@ class Encoder implements TheoryApi {
         if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
             VariableExpression ref = nullComparisonTarget(be)
             if (ref != null) {
-                Object isNull = nullityOf(ref.name)
+                // Phase 495 — by its declaration, a primitive is never null (a spec's `value == null` at `c.send(i)` with an
+                // int i read a free flag), or a rewrite's own (the channel engine's `i$a1`, Phase 491). Not a contract's
+                // bare name looked up in the method (a callee's `result == null`, assumed at its call, read the caller's
+                // int result, and contradicted itself)
+                org.codehaus.groovy.ast.Variable av = ref.accessedVariable
+                ClassNode rt = av != null ? (av.originType ?: av.type) : ref.originType
+                Object isNull = rt != null && ClassHelper.isPrimitiveType(rt) ? session.boolLit(false) : nullityOf(ref.name)
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
             }
             // Phase 423 — `xs?.isEmpty() == null`: the safe call's own nullity (null couldn't be translated)
@@ -6826,6 +6832,9 @@ class Encoder implements TheoryApi {
                     return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
                 }
             }
+            // Phase 495 — any other value of known nullity (`null == null`, a spec's `value == null` at `c.send(null)`)
+            Object known = other != null && !(other instanceof VariableExpression) ? nullityOfExpr(other) : null
+            if (known != null) return op == Types.COMPARE_EQUAL ? known : session.not(known)
         }
 
         // EncodingPack binary hook (Phase 188) — the domain-comparison slot. E.g. UnitsPack models

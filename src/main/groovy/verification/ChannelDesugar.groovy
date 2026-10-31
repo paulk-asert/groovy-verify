@@ -1411,6 +1411,7 @@ class ChannelDesugar {
                             ((ArgumentListExpression) m.arguments).expressions : Collections.<Expression>emptyList()
                         if (a.size() == 1) {
                             Expression val = rewriteChExpr(a.get(0), rw)
+                            for (Statement ns : nullSendAssert(val, a.get(0), m)) rw.emit(out, ns)   // Phase 495
                             List<long[]> bs = rw.bounds.get(c)
                             if (bs != null && !bs.isEmpty()) rw.emit(out, boundsAssert(val, bs, m))
                             rw.emit(out, addStmt(c + '$q', val, m))
@@ -1425,6 +1426,7 @@ class ChannelDesugar {
                         if (a.size() == 1) {
                             String name = ((VariableExpression) m.objectExpression).name
                             Expression val = rewriteChExpr(a.get(0), rw)
+                            for (Statement ns : nullSendAssert(val, a.get(0), m)) rw.emit(out, ns)   // Phase 495
                             // Phase 242 — send-checked: a constrained channel's send carries its
                             // contract assert (φ over the element), discharged with a counterexample.
                             List<long[]> bs = rw.bounds.get(name)
@@ -3434,6 +3436,7 @@ class ChannelDesugar {
                     if (info != null && m.methodAsString == 'close') continue
                     if (info != null && m.methodAsString == 'send') {
                         Expression val = rewriteChExpr(info.sendExpr, rw)
+                        out.addAll(nullSendAssert(val, info.sendExpr, m))   // Phase 495
                         List<long[]> bs = rw.bounds.get(c)
                         if (bs != null && !bs.isEmpty()) out.add(boundsAssert(val, bs, m))
                         out.add(addStmt(c + '$q', val, m))
@@ -3819,6 +3822,26 @@ class ChannelDesugar {
 
     /** Phase 252 — node metadata on a synthesized {@code assert}: the sentence the diagnostic reports instead of the condition text. */
     static final String ASSERT_LABEL_KEY = 'verification.assertLabel'
+
+    /** Phase 495 — on a synthesized {@code assert v != null}: the send it stands for and its value, as written
+     *  ({@code c.send(v)}, {@code v}), whose exception a failure reports */
+    static final String NULL_SEND_KEY = 'verification.nullSend'
+
+    /**
+     * Phase 495 — a channel holds no null: {@code c.send(v)} throws a NullPointerException for a null {@code v} (measured
+     * on Groovy 6.0.0, "channel does not support null values"). A rewritten send keeps that as {@code assert v != null},
+     * reported as the send's exception; past it, {@code v} isn't null. None for a primitive value, which can't be.
+     */
+    static List<Statement> nullSendAssert(Expression subject, Expression written, MethodCallExpression send) {
+        ClassNode t = Encoder.staticTypeOf(written)
+        if (t != null && ClassHelper.isPrimitiveType(t)) return Collections.<Statement> emptyList()
+        Expression ne = bin(subject, Types.COMPARE_NOT_EQUAL, new ConstantExpression(null))
+        ne.setSourcePosition(send)
+        AssertStatement st = new AssertStatement(new BooleanExpression(ne))
+        st.setSourcePosition(send)
+        st.putNodeMetaData(NULL_SEND_KEY, [send.text, written.text] as String[])   // as written: the rewrite renames
+        [st] as List<Statement>
+    }
     /** Phase 254 — node metadata on a synthesized {@code assert} that is ASSUMED, not discharged: a liveness fact
      *  (an element of a non-terminating producer's stream exists) that the network check reports as not claimed. */
     static final String ASSUME_ONLY_KEY = 'verification.assumeOnly'

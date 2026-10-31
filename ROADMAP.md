@@ -20408,6 +20408,52 @@ Mutation-checked, each kills at least one case: no hoist (12), no write (5), the
 the declaration's nullity from the call (2), a bare removal not hoisted (4), the count values (1), the method body's
 `removeAt` (5), the loop's (2), shifting from 0 rather than `i` (3), the count law at index 0 (1).
 
+## Phase 495 — null sends  *(shipped — soundness)*
+
+The candidate was "a received value unboxed": `int v = c.first()` after `c.send(null)`. It was measured first, and
+the premise was wrong: a channel holds no null. `AsyncChannel.send(null)` throws a NullPointerException at the call
+("channel does not support null values", Groovy 6.0.0), and so do `BroadcastChannel.send(null)` ("value must not
+be null") and a `ChannelSelect.send(c, null)` offer as it is made. A received value is never null. The gap was the
+send's: even `c.send(null)` compiled cleanly.
+
+Now every send carries the obligation:
+- On a channel parameter, field or broadcast, an unrewritten call: registry specs for `groovy.concurrent.AsyncChannel`,
+  `BroadcastChannel` and `ChannelSelect` give `send`'s value a `@ThrowsIf(value == null, NullPointerException)`,
+  reported as `Possible NullPointerException: c.send(s) throws when s == null`.
+- On a local channel, whose sends the channel engine rewrites (to a declared element, a stream's queue, or a
+  constrained parameter's contract assert): the rewrite emits `assert v != null` beside the send's bounds assert,
+  tagged so a failure is reported as the send's exception in the source's words (the rewrite renames). Past it the
+  value isn't null, so a receiver's `x != null` proves. None is emitted for a primitive value.
+
+Two comparisons with null read better with it:
+- A primitive's comparison with null is false, by its declaration. The spec's `value == null` at `c.send(i)` with an
+  int `i` read a free flag, and was refuted. Only a real declaration counts here; a contract's bare name doesn't.
+- Any other value of known nullity compares by it (`null == null` at `c.send(null)` was outside the fragment).
+
+**A Phase 492 hole, closed.** A callee's `@Ensures` assumed at its call read a bare `result` (and its formals) by the
+CALLER's declarations. Since Phase 492 those decide nullity, so `@Ensures({ result == xs[0] })` on an `Integer h`,
+called from an `int f` with a null `xs[0]`, read `result` as never null; the assumption contradicted itself, and the
+caller proved anything (`@Ensures({ result == 5 })` returning 4). While a callee's postcondition is translated, its
+own declarations are the ones read. The first form of the primitive check above went through the same lookup and
+made `result == null` false the same way, which P421's call-result cases caught.
+
+A first form of the primitive check read the name's type from the expression's accessed variable only, and twelve
+channel cases failed on it: the channel engine's renamed copies (`i$a2`) carry their type on the expression, as
+Phase 491 found. Their own declared type counts too.
+
+**Shipped tests:** group `P495 null sends`, 16 cases. Measured at the parent commit, 11 failed: every null send
+compiled cleanly, and the callee's `result == xs[0]` proved the caller's false claim. The other five passed there
+too: the four controls (a non-null, an int, a guarded and a parameter int send) and the guard for a callee's
+`result == null`.
+
+Mutation-checked, each kills at least one case: the AsyncChannel spec (3), the BroadcastChannel spec (1, the parameter
+case: a local broadcast is rewritten), the ChannelSelect spec (1), the rewritten send's assert (5), its report as the
+send's exception (5), a primitive compared with null (1), a known value compared with null (2), the callee's
+declarations (1), its `result`'s (1). A rewrite's own type is killed by the corpus (P252's counting consumer, P257's
+held priority select). One mutant is equivalent: reading a name's type through `nullityOfExpr`, as the first form
+did, now that a callee's declarations are registered, gives the same answers on the corpus; the narrower lookup is
+kept, as it can't take a contract name for the method's.
+
 ## Definition of done, per increment
 
 An increment is done when:

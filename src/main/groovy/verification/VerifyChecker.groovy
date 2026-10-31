@@ -7377,6 +7377,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // The hint pastes the PRINTED text into that @Requires, so it is offered only for a real
                 // asserted expression: a synthesized obligation prints its own prose wording ("the receive on
                 // 'c' (line n) may block forever — …"), which would paste an English sentence into a contract.
+                String[] nullSend = (String[]) asite.node.getNodeMetaData(ChannelDesugar.NULL_SEND_KEY)
+                if (nullSend != null) {
+                    // Phase 495 — a rewritten send's null check is the send's exception, as an unrewritten one's spec reports it
+                    addStaticTypeError(withRepro(Reporter.formatSpecThrow('NullPointerException', nullSend[0],
+                        "${nullSend[1]} == null", "!(${nullSend[1]} == null)", r), r, 'NullPointerException'), asite.node)
+                    return
+                }
                 String label = (String) asite.node.getNodeMetaData(ASSERT_LABEL_KEY)   // Phase 252 — a synthesized assert's own wording
                 boolean overParam = label == null && referencesParameter(asite.cond, currentMethod)
                 addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : shownText(asite.cond, typeCheckingVisitor.typeCheckingContext.source), r, overParam), r, 'AssertionError'), asite.node)
@@ -11161,6 +11168,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         paramChans.contains(((VariableExpression) recv).name)) {
                         List<Expression> a = argListOf(m)
                         if (a != null && a.size() == 1) {
+                            out.addAll(ChannelDesugar.nullSendAssert(a.get(0), a.get(0), m))   // Phase 495
                             out.add(boundsAssert(a.get(0),
                                 currentChannelBounds.get(((VariableExpression) recv).name), m))
                             changed[0] = true
@@ -22548,6 +22556,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         enc.lastCallResultNullity = resultNull
         Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
         Object[] savedCollTypes = pushFormalTypes(enc, formals)   // Phase 447
+        // Phase 495 — the callee's own declarations for its names: a bare `result` (or formal) took the CALLER's (Phase
+        // 492), so `result == xs[0]` with an Integer `result` read never-null under a caller returning int, and the
+        // assumption contradicted a null xs[0]
+        Map<String, ClassNode> savedCalleeTypes = enc.calleeFormalTypes
+        Map<String, ClassNode> calleeTypes = new HashMap<String, ClassNode>(savedCalleeTypes)
+        for (Parameter fp : formals) calleeTypes.put(fp.name, fp.originType ?: fp.type)
+        calleeTypes.put('result', callee.returnType)
+        enc.calleeFormalTypes = calleeTypes
         Object post
         List<Object> effectTerms = new ArrayList<Object>()
         try {
@@ -22573,6 +22589,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
         } finally {
+            enc.calleeFormalTypes = savedCalleeTypes
             popFormalTypes(enc, savedCollTypes)
             enc.popScalarTypes(savedTypes)
             enc.restoreNullity('result', savedResultNull)
