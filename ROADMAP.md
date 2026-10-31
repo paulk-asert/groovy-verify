@@ -20382,6 +20382,32 @@ nullity (2), the shifted values (2), the count law (1), the removed element's nu
 reading the last (1), the returned removal (1), the havoc set's mutators (3), the declaration's and the assignment's
 initialiser (1 each), the removal's bounds site (2), a call's negative index (1).
 
+## Phase 494 — removed values  *(shipped — completeness)*
+
+A removal's value is the element it removes. Phase 493 gave that element its nullity, but a returned or assigned
+removal (`return xs.pop()`, `Integer r = xs.removeLast()`) was still outside the fragment, and its method was
+skipped. Now the call becomes a hoisted local, as a contracted call's value does (Phase 347): its value and its
+nullity are the element read before the call, and then the removal's write is applied. So `result == old.xs[0]`
+proves after `return xs.pop()`, `xs.pop() + 2 * xs.pop()` reads the first two elements in order, and a later read of
+the list sees it shrunk. A declaration's nullity is the hoisted local's: read after the write, `xs.pop()`'s was the
+new first element's.
+
+`removeAt(i)` and `remove(int i)` write too. Phase 493's `popFront` became `Encoder.removeAt`, its index-0 case: the
+elements before `i` stay, those after shift down one with their nullity, the size shrinks, and the count law takes
+the removed element's contribution off. Both the method-body and the loop-body executors use it, so a postcondition
+after a `removeAt` is no longer skipped, and an inner loop's `removeAt` is havocked as its other list mutators are.
+
+Only an Int list's removal is hoisted; another element type's still skips loudly.
+
+**Corpus:** Phase 493's `a returned pop still writes` was skipped, and is refuted now, as it is false. P405's `a
+library mutator's write is seen by a later assert` used `xs.remove(0)` as an unmodelled mutator; modelled, its
+refutation names `fails on: f()`, so the case uses `xs.retainAll([7])`, which still isn't.
+
+**Shipped tests:** group `P494 removed values`, 18 cases; all 18 fail at the parent commit (the method was skipped).
+Mutation-checked, each kills at least one case: no hoist (12), no write (5), the nullity read after the write (3),
+the declaration's nullity from the call (2), a bare removal not hoisted (4), the count values (1), the method body's
+`removeAt` (5), the loop's (2), shifting from 0 rather than `i` (3), the count law at index 0 (1).
+
 ## Definition of done, per increment
 
 An increment is done when:

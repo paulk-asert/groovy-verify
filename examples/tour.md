@@ -532,8 +532,8 @@ possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would). Si
 mutation — `xs.add(v)`, `xs.removeLast()`, `xs.pop()` (which takes the *first* element), `xs.clear()` — threads the size and
 contents oracles in **static-single-assignment** (SSA) form — each write mints a fresh name, so a
 mutator's pre- and post-states stay distinct — and pairs with a runtime-faithful `xs.count(v)` (see the
-"Lists — mutation" beat below); only the shift-based variants (`xs.add(i, v)`, `xs.remove(i)`)
-still defer. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
+"Lists — mutation" beat below); `xs.removeAt(i)` shifts the rest down; only the shift-based insert `xs.add(i, v)`
+still defers. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
 peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`, and the same
 folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 2`.
 

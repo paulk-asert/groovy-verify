@@ -45,7 +45,7 @@ class G447_p405_silent_skips {
          src: tc("""final class A {${FIELDS}
                         @Requires({ xs != null && xs.size() == 1 })
                         void f() {
-                            xs.remove(0)
+                            xs.retainAll([7])   // `xs.remove(0)` until Phase 494 modelled it (then `fails on: f()`)
                             assert xs.size() == 1
                         }
                     }""")],

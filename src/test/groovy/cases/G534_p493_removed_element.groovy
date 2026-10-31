@@ -135,7 +135,8 @@ class G534_p493_removed_element {
                         @Requires({ xs != null && xs.size() == 2 })
                         static boolean f(List<Integer> xs, boolean b) { if (b) xs.pop(); g(xs) }
                     }''')],
-        [group: "P493 removed elements", name: "a returned pop still writes", expect: ["return expression 'xs.pop()' is outside fragment"],
+        // skipped until Phase 494 gave the removal its value; refuted since, as it's false
+        [group: "P493 removed elements", name: "a returned pop still writes", expect: ['Cannot prove postcondition'],
          src: tc('''class C {
                         List<Integer> xs
                         @Requires({ xs != null && xs.size() == 2 })

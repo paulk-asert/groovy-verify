@@ -679,7 +679,7 @@ class LoopEncoder {
         r
     }
 
-    private static final List<String> LIST_MUTATORS = ['add', 'clear', 'removeLast', 'pop'].asImmutable()
+    private static final List<String> LIST_MUTATORS = ['add', 'clear', 'removeLast', 'pop', 'removeAt'].asImmutable()   // Phase 494 — removeAt
     private static final List<String> CONTENT_WRITERS = ['put', 'set'].asImmutable()
     private static boolean innerFrameStmt(Statement st, Set<String> scalars, Set<String> arrays, Set<String> lists) {
         if (st == null || st instanceof EmptyStatement) return true
@@ -1102,6 +1102,12 @@ class LoopEncoder {
         }
         if (m == 'pop' && args.isEmpty()) {
             enc.popFront(name, null)   // Phase 493 — the first element, not the last
+            return true
+        }
+        if ((m == 'removeAt' || m == 'remove') && args.size() == 1 && Encoder.removedElementTarget(mce) != null) {
+            Object idx = enc.translate(args.get(0))   // Phase 494 — the tail from i shifts down
+            if (idx == null) return false
+            enc.removeAt(name, idx, null)
             return true
         }
         if (m == 'removeLast' && args.isEmpty()) {

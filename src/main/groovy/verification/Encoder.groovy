@@ -5266,26 +5266,36 @@ class Encoder implements TheoryApi {
     /**
      * Phase 493 — {@code xs.pop()} takes the FIRST element (measured on Groovy 6: {@code [1, 2, 3].pop()} is 1, leaving
      * {@code [2, 3]}; {@code removeLast()} takes the last): the rest shift down one, with their nullity, and the size
-     * shrinks by one. It was modelled as {@code removeLast()}, so {@code xs[0] == old.xs[0]} proved. The bcount law per
-     * tracked value, as {@code removeLast}'s: the new count is the old less the first element's contribution. Shared by
-     * the method-body and loop-body executors.
+     * shrinks by one. It was modelled as {@code removeLast()}, so {@code xs[0] == old.xs[0]} proved. Shared by the
+     * method-body and loop-body executors.
      */
     void popFront(String name, List<Object> countVals) {
+        removeAt(name, session.intLit(0L), countVals)
+    }
+
+    /**
+     * Phase 494 — {@code xs.removeAt(i)} / {@code xs.remove(int i)} (Phase 493's {@link #popFront} at index 0): the
+     * elements before {@code i} stay, those after shift down one, with their nullity, and the size shrinks by one. The
+     * bcount law per tracked value, as {@code removeLast}'s: the new count is the old less the removed element's
+     * contribution. {@code i}'s bounds are the call's obligation (an IndexSite).
+     */
+    void removeAt(String name, Object idx, List<Object> countVals) {
         Object one = session.intLit(1L), zero = session.intLit(0L)
         Object oldArr = arrayFor(name), oldNulls = elementNullityFor(name), oldSize = sizeOf(name)
         Object newSize = session.minus(oldSize, one)
         Object arr = havocArray(name)
         Object nulls = elementNullityFor(name)
         int n = quantCounter++
-        Object k = session.boundIntVar('pop$k' + n)
+        Object k = session.boundIntVar('removeAt$k' + n)
         Object ak = session.select(arr, k), nk = session.select(nulls, k)
         Object inR = session.and([session.le(zero, k), session.lt(k, newSize)])
-        session.assertExpr(session.forall([k], session.implies(inR, session.eq(ak, session.select(oldArr, session.plus(k, one)))), [ak]))
-        session.assertExpr(session.forall([k], session.implies(inR, session.eq(nk, session.select(oldNulls, session.plus(k, one)))), [nk]))
+        Object from = session.ite(session.lt(k, idx), k, session.plus(k, one))
+        session.assertExpr(session.forall([k], session.implies(inR, session.eq(ak, session.select(oldArr, from))), [ak]))
+        session.assertExpr(session.forall([k], session.implies(inR, session.eq(nk, session.select(oldNulls, from))), [nk]))
         bindSize(name, newSize)
         clearFactoryRecord(name)
         for (Object w : (countVals ?: Collections.emptyList())) {
-            Object dropped = session.ite(session.eq(session.select(oldArr, zero), w), one, zero)
+            Object dropped = session.ite(session.eq(session.select(oldArr, idx), w), one, zero)
             session.assertExpr(session.eq(session.bcount(arr, w, zero, newSize),
                 session.minus(session.bcount(oldArr, w, zero, oldSize), dropped)))
         }

@@ -14699,6 +14699,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             sumArrays.addAll(sumArrayNames(reqAst))
             // The `k` bounds of any Sets.boundedCount(_, k) in the postcondition drive the bcount per-add law.
             currentBcountKExprs = bcountKArgs(postAst)
+            currentCountVals = countVals   // Phase 494
 
             for (Object step : p.steps) {
                 if (step instanceof AssertAssume) {
@@ -14867,9 +14868,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     // Phase 347 — `s = s + f(x)`: a call inside the right-hand side is hoisted to a framed local (its
                     // writes havocked, its @Ensures assumed), as a return expression's calls are
-                    if (rhs == null && !isDecimal && !isCallExpr(rhsE) && exprContainsCall(rhsE)) {
+                    // Phase 494 — and a bare removal (`Integer r = xs.pop()`), whose nullity is then the hoisted local's
+                    Expression nullSrc = a.rhs
+                    if (rhs == null && !isDecimal && (!isCallExpr(rhsE) || Encoder.removedElementTarget(rhsE) != null) &&
+                            exprContainsCall(rhsE)) {
                         Expression hv = hoistValueCalls(rhsE, enc, session, node)
-                        if (hv != null) rhs = enc.translate(hv)
+                        if (hv != null) { rhs = enc.translate(hv); nullSrc = hv }
                     }
                     ClassNode declaredType = currentScalarTypes.get(a.name)
                     Object fresh
@@ -14890,14 +14894,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         session.assertDefinition(fresh, rhs)   // Phase 473
                         enc.bind(a.name, fresh)
                         // Phase 423 — a safe call's value: its null case, whatever the declared type (a boxed one too)
-                        if (enc.noteNullableValue(a.name, a.rhs)) enc.bindNullity(a.name, enc.nullityOfExpr(a.rhs))
+                        if (enc.noteNullableValue(a.name, a.rhs)) enc.bindNullity(a.name, enc.nullityOfExpr(nullSrc))
                         // Phase 132 — flow nullity through the write of a reference-typed name (field or local), so
                         // `name = n` under `@Requires({ n != null })` establishes a `name != null` invariant, and a
                         // later `name = <nullable>` correctly *forgets* the old non-null fact. Known nullity binds
                         // directly; an unknown RHS havocs to a fresh free flag (sound — never retains a stale fact).
                         // Phase 424 — a boxed integer's too (`Integer n = p`): its `n != null` read a free flag
                         if (holdsNull(declaredType, a.name) && !enc.isDecimalName(a.name)) {
-                            Object rhsNull = enc.nullityOfExpr(a.rhs)
+                            Object rhsNull = enc.nullityOfExpr(nullSrc)
                             enc.bindNullity(a.name, rhsNull != null ? rhsNull : session.boolVar(a.name + '?null#' + ssaVersion))
                         }
                     } else if (a.rhs instanceof ConstantExpression && ((ConstantExpression) a.rhs).value == null &&
@@ -15377,6 +15381,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         } finally {
             currentBcountKExprs = Collections.<Expression> emptyList()
+            currentCountVals = Collections.<Object> emptyList()
             try { session.close() } catch (Throwable ignored) {}
         }
     }
@@ -15731,6 +15736,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (m == 'pop' && args.isEmpty()) {
             enc.popFront(name, countVals)   // Phase 493 — the first element, not the last
+            return true
+        }
+        // Phase 494 — `xs.removeAt(i)` / `xs.remove(i)` with an int i: the tail from i shifts down
+        if ((m == 'removeAt' || m == 'remove') && args.size() == 1 && Encoder.removedElementTarget(call) != null) {
+            Object idx = enc.translate(args.get(0))
+            if (idx == null) return false
+            enc.removeAt(name, idx, countVals)
             return true
         }
         if (m == 'removeLast' && args.isEmpty()) {
@@ -20458,11 +20470,37 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  was hoisted. Shared by the return-expression and assignment-RHS paths of the postcondition walk. */
     private int hoistSeq = 0   // Phase 347 — hoisted-call locals (`ret$call$local$k`), per checker
 
+    /**
+     * Phase 494 — a call that removes an element and returns it ({@code xs.pop()}, {@code xs.removeLast()},
+     * {@code xs.removeAt(i)}, {@code xs.remove(i)}: {@link Encoder#removedElementTarget}) as a fresh local: the element
+     * read before the call, with its nullity, and then the removal's write. Null — the call left as it was, to skip
+     * loudly — when the receiver isn't a modelled Int list or the read doesn't translate.
+     */
+    private Expression hoistRemoval(Expression e, Encoder enc, SmtSession session) {
+        Encoder.IndexedNullTarget t = Encoder.removedElementTarget(e)
+        if (t == null || !enc.isListTyped(t.containerName) || currentSetElementTypes.containsKey(t.containerName) ||
+            currentMapTypes.containsKey(t.containerName) || enc.listElementSort(t.containerName) != session.intSort()) return null
+        Expression read = new BinaryExpression(new VariableExpression(t.containerName),
+            Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), t.indexExpr)
+        Object v = enc.translate(read)
+        if (v == null) return null
+        Object nul = enc.nullityOfExpr(e)   // before the write: `xs.pop()`'s is the first element's
+        if (!applyListMutation(session, enc, e, currentCountVals)) return null
+        String nm = 'ret$removed$local$' + (++hoistSeq)
+        enc.bind(nm, v)
+        enc.bindNullity(nm, nul ?: session.boolVar(nm + '?null'))
+        new VariableExpression(nm)
+    }
+    /** Phase 494 — the values the postcondition counts ({@code countVals}), for a removal hoisted out of an expression */
+    private List<Object> currentCountVals = Collections.<Object> emptyList()
+
     private Expression hoistValueCalls(Expression e0, Encoder enc, SmtSession session, MethodNode node) {
                         boolean[] hoistedAny = [false]
                         ExpressionTransformer tr = null
                         tr = { Expression e ->
                             if (isCallExpr(e)) {
+                                Expression removed = hoistRemoval(e, enc, session)   // Phase 494
+                                if (removed != null) { hoistedAny[0] = true; return removed }
                                 // Phase 309 — inside-out: hoist calls in the ARGUMENTS first, so `decode(encode(n))`
                                 // sees `decode(ret$call$local$k)` (an argument assumeCalleeEnsures can translate).
                                 // Unhoistable inner calls leave the outer as it was, which then skips loudly as before.
