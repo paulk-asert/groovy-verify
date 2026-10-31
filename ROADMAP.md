@@ -20250,6 +20250,38 @@ trigger, the term an obligation reads.
 - `tuple`, `leftpad` and a few others.
 
 
+## Phase 491 — a queue's nullity kept  *(shipped — precision)*
+
+The third of the four slices toward null-aware goal comparisons. Phase 490's re-sizing left the channel queues at 17
+of the 55 cases that fail when every comparison reads null. They came down to two losses, neither of them the queue's:
+- A returned list (`return out`, which a channel's `return c.toList()` becomes) gave `result` the list's array and
+  size (Phase 41) but fresh null flags. Without a channel too: `@Ensures({ result.every { it != null } })` failed
+  after `out.add(n)` with an `int n`. `result` takes the list's flags now.
+- An `async` arm's local renamed apart from the method's (`i` to `i$a1`, Phase 252) is a variable with no
+  `accessedVariable`, so its `int` wasn't read and the value sent (`out$q.add(i$a1)`) might be null. `nullityOfExpr`
+  reads such a variable's own declared type now.
+
+**Re-sized:** with every comparison reading null on top of this phase, 25 cases fail, down from 55. Left:
+- the experiment's own primitive-array leak, about 10;
+- `max`/`min`/`isSorted`/`binarySearch`, 6;
+- `minus`'s by-value removal, 3;
+- a String's or enum's store, 2;
+- two channel cases, which are no longer missing flags but solver timeouts on their large generated invariants
+  (the held `fair()` merge, the forever ALT fed by a dependent stage);
+- `tuple`, `leftpad` and `pairs_sum_to_zero`.
+
+The lists built in loops left with the queues: a returned list was most of them.
+
+**Shipped tests:** group `P491 nullity returned`, 5 cases. Measured at the parent commit, three failed: a returned
+list's and a returned shift's (false alarms), and a boxed value's (the right report with a wrong call). A returned
+literal's and a returned `drop`'s were unchanged; they reach `result` by other paths. Mutation-checked:
+- without `result`'s flags three fail;
+- with the comparisons read null (Phase 492's reading, applied for the check), without a rewrite's variable's type
+  the corpus's `a counting consumer loop reads every element` fails.
+
+The rename's own copy of the declared type (`copyRenamed`) was tried as well. Its mutation survived, since a renamed
+use already carries `int`, so it isn't shipped.
+
 ## Definition of done, per increment
 
 An increment is done when:

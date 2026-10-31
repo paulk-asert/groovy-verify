@@ -4974,7 +4974,8 @@ class Encoder implements TheoryApi {
         // — by its declaration, not a flow-typed `Integer x = 5`'s inferred int
         Object tgt = e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
         org.codehaus.groovy.ast.Variable dv = e instanceof VariableExpression ? ((VariableExpression) e).accessedVariable : null
-        ClassNode pt = dv != null ? (dv.originType ?: dv.type) : tgt instanceof MethodNode ? ((MethodNode) tgt).returnType : null
+        ClassNode pt = dv != null ? (dv.originType ?: dv.type) : tgt instanceof MethodNode ? ((MethodNode) tgt).returnType :
+            e instanceof VariableExpression ? ((VariableExpression) e).originType : null   // Phase 491 — a rewrite's (`i$a1`)
         if (pt != null && ClassHelper.isPrimitiveType(pt) && !ClassHelper.isPrimitiveVoid(pt)) return session.boolLit(false)
         if (e instanceof ConstantExpression) return session.boolLit(((ConstantExpression) e).value == null)
         if (e instanceof VariableExpression) {

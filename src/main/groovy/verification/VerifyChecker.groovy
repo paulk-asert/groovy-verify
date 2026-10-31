@@ -6212,6 +6212,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             enc.hasSizeOracle(localName)) {
             enc.bindSize('result', enc.sizeOf(localName))
             enc.bindArray('result', enc.arrayFor(localName))
+            enc.copyElementNullity('result', localName)   // Phase 491 — and its elements' nullity (it was fresh)
             // Add 'result' to currentListNames so {@code result.count(v)} routes through bcount
             // (Phase 41) the same way the local would.
             currentListNames.add('result')
