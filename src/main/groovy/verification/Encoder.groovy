@@ -5024,8 +5024,9 @@ class Encoder implements TheoryApi {
             Object idxH = indexTerm(ind.containerName, ind.indexExpr)   // Phase 488 — `xs[-1]`'s is the last element's (Phase 369)
             return idxH == null ? null : session.eq(session.select(elementNullityFor(ind.containerName), idxH), session.intLit(1L))
         }
-        // Phase 489 — `xs.first()` / `xs.last()` is that element; `xs.max()` / `xs.min()` is null when every element is
-        IndexedNullTarget ec = elementCallTargetHere(e)
+        // Phase 489 — `xs.first()` / `xs.last()` is that element; `xs.max()` / `xs.min()` is null when every element is.
+        // Phase 493 — `xs.pop()`, `xs.removeLast()`, `xs.removeAt(i)` the one it removes
+        IndexedNullTarget ec = elementCallTargetHere(e) ?: removedElementTarget(e)
         if (ec != null && hasElementNullity(ec.containerName)) {
             if (nonNullElementContainers.contains(ec.containerName)) return session.boolLit(false)
             Object nulls = elementNullityFor(ec.containerName)
@@ -5260,6 +5261,34 @@ class Encoder implements TheoryApi {
     /** Phase 445 — {@code to} holds {@code from}'s array: its elements' nullity too */
     void copyElementNullity(String to, String from) {
         arrEnv.put(to + '$nullElem', elementNullityFor(from))
+    }
+
+    /**
+     * Phase 493 — {@code xs.pop()} takes the FIRST element (measured on Groovy 6: {@code [1, 2, 3].pop()} is 1, leaving
+     * {@code [2, 3]}; {@code removeLast()} takes the last): the rest shift down one, with their nullity, and the size
+     * shrinks by one. It was modelled as {@code removeLast()}, so {@code xs[0] == old.xs[0]} proved. The bcount law per
+     * tracked value, as {@code removeLast}'s: the new count is the old less the first element's contribution. Shared by
+     * the method-body and loop-body executors.
+     */
+    void popFront(String name, List<Object> countVals) {
+        Object one = session.intLit(1L), zero = session.intLit(0L)
+        Object oldArr = arrayFor(name), oldNulls = elementNullityFor(name), oldSize = sizeOf(name)
+        Object newSize = session.minus(oldSize, one)
+        Object arr = havocArray(name)
+        Object nulls = elementNullityFor(name)
+        int n = quantCounter++
+        Object k = session.boundIntVar('pop$k' + n)
+        Object ak = session.select(arr, k), nk = session.select(nulls, k)
+        Object inR = session.and([session.le(zero, k), session.lt(k, newSize)])
+        session.assertExpr(session.forall([k], session.implies(inR, session.eq(ak, session.select(oldArr, session.plus(k, one)))), [ak]))
+        session.assertExpr(session.forall([k], session.implies(inR, session.eq(nk, session.select(oldNulls, session.plus(k, one)))), [nk]))
+        bindSize(name, newSize)
+        clearFactoryRecord(name)
+        for (Object w : (countVals ?: Collections.emptyList())) {
+            Object dropped = session.ite(session.eq(session.select(oldArr, zero), w), one, zero)
+            session.assertExpr(session.eq(session.bcount(arr, w, zero, newSize),
+                session.minus(session.bcount(oldArr, w, zero, oldSize), dropped)))
+        }
     }
 
     /**
@@ -10115,6 +10144,32 @@ class Encoder implements TheoryApi {
         org.codehaus.groovy.ast.Variable v = ((VariableExpression) mce.objectExpression).accessedVariable
         if (!isSequenceType(v == null ? null : (v.originType ?: v.type))) return null
         elementCallOf(mce)
+    }
+
+    /**
+     * Phase 493 — a call that removes an element of a named list and returns it: {@code xs.pop()} (the first — Groovy
+     * 2.5+), {@code xs.removeLast()} (the last, index -1 by {@link #indexTerm}), {@code xs.removeAt(i)} and
+     * {@code xs.remove(i)} with an int {@code i} (a boxed one is {@code remove(Object)}, which returns a boolean). Its
+     * nullity is that element's read before the call, as an unboxing obligation reads it. Not a safe call's. Null for
+     * anything else.
+     */
+    static IndexedNullTarget removedElementTarget(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) e
+        String m = mce.methodAsString
+        List<Expression> args = argList(mce)
+        if (mce.safe || mce.spreadSafe || !(mce.objectExpression instanceof VariableExpression)) return null
+        Expression idx = m == 'pop' && args.isEmpty() ? new ConstantExpression(0) :
+            m == 'removeLast' && args.isEmpty() ? new ConstantExpression(-1) :
+            (m == 'removeAt' || m == 'remove' && staticTypeOf(args[0])?.name == 'int') && args.size() == 1 ? args[0] : null
+        if (idx == null) return null
+        org.codehaus.groovy.ast.Variable v = ((VariableExpression) mce.objectExpression).accessedVariable
+        ClassNode rt = v == null ? null : (v.originType ?: v.type)
+        if (rt == null || rt.isArray() || !isSequenceType(rt)) return null
+        IndexedNullTarget t = new IndexedNullTarget()
+        t.containerName = ((VariableExpression) mce.objectExpression).name
+        t.indexExpr = idx
+        t
     }
 
     private static boolean isSequenceType(ClassNode rt) {

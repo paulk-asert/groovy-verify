@@ -2567,7 +2567,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 425 — {@code e}'s nullity is a literal the encoder knows (a {@code new}, a {@code null}), not a name's flag. */
     private static boolean knownLiteralNullity(Encoder enc, Expression e) {
         Expression x = stripCasts(e)
-        !(x instanceof VariableExpression) && enc.nullityOfExpr(x) != null
+        // Phase 493 — not a call that removes what it returns (`return xs.pop()`): its value is opaque, but its write isn't
+        !(x instanceof VariableExpression) && Encoder.removedElementTarget(x) == null && enc.nullityOfExpr(x) != null
     }
 
     /** Phase 424 — a name whose value may be null: one declared a reference type, a boxed integer or boolean included. */
@@ -6449,6 +6450,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 (ClassHelper.isNumberType(t) || t.name in ['java.math.BigInteger', 'java.math.BigDecimal'])
             boolean read = Encoder.indexedAccessTarget(e) != null && !(e instanceof MethodCallExpression && ((MethodCallExpression) e).safe) ||
                 Encoder.elementCallTarget(e) != null ||   // Phase 489 — `xs.first()`, `xs.max()`
+                Encoder.removedElementTarget(e) != null ||   // Phase 493 — `xs.pop()`, `xs.removeAt(i)`
                 e instanceof PropertyExpression && !((PropertyExpression) e).safe && !((PropertyExpression) e).spreadSafe &&
                 ((PropertyExpression) e).objectExpression instanceof VariableExpression && ((PropertyExpression) e).propertyAsString != null
             if (boxedNumber && read) out.putIfAbsent(safeCallKey(e), [exc, how] as String[])
@@ -7411,7 +7413,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Long k = Encoder.negativeConstant(ix.index)
                 idx = k != null ? s.plus(size, s.intLit(k)) : enc.translate(ix.index)
             } else {
-                idx = enc.indexTerm(ix.receiver, ix.index)   // Phase 369 — a negative constant counts from the end
+                // Phase 369 — a negative constant counts from the end; Phase 493 — a subscript's, not a call's: `xs.get(-1)`
+                // and `xs.removeAt(-1)` throw (measured, Groovy 6), and were proved in bounds
+                idx = ix.node instanceof MethodCallExpression ? enc.translate(ix.index) : enc.indexTerm(ix.receiver, ix.index)
                 size = enc.sizeOf(ix.receiver)
             }
             if (idx == null) {
@@ -7427,7 +7431,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status != CheckResult.Status.VERIFIED) {
                 // Phase 369 — `xs[-k]` is `xs[size - k]`, so its obligation reads so; and a list SUBSCRIPT (not `get`,
                 // not an array) past the end reads null rather than throws, which the head says
-                Long neg = Encoder.negativeConstant(ix.index)
+                Long neg = ix.node instanceof MethodCallExpression && !ix.string ? null : Encoder.negativeConstant(ix.index)
                 String sizeText = receiverArraysOf(currentMethod).contains(ix.receiver) ?
                     shownLocation(ix.receiver) + '.length' :
                     ix.stringExpr instanceof ConstantExpression ? "'${ix.receiver}'.length()".toString() :   // Phase 417
@@ -7496,7 +7500,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // object's property isn't checked here
             if (df.unboxed != null) {
                 boolean map = enc.isMapName(df.receiver)
-                Encoder.IndexedNullTarget ec = Encoder.elementCallTarget(df.unboxed)   // Phase 489
+                Encoder.IndexedNullTarget ec = Encoder.elementCallTarget(df.unboxed) ?: Encoder.removedElementTarget(df.unboxed)   // Phase 489, 493
                 if (!map && !(enc.hasElementNullity(df.receiver) && (Encoder.indexedAccessTarget(df.unboxed) != null || ec != null)) ||   // not `xs.x`
                     currentNonNullElementContainers.contains(df.receiver)) return
                 Object nul = enc.nullityOfExpr(df.unboxed)
@@ -12479,7 +12483,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         private void unboxedSite(Expression e) {
             String[] at = unboxedReads?.get(safeCallKey(e))
             if (at == null) return
-            Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e) ?: Encoder.elementCallTarget(e)   // Phase 489
+            Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e) ?: Encoder.elementCallTarget(e) ?:
+                Encoder.removedElementTarget(e)   // Phase 489, 493
             String recv = ind != null ? ind.containerName : ((VariableExpression) ((PropertyExpression) e).objectExpression).name
             Expression key = ind != null ? (ind.indexExpr ?: e) : new ConstantExpression(((PropertyExpression) e).propertyAsString)
             derefSites.add(new DerefSite(node: e, receiver: recv, indexExpr: key, unboxed: e, unboxThrows: at[0], unboxHow: at[1]))
@@ -12857,6 +12862,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ((ArgumentListExpression) mce.arguments).expressions :
                 Collections.<Expression>emptyList()
             if (mName == 'get' && margs.size() == 1) {
+                indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
+            } else if (margs.size() == 1 && (mName == 'removeAt' ||
+                        mName == 'remove' && Encoder.staticTypeOf(margs[0])?.name == 'int' && isListType(recvType))) {
+                // Phase 493 — List.removeAt(i) / remove(int i) throw IndexOutOfBoundsException outside [0, size), as get(i)
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
             } else if (mName == 'set' && margs.size() == 2 && isListType(recvType)) {
                 // Phase 340 — List.set(i, v) throws IndexOutOfBoundsException outside [0, size): the bounds obligation
@@ -15654,8 +15663,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *   {@code i < newSize} see the right values (the prefix unchanged, the new tail = v).
      *   The per-store {@code count} update law fires for each {@code v} the postcondition tracks.
      * - **clear()**: {@code newSize = 0}; array left as-is (no in-bounds read survives).
-     * - **removeLast() / pop()**: {@code newSize = oldSize - 1}; array left as-is (prefix
-     *   unchanged). The implicit precondition {@code oldSize > 0} is checked via a synthesised
+     * - **removeLast()**: {@code newSize = oldSize - 1}; array left as-is (prefix unchanged).
+     * - **pop()** (Phase 493): the first element is taken, the rest shift down ({@link Encoder#popFront}).
+     *   The implicit precondition {@code oldSize > 0} of both is checked via a synthesised
      *   {@code IndexSite(xs, 0)} in {@link ObligationCollector} — refutes pop-on-empty with the
      *   bounds-check diagnostic shape.
      *
@@ -15719,7 +15729,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             return true
         }
-        if ((m == 'removeLast' || m == 'pop') && args.isEmpty()) {
+        if (m == 'pop' && args.isEmpty()) {
+            enc.popFront(name, countVals)   // Phase 493 — the first element, not the last
+            return true
+        }
+        if (m == 'removeLast' && args.isEmpty()) {
             // The "oldSize > 0" check is emitted as a synthesised IndexSite by ObligationCollector,
             // so pop-on-empty refutes with the standard bounds-check diagnostic (Possible
             // IndexOutOfBoundsException, fails on: f([])). Threading still proceeds — the
@@ -21726,6 +21740,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (de.leftExpression instanceof VariableExpression) {
                 String name = ((VariableExpression) de.leftExpression).name
                 ClassNode declType = ((VariableExpression) de.leftExpression).originType ?: de.leftExpression.type
+                // Phase 493 — an initialiser that writes a collection (`Integer r = xs.pop()`): only r was havocked, and
+                // the pop lost. The generic path havocs both
+                if (!modifiedLocations(new ExpressionStatement(de.rightExpression)).isEmpty()) return false
                 if (replayArrayAssign(enc, s, name, de.rightExpression)) return true   // Phase 375
                 Object rhs = enc.translate(de.rightExpression)
                 if (rhs != null) enc.bind(name, rhs)
@@ -21765,6 +21782,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
             BinaryExpression be = (BinaryExpression) e
+            if (!modifiedLocations(new ExpressionStatement(be.rightExpression)).isEmpty()) return false   // Phase 493 — `r = xs.pop()`
             Expression lhs = mapPropertySubscript(be.leftExpression)   // Phase 478
             if (lhs instanceof VariableExpression) {
                 String name = ((VariableExpression) lhs).name
@@ -21881,8 +21899,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 @Override
                 void visitMethodCallExpression(MethodCallExpression mce) {
                     String m = mce.methodAsString
-                    if ((m == 'add' || m == 'remove' || m == 'put') &&
-                        mce.objectExpression instanceof VariableExpression) {
+                    // Phase 493 — any collection mutator's receiver (`if (b) xs.pop()` kept xs), not only add/remove/put's
+                    if (m in LOOP_MUTATORS && mce.objectExpression instanceof VariableExpression) {
                         out.add(((VariableExpression) mce.objectExpression).name)
                     }
                     super.visitMethodCallExpression(mce)

@@ -20342,6 +20342,46 @@ one case:
 - untyped arithmetic, 2; a contract name's declaration, 2;
 - a primitive array taken for a list, 3; the tuple exclusion, 1; a contract's `xs.max()` receiver, 1.
 
+## Phase 493 — removed elements  *(shipped — soundness)*
+
+`xs.pop()` takes the FIRST element, as it has since Groovy 2.5 (measured on 6.0.0: `[1, 2, 3].pop()` is 1, leaving
+`[2, 3]`). Phase 40 took it for an alias of `removeLast()`, so both the straight-line replay and the loop engine kept
+the first element and dropped the last. `@Ensures({ xs[0] == old.xs[0] })` after a `pop()` proved, and so did a loop
+invariant `xs[0] == 5` across one. Now `Encoder.popFront`, shared by both executors, shifts the rest down one with
+their nullity, shrinks the size, and keeps Phase 41's count law (the first element's contribution comes off).
+
+The element a removing call returns is an element read, so it is unboxed where it's used as Phase 489's `first()`
+is, and throws for a null one (measured: `int r = [null].pop()` throws `GroovyCastException`, `xs.pop() + 1` a
+`NullPointerException`). The calls are `pop()` (index 0), `removeLast()` (the last), `removeAt(i)` and `remove(i)`
+with an int `i`. A boxed `i` calls `remove(Object)`, which returns a boolean. The obligation reads the element
+before the call removes it.
+
+Three neighbouring holes the probes found, closed with it:
+- **A returned removal.** `Integer f() { xs.pop() }` with `@Ensures({ xs.size() == 2 })` proved once the call's
+  nullity was known: Phase 425 binds a return expression of known nullity as an opaque value, and dropped the
+  write. A removing call is excluded there, and the method skips loudly as before.
+- **A callee's prefix.** The replay before a call lost a removal in a declaration's initialiser
+  (`Integer r = xs.pop(); g(xs)`, or `r = xs.pop()`), havocking `r` alone. Its havoc set knew only
+  `add`/`remove`/`put`, so `if (b) xs.pop()` and `if (b) xs.clear()` kept `xs` too. Every collection mutator's
+  receiver is havocked now, and such an initialiser takes that path.
+- **A call's index.** `removeAt(i)` and `remove(int i)` had no bounds obligation; they need `0 <= i < size` as
+  `get(i)` does. A call's negative constant doesn't count from the end as a subscript's does: `xs.get(-1)` and
+  `xs.removeAt(-1)` throw `IndexOutOfBoundsException` (measured), and were proved in bounds.
+
+Returning a removed element's value (`return xs.pop()`, `Integer r = xs.removeLast()`) is still outside the
+fragment, and skipped loudly. So is `removeAt(i)`'s write in a postcondition's replay.
+
+**Shipped tests:** group `P493 removed elements`, 21 cases. Measured at the parent commit, 15 failed:
+- `pop()`'s shift, its count and the loop's (5): it kept the first element;
+- the four removed nulls unboxed: no obligation;
+- the callee's prefix, by a declaration, an assignment and an `if` (3): the pop was lost;
+- `removeAt(i)` and `remove(int)`'s bounds, and `xs.get(-1)` (3).
+
+Mutation-checked, each kills at least one case: the method-body `pop` as `removeLast` (4), the loop's (2), the shifted
+nullity (2), the shifted values (2), the count law (1), the removed element's nullity (7), `remove(int)` (1), `pop`
+reading the last (1), the returned removal (1), the havoc set's mutators (3), the declaration's and the assignment's
+initialiser (1 each), the removal's bounds site (2), a call's negative index (1).
+
 ## Definition of done, per increment
 
 An increment is done when:

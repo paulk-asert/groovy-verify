@@ -92,7 +92,7 @@ class G161_p40_list_mutation {
                         @Ensures({ xs.size() == old.xs.size() - 1 })
                         void popOne() { xs.removeLast() }
                     }''')],
-        // pop is the Groovy alias for removeLast.
+        // pop takes the first element (Groovy 2.5+; Phase 493), removeLast the last: either shrinks the size by 1.
         [group: 'P40 list mutation', name: 'xs.pop() with guard: size shrinks by 1', ok: true,
          src: tc('''class C {
                         List<Integer> xs

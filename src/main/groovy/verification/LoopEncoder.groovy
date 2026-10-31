@@ -1100,7 +1100,11 @@ class LoopEncoder {
             enc.clearFactoryRecord(name)
             return true
         }
-        if ((m == 'removeLast' || m == 'pop') && args.isEmpty()) {
+        if (m == 'pop' && args.isEmpty()) {
+            enc.popFront(name, null)   // Phase 493 — the first element, not the last
+            return true
+        }
+        if (m == 'removeLast' && args.isEmpty()) {
             Object oldSize = enc.sizeOf(name)
             enc.bindSize(name, s.minus(oldSize, one))
             enc.clearFactoryRecord(name)

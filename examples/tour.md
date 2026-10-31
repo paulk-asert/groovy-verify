@@ -529,7 +529,7 @@ Drop the `xs[0] != null` guard and the refutation pins a concrete failing input.
 method idioms `xs.get(i)` / `xs.first()` / `xs.head()` / `xs.last()` / `xs.set(i, v)` lower
 through the same array-access machinery (with the bounds check synthesised so `xs.first()` on a
 possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would). Size-changing
-mutation — `xs.add(v)`, `xs.removeLast()` / `xs.pop()`, `xs.clear()` — threads the size and
+mutation — `xs.add(v)`, `xs.removeLast()`, `xs.pop()` (which takes the *first* element), `xs.clear()` — threads the size and
 contents oracles in **static-single-assignment** (SSA) form — each write mints a fresh name, so a
 mutator's pre- and post-states stay distinct — and pairs with a runtime-faithful `xs.count(v)` (see the
 "Lists — mutation" beat below); only the shift-based variants (`xs.add(i, v)`, `xs.remove(i)`)
