@@ -3519,13 +3519,10 @@ class Encoder implements TheoryApi {
             String prevOf = quantElementOf.get(param)
             nullEnv.put(param, session.eq(session.select(nulls, k), session.intLit(1L)))
             quantElementOf.put(param, src)
-            boolean prevAware = nullAwareElements
-            nullAwareElements = true
             Object pk
             try {
                 pk = translateWith(body, [(param): elem] as Map<String, Object>)
             } finally {
-                nullAwareElements = prevAware
                 if (prevNull == null) nullEnv.remove(param) else nullEnv.put(param, prevNull)
                 if (prevOf == null) quantElementOf.remove(param) else quantElementOf.put(param, prevOf)
             }
@@ -3694,11 +3691,19 @@ class Encoder implements TheoryApi {
             Object arr = session.arrayVar(name + '$minus' + n)
             Object nul = session.arrayVar(name + '$minus$nullElem' + n)
             Object size = session.intVar(name + '$minus$size' + n)
-            // removed(v, j): the element v is taken out — by n, or by ys[j]. Compared by value, without its nullity, as
-            // `contains` and an element's `==` are
-            Closure<Object> removed = { Object v, Object j ->
-                ys == null ? session.eq(v, nH)
-                           : session.and([session.le(zero, j), session.lt(j, ysSize), session.eq(v, session.select(ysArr, j))])
+            // removed(v, vNull, j): the element v is taken out — by n, or by ys[j]. Phase 492 — compared as Groovy compares a null
+            // (an element's `==` now is): a null element isn't an int's, and is a null's of ys (`[null, 1] - [null]` is [1])
+            Object one = session.intLit(1L)
+            Object srcNulls = elementNullsOf(src), ysNulls = ys == null ? null : elementNullsOf(ys)
+            Closure<Object> removed = { Object v, Object vNull, Object j ->
+                if (ys == null) return srcNulls == null ? session.eq(v, nH) : session.and([session.not(vNull), session.eq(v, nH)])
+                Object eq = session.eq(v, session.select(ysArr, j))
+                if (srcNulls != null || ysNulls != null) {
+                    Object yNull = ysNulls == null ? session.boolLit(false) : session.eq(session.select(ysNulls, j), one)
+                    Object xNull = srcNulls == null ? session.boolLit(false) : vNull
+                    eq = session.ite(session.or([xNull, yNull]), session.and([xNull, yNull]), eq)
+                }
+                session.and([session.le(zero, j), session.lt(j, ysSize), eq])
             }
             session.assertExpr(session.and([session.le(zero, size), session.le(size, srcSize)]))
             // each element is src[idx(k)], with its nullity, and isn't removed
@@ -3709,11 +3714,11 @@ class Encoder implements TheoryApi {
             session.assertExpr(session.forall([k], session.implies(inR, session.and([
                 session.le(zero, idx), session.lt(idx, srcSize), session.eq(rk, session.select(srcArr, idx)),
                 session.eq(session.select(nul, k), session.select(srcNull, idx)),
-                ys == null ? session.not(removed(rk, null)) : session.boolLit(true)])), [rk]))
+                ys == null ? session.not(removed(rk, session.eq(session.select(nul, k), one), null)) : session.boolLit(true)])), [rk]))
             if (ys != null) {
                 Object j = session.boundIntVar('minus$j' + n)
                 session.assertExpr(session.forallMultiPattern([k, j],
-                    session.implies(inR, session.not(removed(rk, j))), [rk, session.select(ysArr, j)]))
+                    session.implies(inR, session.not(removed(rk, session.eq(session.select(nul, k), one), j))), [rk, session.select(ysArr, j)]))
             }
             // Phase 460 — in order (idx increasing), and for n complete: each element of src not removed is at pos(i),
             // whose source is i. Not for ys: with "removed" witnessed there (a skolem hit(i), or a nested ∃), a false
@@ -3728,21 +3733,21 @@ class Encoder implements TheoryApi {
             Object kept = session.and([session.le(zero, pos), session.lt(pos, size), session.eq(session.select(arr, pos), sci),
                 session.eq(session.applyUF('minusIdx$' + n, [pos], session.intSort()), ci)])
             if (ys == null) session.assertExpr(session.forall([ci], session.implies(session.and([session.le(zero, ci), session.lt(ci, srcSize)]),
-                session.or([removed(sci, null), kept])), [sci]))
+                session.or([removed(sci, session.eq(session.select(srcNull, ci), one), null), kept])), [sci]))
             // the size drops exactly when something is removed: a witness w (and wj) when it does
             Object i = session.boundIntVar('minus$i' + n)
             Object si = session.select(srcArr, i)
             Object inSrc = session.and([session.le(zero, i), session.lt(i, srcSize)])
             Object w = session.intVar(name + '$minus$w' + n), wj = session.intVar(name + '$minus$wj' + n)
             Object wHit = session.and([session.le(zero, w), session.lt(w, srcSize),
-                removed(session.select(srcArr, w), wj)])
+                removed(session.select(srcArr, w), session.eq(session.select(srcNull, w), one), wj)])
             session.assertExpr(session.or([session.eq(size, srcSize), wHit]))
             if (ys == null) {
-                session.assertExpr(session.forall([i], session.implies(session.and([inSrc, removed(si, null)]),
+                session.assertExpr(session.forall([i], session.implies(session.and([inSrc, removed(si, session.eq(session.select(srcNull, i), one), null)]),
                     session.lt(size, srcSize)), [si]))
             } else {
                 Object j = session.boundIntVar('minus$hj' + n)
-                session.assertExpr(session.forallMultiPattern([i, j], session.implies(session.and([inSrc, removed(si, j)]),
+                session.assertExpr(session.forallMultiPattern([i, j], session.implies(session.and([inSrc, removed(si, session.eq(session.select(srcNull, i), one), j)]),
                     session.lt(size, srcSize)), [si, session.select(ysArr, j)]))
             }
             localFactories.remove(name)
@@ -4647,7 +4652,8 @@ class Encoder implements TheoryApi {
      * the context vacuously unsatisfiable and "prove" anything. Mint-once per receiver so repeated
      * {@code xs.max()} occurrences are the same term.
      */
-    Object maxMinOf(String key, Object arr, Object loH, Object hiH, boolean isMax, Object elemSort, boolean fpElem) {
+    Object maxMinOf(String key, Object arr, Object loH, Object hiH, boolean isMax, Object elemSort, boolean fpElem,
+                    Object nulls = null) {
         Object cached = extremumCache.get(key)
         if (cached != null) return cached
         Object r = varOfSort('extremum$' + (quantCounter++), elemSort)
@@ -4658,6 +4664,18 @@ class Encoder implements TheoryApi {
         Object jv = session.boundIntVar('ext$a' + (quantCounter++))
         Object selj = session.select(arr, jv)
         Object rangej = session.and([session.le(loH, jv), session.lt(jv, hiH)])
+        Object nonEmpty = session.lt(loH, hiH)
+        // Phase 492 — a list's or a reference array's null element is skipped (measured: `[null, 3].min()` is 3), and
+        // the extremum is achieved only when some element isn't null (`[null].max()` is null: Phase 489's nullity)
+        if (nulls != null) {
+            Object one = session.intLit(1L)
+            rangei = session.and([rangei, session.not(session.eq(session.select(nulls, iv), one))])
+            rangej = session.and([rangej, session.not(session.eq(session.select(nulls, jv), one))])
+            Object nv = session.boundIntVar('ext$n' + (quantCounter++))
+            Object seln = session.select(nulls, nv)
+            nonEmpty = session.exists([nv], session.and([session.le(loH, nv), session.lt(nv, hiH),
+                session.not(session.eq(seln, one))]), [seln])
+        }
         if (fpElem) {
             // FP is *not* totally ordered: Groovy's max/min returns NaN when any element is NaN, and NaN is
             // not fpLeq-comparable nor fpEq to anything. So the bound/achieved facts hold only under
@@ -4673,7 +4691,7 @@ class Encoder implements TheoryApi {
             session.assertExpr(session.implies(allNonNaN,
                 session.forall([iv], session.implies(rangei, bound), [seli])))
             Object ach = session.exists([jv], session.and([rangej, session.fpEq(selj, r)]), [selj])
-            session.assertExpr(session.implies(allNonNaN, session.implies(session.lt(loH, hiH), ach)))
+            session.assertExpr(session.implies(allNonNaN, session.implies(nonEmpty, ach)))
             return r
         }
         // Int / Real — totally ordered, so le/ge/eq (arithmetic-polymorphic in Z3) and no NaN guard.
@@ -4682,7 +4700,7 @@ class Encoder implements TheoryApi {
         session.assertExpr(session.forall([iv], session.implies(rangei, bound), [seli]))
         // achieved (guarded non-empty): lo < hi ⟹ ∃j. lo <= j < hi ∧ a[j] == r
         Object ach = session.exists([jv], session.and([rangej, session.eq(selj, r)]), [selj])
-        session.assertExpr(session.implies(session.lt(loH, hiH), ach))
+        session.assertExpr(session.implies(nonEmpty, ach))
         return r
     }
 
@@ -4976,11 +4994,15 @@ class Encoder implements TheoryApi {
         org.codehaus.groovy.ast.Variable dv = e instanceof VariableExpression ? ((VariableExpression) e).accessedVariable : null
         ClassNode pt = dv != null ? (dv.originType ?: dv.type) : tgt instanceof MethodNode ? ((MethodNode) tgt).returnType :
             e instanceof VariableExpression ? ((VariableExpression) e).originType : null   // Phase 491 — a rewrite's (`i$a1`)
+        // Phase 492 — a contract's name carries no declaration (`@Requires({ xs[0] != n })`): the method's (an `int n`)
+        if ((pt == null || pt.name == 'java.lang.Object') && e instanceof VariableExpression && dv == null &&
+            !quantElementOf.containsKey(((VariableExpression) e).name)) pt = declaredTypeOf(((VariableExpression) e).name) ?: pt
         if (pt != null && ClassHelper.isPrimitiveType(pt) && !ClassHelper.isPrimitiveVoid(pt)) return session.boolLit(false)
         if (e instanceof ConstantExpression) return session.boolLit(((ConstantExpression) e).value == null)
         if (e instanceof VariableExpression) {
             String n = ((VariableExpression) e).name
             if (n == 'null') return session.boolLit(true)
+            if (indexQuantNames.contains(n)) return session.boolLit(false)   // Phase 492
             return nullityOf(n)
         }
         if (e instanceof ConstructorCallExpression || e instanceof ListExpression ||
@@ -5003,7 +5025,7 @@ class Encoder implements TheoryApi {
             return idxH == null ? null : session.eq(session.select(elementNullityFor(ind.containerName), idxH), session.intLit(1L))
         }
         // Phase 489 — `xs.first()` / `xs.last()` is that element; `xs.max()` / `xs.min()` is null when every element is
-        IndexedNullTarget ec = elementCallTarget(e)
+        IndexedNullTarget ec = elementCallTargetHere(e)
         if (ec != null && hasElementNullity(ec.containerName)) {
             if (nonNullElementContainers.contains(ec.containerName)) return session.boolLit(false)
             Object nulls = elementNullityFor(ec.containerName)
@@ -5022,14 +5044,52 @@ class Encoder implements TheoryApi {
         if ((e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in
                 [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD] || e instanceof UnaryMinusExpression) &&
             isNumber(staticTypeOf(e))) return session.boolLit(false)
+        // Phase 492 — nor an untyped number's (`k - 1 + 0` in a generated invariant, `seen.contains(-l[i])`)
+        if ((e instanceof BinaryExpression || e instanceof UnaryMinusExpression) && isNumberValued(e)) return session.boolLit(false)
         // Phase 420 — nor is a String's own method's String (`s.substring(2)`, `s.trim()`; a GDK one, `s.find(re)`, may be)
         if (e instanceof MethodCallExpression) {
             Object t = e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
             if (t instanceof MethodNode && ((MethodNode) t).declaringClass?.name == 'java.lang.String' &&
                 ((MethodNode) t).returnType?.name == 'java.lang.String') return session.boolLit(false)
         }
+        // Phase 492 — nor is `String.valueOf(x)` (a null `x` gives 'null'), nor a number's or a String's `toString()`
+        String called = e instanceof MethodCallExpression ? ((MethodCallExpression) e).methodAsString :
+            e instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) e).method : null
+        Expression on = e instanceof MethodCallExpression ? ((MethodCallExpression) e).objectExpression : null
+        if (called == 'valueOf' && on instanceof ClassExpression && on.type?.name == 'java.lang.String') return session.boolLit(false)
+        if (called == 'toString' && on != null && argList((MethodCallExpression) e).isEmpty()) {
+            ClassNode rt = staticTypeOf(on)
+            if ((rt == null || rt.name == 'java.lang.Object') && on instanceof VariableExpression) rt = declaredTypeOf(((VariableExpression) on).name) ?: rt
+            if (rt != null && (ClassHelper.isPrimitiveType(rt) || isNumber(rt) || rt.name == 'java.lang.String') || isNumberValued(on)) return session.boolLit(false)
+        }
+        // nor an enum's constant (`Color.RED`; in a contract, `Color` is a name)
+        if (e instanceof PropertyExpression) {
+            Expression o = ((PropertyExpression) e).objectExpression
+            ClassNode ct = o instanceof ClassExpression ? o.type : o instanceof VariableExpression ?
+                knownEnumType(((VariableExpression) o).name) : null
+            if (ct != null && ct.isEnum() && enumConstantNames(ct).contains(((PropertyExpression) e).propertyAsString)) return session.boolLit(false)
+        }
+        // a choice's is its branch's (`n % 3 == 0 ? 'Fizz' : n.toString()`)
+        if (e instanceof TernaryExpression && !(e instanceof ElvisOperatorExpression)) {
+            TernaryExpression te = (TernaryExpression) e
+            Object a = nullityOfExpr(te.trueExpression)
+            Object b = a == null ? null : nullityOfExpr(te.falseExpression)
+            if (b == null) return null
+            if (a.equals(b)) return a
+            Object c = translateBool(te.booleanExpression.expression)
+            return c == null ? null : session.ite(c, a, b)
+        }
+        // a pure helper's call is its body's, unfolded (`r[i] = clip(n)`), to the unfolding's depth
+        PureEvaluator.Call pc = pureEvaluator != null && nullUnfoldDepth > 0 &&
+            (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) ? pureEvaluator.callInfo(e) : null
+        Expression pb = pc != null ? pureEvaluator.unfoldBody(pc) : null
+        if (pb != null) {
+            nullUnfoldDepth--
+            try { return nullityOfExpr(pb) } finally { nullUnfoldDepth++ }
+        }
         null
     }
+    private int nullUnfoldDepth = 3
 
     /**
      * Phase 37 — get-or-mint the per-element nullity array for a list/array container. The handle
@@ -5043,7 +5103,11 @@ class Encoder implements TheoryApi {
 
     /** Phase 482 — {@code name} is a list or an array, whose elements' nullity {@link #elementNullityFor} models; a map's
      *  {@code m.get(k)} / {@code m[k]} isn't one (its key needn't be an Int, and a put never updated the flags) */
-    boolean hasElementNullity(String name) { isListTyped(name) || isArrayTyped(name) }
+    boolean hasElementNullity(String name) { isListTyped(name) || isArrayTyped(name) || isSequenceType(calleeFormalTypes.get(name)) }
+
+    /** Phase 492 — while a callee's precondition is translated at a call site, its formals' declared types (a raw
+     *  {@code List list} formal is a list whose elements compare as a null does, as the caller's actual's do) */
+    Map<String, ClassNode> calleeFormalTypes = Collections.<String, ClassNode>emptyMap()
 
     private final Set<BinaryExpression> literalEqInProgress =
         Collections.newSetFromMap(new IdentityHashMap<BinaryExpression, Boolean>())
@@ -5059,29 +5123,112 @@ class Encoder implements TheoryApi {
         t != null && !(t.isArray() && ClassHelper.isPrimitiveType(t.componentType))
     }
 
-    /** Phase 488 — the nullity of a parameter's or a field's list or array element of a boxed number ({@code xs[i]},
-     *  {@code xs.get(i)}, an element quantifier's parameter), or null for any other expression: a computed list's flags
-     *  aren't tied to what was put in it */
-    Object numberElementReadNullity(Expression e) {
+    /** Phase 488 — the nullity of a list's or a boxed array's element ({@code xs[i]}, {@code xs.get(i)}, an element
+     *  quantifier's parameter), or null for any other expression. Phase 492 — any list's or reference array's, a local's
+     *  and {@code result}'s too (their flags are kept since Phases 489-491), of any element type; and {@code xs.first()},
+     *  {@code xs.last()}, {@code xs.max()} or {@code xs.min()}, which is an element (or null) */
+    Object elementReadNullity(Expression e) {
         String name = e instanceof VariableExpression ? quantElementOf.get(((VariableExpression) e).name) : null
-        IndexedNullTarget t = name == null ? indexedAccessTarget(e) : null
+        IndexedNullTarget t = name == null ? indexedAccessTarget(e) ?: elementCallTargetHere(e) : null
         if (t != null) name = t.containerName
-        if (name == null || isMapName(name) || !hasElementNullity(name) || !boxedNumberElementFormal(name)) return null
+        if (name == null || isMapName(name) || !hasElementNullity(name) || !boxedElements(name)) return null
         t != null ? nullityOfExpr(e) : nullEnv.get(((VariableExpression) e).name)
     }
 
-    private boolean boxedNumberElementFormal(String name) {
+    /** Phase 492 — a compared value's nullity, when the other side is an element's or a map's read: its own, or a fresh
+     *  flag's when that isn't known. Null in a quantifier: one flag would be every element's (`xs.every { it == h(it) }`),
+     *  so the comparison is the values' only, as before */
+    private Object otherSideNullity(Expression e) {
+        nullityOfExpr(e) ?: (quantDepth == 0 ? session.boolVar('cmp$null' + (havocCounter++)) : null)
+    }
+
+    /** Phase 492 — {@link #elementCallTarget}, or in a contract, whose receiver carries no declared type (`xs.max()` in
+     *  an @Ensures), the method's declaration of the name */
+    IndexedNullTarget elementCallTargetHere(Expression e) {
+        IndexedNullTarget t = elementCallTarget(e)
+        if (t != null || !(e instanceof MethodCallExpression)) return t
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.safe || mce.spreadSafe || !(mce.objectExpression instanceof VariableExpression) || !argList(mce).isEmpty() ||
+            !(mce.methodAsString in ['first', 'head', 'last', 'max', 'min'])) return null
+        org.codehaus.groovy.ast.Variable v = ((VariableExpression) mce.objectExpression).accessedVariable
+        ClassNode rt = v == null ? null : (v.originType ?: v.type)
+        if (rt != null && rt.name != 'java.lang.Object') return null
+        isSequenceType(declaredTypeOf(((VariableExpression) mce.objectExpression).name)) ? elementCallOf(mce) : null
+    }
+
+    /** Phase 492 — the enum whose sort is named {@code name} (`Color` in a contract's `Color.RED`), or null */
+    private ClassNode knownEnumType(String name) {
+        List<ClassNode> ts = new ArrayList<ClassNode>()
+        ts.addAll(setElementTypes.values()); ts.addAll(listElementTypes.values()); ts.addAll(scalarTypes.values())
+        mapTypes.values().each { ClassNode[] pair -> ts.add(pair[0]); ts.add(pair[1]) }
+        ts.find { ClassNode t -> t != null && t.isEnum() && enumSortName(t) == name }
+    }
+
+    /** Phase 492 — {@code name}'s element nullity flags when its elements are references that may be null, else null */
+    Object elementNullsOf(String name) {
+        name != null && !isMapName(name) && hasElementNullity(name) && boxedElements(name) &&
+            !nonNullElementContainers.contains(name) ? elementNullityFor(name) : null
+    }
+
+    /** Phase 492 — {@code name}'s elements are references: a list's (not a tuple's: its {@code t[0]} isn't tied to its
+     *  {@code t.v1}), or an array's whose component isn't primitive, by its parameter's, field's, local's or result's
+     *  declared type */
+    boolean boxedElements(String name) {
+        ClassNode t = declaredTypeOf(name)
+        if (t != null && t.isArray()) return !ClassHelper.isPrimitiveType(t.componentType)
+        if (t != null && t.name.startsWith('groovy.lang.Tuple')) return false
+        isListTyped(name) || isSequenceType(t)
+    }
+
+    /** Phase 492 — {@code e} is a number by its type, or its operands': a literal, an index quantifier's variable, a
+     *  number element's read, or arithmetic (a negation) whose left operand is one (a null one throws) */
+    private boolean isNumberValued(Expression e) {
+        if (isNumberLiteral(e) || isNumber(staticTypeOf(e))) return true
+        if (e instanceof VariableExpression) return indexQuantNames.contains(((VariableExpression) e).name)
+        if (e instanceof UnaryMinusExpression) return isNumberValued(((UnaryMinusExpression) e).expression)
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in
+                [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD]) return isNumberValued(((BinaryExpression) e).leftExpression)
+        IndexedNullTarget t = indexedAccessTarget(e)
+        t != null && isNumber(declaredElementType(t.containerName))
+    }
+
+    /** Phase 492 — a list's or an array's declared element type, or null */
+    private ClassNode declaredElementType(String name) {
+        ClassNode t = declaredTypeOf(name)
+        if (t == null) return null
+        if (t.isArray()) return t.componentType
+        org.codehaus.groovy.ast.GenericsType[] gs = t.genericsTypes
+        gs != null && gs.length == 1 ? gs[0].type : null
+    }
+
+    private ClassNode declaredTypeOf(String name) {
+        ClassNode ft = calleeFormalTypes.get(name)
+        if (ft != null) return ft
         MethodNode m = vcMethod
-        if (m == null) return false
+        if (m == null) return null
+        if (name == 'result') return m.returnType
         ClassNode t = m.parameters.find { it.name == name }?.type
         for (ClassNode c = m.declaringClass; t == null && c != null && c.name != 'java.lang.Object'; c = c.superClass) {
             t = c.getDeclaredField(name)?.type
         }
-        if (t == null) return false
-        org.codehaus.groovy.ast.GenericsType[] gs = t.genericsTypes
-        ClassNode el = t.isArray() ? t.componentType : gs != null && gs.length == 1 ? gs[0].type : null
-        el != null && !ClassHelper.isPrimitiveType(el) && isNumber(el)
+        if (t != null) return t
+        if (localTypes == null) {
+            localTypes = new HashMap<String, ClassNode>()
+            Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+            body?.visit(new CodeVisitorSupport() {
+                @Override void visitClosureExpression(ClosureExpression ce) { }
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        VariableExpression v = (VariableExpression) de.leftExpression
+                        localTypes.putIfAbsent(v.name, v.originType ?: v.type)
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        }
+        localTypes.get(name)
     }
+    private Map<String, ClassNode> localTypes
 
     private static boolean isNumberLiteral(Expression e) {
         e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number
@@ -5418,7 +5565,7 @@ class Encoder implements TheoryApi {
             // (translateSorted returns null otherwise), so a genuine field/property named `sorted` is
             // unaffected; placed after the field/object-param handling so those keep precedence.
             if (prop == 'sorted' && obj instanceof VariableExpression) {
-                Object q = translateSorted('ascending', obj)
+                Object q = translateSorted('ascending', obj, true)
                 if (q != null) return q
             }
             // Phase 79 — a tuple/list factory's named slot accessor (property form): t.v1 / t.vN /
@@ -6534,19 +6681,23 @@ class Encoder implements TheoryApi {
         // (measured on Groovy 6.0.0: `null < 3`, `null <= 3`, `null != 3` and `null == null` hold; `null > 3`, `null >= 3`,
         // `null == 3` and `3 < null` don't). So `@Requires({ m.get('x') == 3 })` or `m.x >= 5` makes the value non-null,
         // and `m[k] < 1000` doesn't — the body's unboxing of it then has its obligation met, or not. Phase 488 — so does a
-        // parameter's or a field's list or array element of a boxed number, in a quantifier too (`xs.every { it >= 0 }`)
+        // parameter's or a field's list or array element of a boxed number, in a quantifier too (`xs.every { it >= 0 }`),
+        // in an assumed @Requires. Phase 492 — any list's or reference array's element, in a goal too
         if (op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN, Types.COMPARE_LESS_THAN_EQUAL,
                    Types.COMPARE_GREATER_THAN, Types.COMPARE_GREATER_THAN_EQUAL] && !literalEqInProgress.contains(be) &&
             !isNullLiteral(be.leftExpression) && !isNullLiteral(be.rightExpression) &&   // `m.get(k) == null` is Phase 483's
             !mentionsOld(be)) {   // a snapshot's reads (no value-null flags), as before
             // a map's in a quantifier, as before
             Object ln = (quantDepth == 0 ? numberMapReadNullity(be.leftExpression) : null) ?:
-                (nullAwareElements ? numberElementReadNullity(be.leftExpression) : null)
+                elementReadNullity(be.leftExpression)
             Object rn = (quantDepth == 0 ? numberMapReadNullity(be.rightExpression) : null) ?:
-                (nullAwareElements ? numberElementReadNullity(be.rightExpression) : null)
+                elementReadNullity(be.rightExpression)
+            // Phase 492 — the other side's own nullity: a nullable `v`'s (`Collections.fill(xs, v)`'s `it == obj` made
+            // every element non-null), a literal's or a primitive's false
             if (ln != null || rn != null) {
-                Object f = session.boolLit(false)
-                ln = ln ?: f; rn = rn ?: f
+                ln = ln ?: otherSideNullity(be.leftExpression); rn = rn ?: otherSideNullity(be.rightExpression)
+            }
+            if (ln != null && rn != null) {
                 Object core
                 literalEqInProgress.add(be)
                 try { core = translate(be) } finally { literalEqInProgress.remove(be) }
@@ -7411,7 +7562,7 @@ class Encoder implements TheoryApi {
         // overloads) — the receiver IS the array, ascending with ties (GDK semantics). The
         // property form `a.sorted` (the boolean getter) is handled in translate(PropertyExpression).
         if (m == 'isSorted' && args.isEmpty()) {
-            Object q = translateSorted('ascending', recv)
+            Object q = translateSorted('ascending', recv, true)
             if (q != null) return q
         }
         return NO_MATCH
@@ -7608,14 +7759,15 @@ class Encoder implements TheoryApi {
             String aggName = (String) r[0]
             String elemKey = aggName.startsWith('old$') ? aggName.substring('old$'.length()) : aggName
             ClassNode et = listElementTypes.get(elemKey)
+            Object nulls = aggName == elemKey ? elementNullsOf(aggName) : null   // Phase 492 — a null element is skipped
             if (et == null) {                              // Int list → Int extremum
-                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', session.intSort(), false)
+                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', session.intSort(), false, nulls)
             }
             if (isDecimalElementType(et)) {                // List<BigDecimal> → Real extremum
-                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', session.realSort(), false)
+                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', session.realSort(), false, nulls)
             }
             if (isFpElementType(et)) {                     // double[] / List<Double> → FP extremum (NaN-guarded)
-                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', sortFor(et), true)
+                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', sortFor(et), true, nulls)
             }
             return null                                    // String / enum element → skip
         }
@@ -7803,10 +7955,8 @@ class Encoder implements TheoryApi {
     private int quantDepth = 0
     /** Phase 488 — the enclosing element quantifiers' parameters, and whose elements they are ({@code xs.every { it >= 0 }}) */
     private final Map<String, String> quantElementOf = new HashMap<String, String>()
-    /** Phase 488 — while the method's own @Requires is assumed (and a findAll's predicate): a parameter's or a field's
-     *  element compares as Groovy compares a null. Not in a goal: a list's value models (isSorted, max/min, first, drop,
-     *  minus) don't carry the elements' null flags, so `result == xs[0]` or a gap fact would no longer prove */
-    boolean nullAwareElements = false
+    /** Phase 492 — the enclosing index quantifiers' variables: ints, never null (a generated `{ int k -> … }` is untyped) */
+    private final Set<String> indexQuantNames = new HashSet<String>()
 
     /** Phase 382 — {@code t + k}, or {@code t} itself when k is 0: a folded `0..<a.length` keeps the bound term
      *  `a.length` (as before Phase 381), not `a.length + 0`, which the facts over `a.length` don't match. */
@@ -8354,7 +8504,16 @@ class Encoder implements TheoryApi {
                 Object iv = session.boundIntVar('contains$q' + (quantCounter++))
                 Object sel = session.select(arrayFor(rn), iv)
                 Object range = session.and([session.le(session.intLit(0L), iv), session.lt(iv, sizeOf(rn))])
-                return session.exists([iv], session.and([range, session.eq(sel, y)]), [sel])
+                Object eq = session.eq(sel, y)
+                // Phase 492 — a null element is one only a null is (`[null].contains(0)` is false), as its `==` is
+                Object nulls = rn.startsWith('old$') ? null : elementNullsOf(rn)
+                Object yNull = nulls == null ? null : otherSideNullity(args.get(0))
+                if (yNull != null) {
+                    Object iNull = session.eq(session.select(nulls, iv), session.intLit(1L))
+                    eq = yNull == session.boolLit(false) ? session.and([session.not(iNull), eq]) :
+                        session.ite(session.or([iNull, yNull]), session.and([iNull, yNull]), eq)
+                }
+                return session.exists([iv], session.and([range, eq]), [sel])
             }
             // Phase 39 — common non-mutating list idioms as syntactic sugar for the existing
             // array-access path. {@code xs.get(i)} → {@code (select xs i)}; the bounds check
@@ -8793,7 +8952,7 @@ class Encoder implements TheoryApi {
      * element sort verifies and any other (e.g. String) cleanly skips via the {@code try} — the term is
      * only built here, never asserted, so a sort-mismatch throw can't corrupt the session.
      */
-    private Object translateSorted(String m, Expression arg) {
+    private Object translateSorted(String m, Expression arg, boolean gdk = false) {
         if (!(arg instanceof VariableExpression)) return null
         boolean strict, ascending
         switch (m) {
@@ -8816,6 +8975,16 @@ class Encoder implements TheoryApi {
             Object range = session.and([session.le(session.intLit(0L), jv), session.lt(jv, kv), session.lt(kv, hi)])
             Object rel = ascending ? (strict ? session.lt(aj, ak) : session.le(aj, ak))
                                    : (strict ? session.lt(ak, aj) : session.le(ak, aj))
+            // Phase 492 — Groovy's own `isSorted()` puts nulls first (measured: `[null, 1]` is sorted, `[1, null]` isn't);
+            // `Sorted.ascending(xs)` compares each pair, so a null in one throws (`[null]` alone is sorted)
+            Object nulls = elementNullsOf(name)
+            if (nulls != null) {
+                Object one = session.intLit(1L)
+                Object nj = session.eq(session.select(nulls, jv), one)
+                Object nk = session.eq(session.select(nulls, kv), one)
+                rel = gdk ? session.ite(nj, session.boolLit(true), session.and([session.not(nk), rel])) :
+                    session.and([session.not(nj), session.not(nk), rel])
+            }
             Object body = session.implies(range, rel)
             return session.forallMultiPattern([jv, kv], body, [aj, ak])
         } catch (Exception ignored) {
@@ -9727,8 +9896,11 @@ class Encoder implements TheoryApi {
             // Phase 444 — a String element's parameter is a String: `it.size()` is its length, not an int of its own
             ClassNode et = listElementTypes.get(xs)
             Map<String, ClassNode> prevTypes = et != null && et.name == 'java.lang.String' ? pushScalarTypes([(pname): et]) : null
+            // Phase 492 — a primitive parameter (`xs.every { int t -> t > 0 }`) throws on a null element: one it holds of isn't
+            boolean unboxed = clo.parameters?.length == 1 && !clo.parameters[0].dynamicTyped &&
+                ClassHelper.isPrimitiveType(clo.parameters[0].type)
             try {
-                return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential, xs)
+                return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential, xs, unboxed)
             } finally {
                 if (prevTypes != null) popScalarTypes(prevTypes)
             }
@@ -9750,7 +9922,7 @@ class Encoder implements TheoryApi {
      * is the index {@code i} and the body's own {@code (select arr i)} terms become the triggers.
      */
     private Object emitQuantifier(String pname, Object loH, Object hiH, Expression bodyExpr,
-                                  Object elementArr, boolean existential, String elementOf = null) {
+                                  Object elementArr, boolean existential, String elementOf = null, boolean unboxed = false) {
         if (loH == null || hiH == null) return null
         Object iv = session.boundIntVar(pname + '$q' + (quantCounter++))
         List<Object> triggers = new ArrayList<Object>()
@@ -9774,12 +9946,16 @@ class Encoder implements TheoryApi {
         triggerSink = triggers
         // Phase 380 — an index quantifier's variable is at least its range's constant start (so `0..<it` inside ascends)
         Long prevLo = quantLowerBounds.get(pname)
+        boolean prevIndex = indexQuantNames.contains(pname)
+        if (elementArr == null) indexQuantNames.add(pname) else indexQuantNames.remove(pname)   // Phase 492
         Long loConst = elementArr == null ? constLongOf(loH) : null
         if (loConst != null) quantLowerBounds.put(pname, loConst) else quantLowerBounds.remove(pname)
         quantDepth++
         try {
             Object bodyH = translate(bodyExpr)
             if (bodyH == null) return null
+            Object nulls = unboxed ? elementNullsOf(elementOf) : null
+            if (nulls != null) bodyH = session.and([session.not(session.eq(session.select(nulls, iv), session.intLit(1L))), bodyH])
             Object range = session.and([session.le(loH, iv), session.lt(iv, hiH)])
             if (existential) {
                 return session.exists([iv], session.and([range, bodyH]), triggers)
@@ -9792,6 +9968,7 @@ class Encoder implements TheoryApi {
             if (prevOf == null) quantElementOf.remove(pname) else quantElementOf.put(pname, prevOf)
             quantDepth--
             if (prevLo == null) quantLowerBounds.remove(pname) else quantLowerBounds.put(pname, prevLo)
+            if (prevIndex) indexQuantNames.add(pname) else indexQuantNames.remove(pname)
         }
     }
 
@@ -9936,10 +10113,18 @@ class Encoder implements TheoryApi {
             !(m in ['first', 'head', 'last', 'max', 'min'])) return null
         // a list's or an array's, by its declaration — a channel's `first()` is a receive
         org.codehaus.groovy.ast.Variable v = ((VariableExpression) mce.objectExpression).accessedVariable
-        ClassNode rt = v == null ? null : (v.originType ?: v.type)
-        boolean seq = false
-        try { seq = rt != null && (rt.isArray() || rt.name == 'java.util.List' || rt.implementsInterface(ClassHelper.make(List))) } catch (Throwable ignored) { }
-        if (!seq) return null
+        if (!isSequenceType(v == null ? null : (v.originType ?: v.type))) return null
+        elementCallOf(mce)
+    }
+
+    private static boolean isSequenceType(ClassNode rt) {
+        // (a registry spec's formal is unresolved: its `List` is named so)
+        try { return rt != null && (rt.isArray() || rt.name in ['java.util.List', 'List'] || rt.implementsInterface(ClassHelper.make(List))) }
+        catch (Throwable ignored) { return false }
+    }
+
+    private static IndexedNullTarget elementCallOf(MethodCallExpression mce) {
+        String m = mce.methodAsString
         IndexedNullTarget t = new IndexedNullTarget()
         t.containerName = ((VariableExpression) mce.objectExpression).name
         t.indexExpr = m in ['first', 'head'] ? new ConstantExpression(0) : m == 'last' ? new ConstantExpression(-1) : null

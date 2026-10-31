@@ -42,9 +42,10 @@ class G193_p76_decimal_max_min {
                        @Ensures({ (0..<xs.size()).any { xs[it] == xs.max() } })
                        static void check(List<BigDecimal> xs) { }
                    }''')],
+        // (Phase 492 — of non-null elements: `[null, 3.0].min()` is 3.0, and `null >= 3.0` is false)
         [group: 'P76 decimal max/min', name: 'decimal min bounds every element (>=)', ok: true,
          src: tc('''class C {
-                       @Requires({ xs.size() > 0 })
+                       @Requires({ xs.size() > 0 && xs.every { it != null } })
                        @Ensures({ (0..<xs.size()).every { xs[it] >= xs.min() } })
                        static void check(List<BigDecimal> xs) { }
                    }''')],

@@ -6092,12 +6092,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  c.count == 5`, with `c.count` an open getter's read, assumed neither, so `c.bump()` "failed on" `f(null)`. Each part
      *  dropped is a witness taint: a call the model builds may not meet it. */
     private void assumeRequiresParts(SmtSession s, Encoder enc, Expression req) {
-        // Phase 488 — assumed, a parameter's element compares as a null does (`xs.every { it >= 0 }` makes each non-null)
-        boolean prevAware = enc.nullAwareElements
-        enc.nullAwareElements = true
-        try { assumeRequiresPartsAware(s, enc, req) } finally { enc.nullAwareElements = prevAware }
-    }
-    private void assumeRequiresPartsAware(SmtSession s, Encoder enc, Expression req) {
         Object whole = enc.translateBool(req)
         if (whole != null) {
             s.assertExpr(whole)
@@ -20235,6 +20229,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
             Map<String, ClassNode> savedElems = enc.pushListElementTypes(elemReg)
+            Map<String, ClassNode> savedFormals = enc.calleeFormalTypes
+            Map<String, ClassNode> formalTypes = new HashMap<String, ClassNode>()
+            for (Parameter fp : formals) if (fp.type != null) formalTypes.put(fp.name, fp.type)
+            enc.calleeFormalTypes = formalTypes   // Phase 492 — and its declared type, for its elements' nullity
             // (the shadows once every formal type is registered: a `List<String>` formal's contents are Int->String)
             for (String n : shadowedPre) { callerPre.put(n, enc.saveListOracles(n)); enc.shadowName(n) }
             Object contractSmt
@@ -20246,6 +20244,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 enc.popListElementTypes(savedElems)
                 enc.popScalarTypes(savedTypes)
                 enc.popCollectionTypes(savedCollTypes)
+                enc.calleeFormalTypes = savedFormals
             }
             if (contractSmt == null) {
                 addStaticTypeError(

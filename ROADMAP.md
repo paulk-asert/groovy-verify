@@ -20282,6 +20282,66 @@ literal's and a returned `drop`'s were unchanged; they reach `result` by other p
 The rename's own copy of the declared type (`copyRenamed`) was tried as well. Its mutation survived, since a renamed
 use already carries `int`, so it isn't shipped.
 
+## Phase 492 — goals read null  *(shipped — soundness)*
+
+The last of the four slices toward null-aware goal comparisons. A list's or a reference array's element compares as
+Groovy compares a null (below every value, equal only to null; Phase 486's measurements) in a goal too, not only in an
+assumed `@Requires` and a `findAll` predicate (Phase 488). So `@Ensures({ xs[0] >= xs.min() })` no longer proves: it
+is false on `[null, 3]`. A callee's `@Requires` is a goal at its call, so Phase 488's recorded gap is closed with it:
+a caller can no longer meet `xs.every { it >= 0 }` with a null element. (No reachable caller was found where the gap
+showed: a null element's value is unconstrained, so the value-only reading refused it too.) The reading covers any list's or reference
+array's element now (a local's and `result`'s too, whose flags Phases 489-491 keep), of any element type, and
+`xs.first()`, `xs.last()`, `xs.max()` and `xs.min()`. A primitive array's element is never null, by its declared type
+(`result` declared `int[]` was taken for a list). A tuple's `t[0]` isn't tied to its `t.v1`, so a tuple is left out.
+
+The value models agree with it (each measured on Groovy 6.0.0):
+- `max()`/`min()` skip a null element (`[null, 3].min()` is 3) and are achieved only when some element isn't null.
+- `isSorted()` puts nulls first (`[null, 1]` is sorted, `[1, null]` isn't). `Sorted.ascending(xs)` compares each
+  pair, so it throws on a null in any pair; holding, it says none is null.
+- `contains` and `minus` match a null element only with a null (`[null].contains(0)` is false; `[null, 1] - 1` is
+  `[null]`; `[null, 1] - [null]` is `[1]`).
+- An `every { int t -> … }` holds of no null element, since unboxing it throws.
+
+The other side of a comparison has its own nullity now, not "never null". `Collections.fill(xs, v)`'s
+`list.every { it == obj }` made every element non-null even for a nullable `v`, which hid Phase 488's own
+`… one that may be null`. When that nullity isn't known it is a fresh flag; in a quantifier the comparison stays
+value-only, since one flag would stand for every element. What's known non-null grew to fit:
+- an enum's constant (in a contract, `Color` is only a name);
+- `String.valueOf(x)`, and a number's or a String's `toString()`;
+- a ternary's branches;
+- a contract-free pure helper's call, by its unfolded body;
+- an index quantifier's variable;
+- arithmetic or a negation on a number, by its left operand. The channel engine's generated invariants
+  (`out$q[k] == k - 1 + 0`) are untyped, as is a body's `-l[i]`.
+
+A contract's bare name (`@Requires({ xs[0] != n })`) has no declaration, so it read as nullable. It takes the
+method's declaration now: an `int n` isn't null. So does a contract's receiver of `xs.max()`. At a call site the
+callee's formals' declared types are registered while its precondition is translated. A registry spec's formal is
+unresolved, so its `List` is matched by name; binarySearch's sortedness at its call needed that.
+
+**Corpus:** two cases were false and gained `xs.every { it != null }`:
+- `decimal min bounds every element (>=)`, false on `[null, 3.0]`: `null >= 3.0` is false;
+- `removing a list leaves none of its elements`, since a kept null throws in its `int t` closure.
+
+One refutation became a timeout. `an element removed isn't kept for being there` was refuted until `contains` read
+a null element as Groovy does; the solver now runs out of time on it at 8 s and at 60 s, and its expectation says so.
+
+**Shipped tests:** group `P492 goals read null`, 15 cases. Measured at the parent commit, nine failed:
+- `a null element is below the minimum` proved there, and is false;
+- the eight value-model cases (a maximum skips a null, a null sorts first and not last, a pairwise sortedness, a null
+  isn't an int's member nor removed with one, an unboxing predicate, an index) were unprovable.
+
+The other six passed there too. The two call-site cases are regression guards. The pure helper's, the number's
+String and the enum's constant fail only under the flip without their nullity. Mutation-checked, each kills at least
+one case:
+- the other side read "never null" (as before): FizzBuzz, the forever ALT, and G529's `… one that may be null`;
+- `max`/`min` without the null skip, 2; `isSorted`/`Sorted.ascending` without nulls, 4;
+- `contains`, 2 (`pairs_sum_to_zero` among them); `minus`, 2; the unboxing predicate, 1;
+- the callee's formal types, and the spec's unresolved `List`, 1 each (binarySearch);
+- the enum's constant, 2; the pure helper, 1; its ternary, 1; `toString()`, 1; the index variable, 1;
+- untyped arithmetic, 2; a contract name's declaration, 2;
+- a primitive array taken for a list, 3; the tuple exclusion, 1; a contract's `xs.max()` receiver, 1.
+
 ## Definition of done, per increment
 
 An increment is done when:

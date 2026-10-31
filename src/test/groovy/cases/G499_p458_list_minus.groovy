@@ -101,9 +101,10 @@ class G499_p458_list_minus {
                     }''')],
 
         // ---------- xs - ys ----------
+        // (Phase 492 — of non-null elements: a null one kept throws in the `int t` closure)
         [group: "P458 elements removed from a list", name: "removing a list leaves none of its elements", ok: true,
          src: tc('''class A {
-                        @Requires({ xs != null && ys != null })
+                        @Requires({ xs != null && ys != null && xs.every { it != null } })
                         @Ensures({ result.every { int t -> !ys.contains(t) } })
                         static List<Integer> f(List<Integer> xs, List<Integer> ys) { xs - ys }
                     }''')],
