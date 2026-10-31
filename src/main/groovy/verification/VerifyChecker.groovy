@@ -5812,7 +5812,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (nnt != null) steps.add(new Guard(nonNullFact(nnt), true))
                 // Phase 405 — any call (a static helper `w(a)` in a static method and a constructor are no
                 // MethodCallExpression, and were dropped), and any other statement that writes (`xs << v`)
-                if (e instanceof MethodCall || leftShiftTarget(e) != null ||
+                // Phase 490 — `xs << a << b` on a declared collection is `xs.add(a)` then `xs.add(b)` (Phase 341's reading
+                // in a body and a loop): it havocked the list, so `xs << v; xs[0]` on an empty `xs` failed its bounds
+                List<MethodCallExpression> adds = Encoder.leftShiftAdds(e, true)
+                if (adds != null) {
+                    for (MethodCallExpression add : adds) steps.add(new LemmaCall(add))
+                } else if (e instanceof MethodCall || leftShiftTarget(e) != null ||
                         !writesOf([st] as List<Statement>, currentMethod?.declaringClass).isEmpty()) {
                     steps.add(new LemmaCall(e))
                 }

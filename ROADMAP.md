@@ -20200,6 +20200,56 @@ cases were unchanged. All nine mutations were killed:
 - with the repro's fallback all `null`, or only a 0 flag read as non-null, one each.
 
 
+## Phase 490 — list building keeps nullity  *(shipped — precision)*
+
+The second of the four slices toward null-aware goal comparisons (Phase 489). The list values built from others,
+Phase 323's concatenation (`[x] + xs`, `xs + n`), spread literal (`[x, *xs]`), Phase 459's repeat (`xs * 2`) and
+`drop(k)`, pinned each element's value to its source's but took fresh null flags. So their element unboxed (Phase 488)
+was reported however the source was stated, and `[x] + xs` with an `int x` had a head that might be null. Phase 458's
+`minus` already carried its flags.
+
+**The fix:**
+- Each element's flag is its source's: a named segment's or the dropped list's flag at the copied index, or a scalar
+  segment's value's nullity (an `int x` isn't null, an `Integer x` may be). The tie is a quantifier of its own,
+  triggered on the derived flag, which an unboxing obligation reads without the value.
+- `xs << a << b` as a statement is `xs.add(a)` then `xs.add(b)` before an obligation too, as Phase 341 had it in a body
+  and a loop. It went to Phase 405's unframed-call havoc, so `List<String> ys = []; ys << 'ab'; ys[0].size()` failed
+  its bounds check: Phase 487's "found on the way". The synthesized `add` is a call on `xs` (not an implicit-this
+  call), so Phase 419's "the receiver is non-null after it" still holds.
+
+**Found on the way:** the maximum check time that ran to 32 s in recent gates is Phase 383's load scaling. A check
+that times out runs to the budget the machine's load gave it, up to 4 × 8 s, and the report's "budget up to" figure
+matches the maximum each time. It isn't an encoding regression; UNKNOWN held at 35–36.
+
+**Shipped tests:** group `P490 list building keeps nullity`, 16 cases. Each failing call was run on Groovy 6.0.0 and
+throws as shown; each `ok` one returns. Measured at the parent commit, fourteen failed:
+- the ten `ok` cases were false alarms, among them the four `<<` ones, whose list was havocked;
+- the four that expect a report did report, but showed a call that returns: `f(-2147483610, [3])`, `f(0, [])`,
+  `f([0, 0])`, or a bounds failure for `ys << n`'s havocked list.
+
+Two were unchanged: the removal's (Phase 458's flags) and the read past a shift's end. Mutation-checked:
+- without the tie six fail; without a scalar segment's flag four;
+- with `drop`'s shift taken as 0 one;
+- without a spread segment's tie four;
+- without the `<<` desugaring four;
+- with the synthesized `add` an implicit-this call, the corpus's `the receiver is non-null after it` (P419).
+
+One mutation survived: triggering the tie on the source's flag instead of the derived one. MBQI instantiates it either
+way, even for a case that knows only a ground source flag (`… of one element stated`). It keeps the derived flag's
+trigger, the term an obligation reads.
+
+**Re-sized:** the comparisons read null everywhere, on top of this phase, fail 55 cases, down from 68. Left:
+- the channel queues, 17;
+- lists built in loops, 9: `add`/`<<` in a loop body, `get_positive`, `compare`, `pairs_sum_to_zero`, the
+  filter/map loops, `pruneWindow`. A loop summary havocs the list's flags, and nothing in an invariant restores
+  them;
+- the primitive-array leak in the experiment, about 10 (a bug of the experiment, not of a model);
+- `max`/`min`/`isSorted`/`binarySearch`, 6;
+- a String's or enum's store, 4;
+- `minus`'s by-value removal, 3;
+- `tuple`, `leftpad` and a few others.
+
+
 ## Definition of done, per increment
 
 An increment is done when:

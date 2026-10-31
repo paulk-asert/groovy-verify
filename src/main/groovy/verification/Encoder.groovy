@@ -3574,6 +3574,8 @@ class Encoder implements TheoryApi {
             int n = quantCounter++
             Object zero = session.intLit(0L)
             Object arr = session.arrayVar(name + '$list' + n)
+            // Phase 490 — and each element's nullity, its source's (it was fresh)
+            Object nulls = session.arrayVar(name + '$list$nullElem' + n)
             Object size
             if (e instanceof MethodCallExpression) {                       // src.drop(k)
                 MethodCallExpression m = (MethodCallExpression) e
@@ -3585,6 +3587,7 @@ class Encoder implements TheoryApi {
                 Object elem = session.select(arr, j)
                 session.assertExpr(session.forall([j], session.implies(session.and([session.le(zero, j), session.lt(j, size)]),
                     session.eq(elem, session.select(srcArr, session.plus(j, kH)))), [elem]))
+                tieElementNullity(nulls, zero, size, src, kH, n)
             } else {                                                         // a concatenation
                 List<Expression> segs = new ArrayList<Expression>()
                 if (!concatSegments(e, segs)) return false
@@ -3599,11 +3602,15 @@ class Encoder implements TheoryApi {
                         Object inSeg = session.and([session.le(off, j), session.lt(j, session.plus(off, segSize))])
                         session.assertExpr(session.forall([j], session.implies(inSeg,
                             session.eq(elem, session.select(segArr, session.minus(j, off)))), [elem]))
+                        tieElementNullity(nulls, off, session.plus(off, segSize), sn, session.minus(zero, off), n)
                         off = session.plus(off, segSize)
                     } else {
                         Object x = translate(seg)
                         if (x == null) return false
                         session.assertExpr(session.eq(session.select(arr, off), x))
+                        Object nul = storedNullity(seg)
+                        if (nul != null) session.assertExpr(session.eq(session.select(nulls, off),
+                            session.ite(nul, session.intLit(1L), session.intLit(0L))))
                         off = session.plus(off, session.intLit(1L))
                     }
                 }
@@ -3612,13 +3619,25 @@ class Encoder implements TheoryApi {
             localFactories.remove(name)
             registerListName(name)
             bindArray(name, arr)
-            freshElementNullity(name)   // Phase 445
+            arrEnv.put(name + '$nullElem', nulls)   // Phase 490 — was fresh (Phase 445)
             bindSize(name, size)
             session.assertExpr(session.not(nullityOf(name)))
             return true
         } catch (UnsupportedConstructException ignored) {
             return false
         }
+    }
+
+    /** Phase 490 — {@code nulls[j]} is {@code src}'s element {@code j + shift}'s nullity, for {@code lo <= j < hi}: a
+     *  derived list's element is null exactly when the one it was copied from is. Triggered on the flag itself, which
+     *  an unboxing obligation reads without the value */
+    private void tieElementNullity(Object nulls, Object lo, Object hi, String src, Object shift, int n) {
+        Object j = session.boundIntVar('nulTie$j' + n + '$' + (quantCounter++))
+        Object fj = session.select(nulls, j)
+        Object from = nonNullElementContainers.contains(src) ? session.intLit(0L) :
+            session.select(elementNullityFor(src), session.plus(j, shift))
+        session.assertExpr(session.forall([j], session.implies(session.and([session.le(lo, j), session.lt(j, hi)]),
+            session.eq(fj, from)), [fj]))
     }
 
     /** True for the list values {@link #tryRecordListDerivedAssign} models: a literal-count {@code drop} on an Int
@@ -9006,6 +9025,7 @@ class Encoder implements TheoryApi {
         List<MethodCallExpression> out = new ArrayList<MethodCallExpression>()
         for (Expression v : pushed) {
             MethodCallExpression add = new MethodCallExpression(cur, 'add', new ArgumentListExpression(v))
+            add.implicitThis = false   // Phase 490 — a call on `xs` (its receiver non-null after it, Phase 418)
             add.setSourcePosition(v)
             out.add(add)
         }
