@@ -40,7 +40,7 @@ class G192_p70_decimal_sum {
         [group: 'P70 decimal sum', name: 'List<BigDecimal> transfer conserves total', ok: true,
          src: tc('''class Fund {
                        List<BigDecimal> bal
-                       @Requires({ 0 <= i && i < bal.size() && 0 <= j && j < bal.size() && i != j })
+                       @Requires({ 0 <= i && i < bal.size() && 0 <= j && j < bal.size() && i != j && bal.every { it != null } })
                        @Ensures({ bal.sum() == old.bal.sum() })
                        void transfer(int i, int j, BigDecimal amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt }
                    }''')],

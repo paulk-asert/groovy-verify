@@ -37,7 +37,7 @@ class G096_p52_below_zero {
         // aggregation + bounded ∀/∃.
         [group: 'P52 below_zero', name: 'below_zero full biconditional spec', ok: true,
          src: tc('''class C {
-                        @Requires({ operations != null })
+                        @Requires({ operations != null && operations.every { it != null } })
                         @Ensures({ result == (0..operations.size()).any { ((int) operations[0..<it].sum(0)) < 0 } })
                         static boolean belowZero(List<Integer> operations) {
                             int s = 0

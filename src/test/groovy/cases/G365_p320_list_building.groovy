@@ -92,7 +92,7 @@ class G365_p320_list_building {
         // An unconditional add: the k-th element is known exactly.
         [group: 'P320 list building', name: 'a map loop knows each appended element', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         @Ensures({ result.size() == xs.size() && (0..<xs.size()).every { int k -> result[k] == 2 * xs[k] } })
                         static List<Integer> dbl(List<Integer> xs) {
                             List<Integer> out = []

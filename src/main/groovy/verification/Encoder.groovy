@@ -3512,10 +3512,24 @@ class Encoder implements TheoryApi {
             Object zero = session.intLit(0L)
             Object k = session.boundIntVar('fa$k' + n)
             Object elem = session.select(arr, k)
-            Object pk = translateWith(body, [(param): elem] as Map<String, Object>)
-            if (pk == null) return false
             // Phase 487 — and its nullity, the source element's (it was fresh)
             Object nulls = session.arrayVar(name + '$findAll$null' + n)
+            // Phase 488 — a parameter's or a field's element compares as a null does, so `findAll { it > 0 }` keeps none
+            Object prevNull = nullEnv.get(param)
+            String prevOf = quantElementOf.get(param)
+            nullEnv.put(param, session.eq(session.select(nulls, k), session.intLit(1L)))
+            quantElementOf.put(param, src)
+            boolean prevAware = nullAwareElements
+            nullAwareElements = true
+            Object pk
+            try {
+                pk = translateWith(body, [(param): elem] as Map<String, Object>)
+            } finally {
+                nullAwareElements = prevAware
+                if (prevNull == null) nullEnv.remove(param) else nullEnv.put(param, prevNull)
+                if (prevOf == null) quantElementOf.remove(param) else quantElementOf.put(param, prevOf)
+            }
+            if (pk == null) return false
             Object idx = session.applyUF('findAllIdx$' + n, [k], session.intSort())
             Object srcNull = nonNullElementContainers.contains(src) ? session.intLit(0L) :
                 session.select(elementNullityFor(src), idx)
@@ -4965,7 +4979,7 @@ class Encoder implements TheoryApi {
         IndexedNullTarget ind = indexedAccessTarget(e)
         if (ind != null && hasElementNullity(ind.containerName)) {
             if (nonNullElementContainers.contains(ind.containerName)) return session.boolLit(false)
-            Object idxH = translate(ind.indexExpr)
+            Object idxH = indexTerm(ind.containerName, ind.indexExpr)   // Phase 488 — `xs[-1]`'s is the last element's (Phase 369)
             return idxH == null ? null : session.eq(session.select(elementNullityFor(ind.containerName), idxH), session.intLit(1L))
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
@@ -5010,6 +5024,30 @@ class Encoder implements TheoryApi {
             t = c.getDeclaredField(name)?.type
         }
         t != null && !(t.isArray() && ClassHelper.isPrimitiveType(t.componentType))
+    }
+
+    /** Phase 488 — the nullity of a parameter's or a field's list or array element of a boxed number ({@code xs[i]},
+     *  {@code xs.get(i)}, an element quantifier's parameter), or null for any other expression: a computed list's flags
+     *  aren't tied to what was put in it */
+    Object numberElementReadNullity(Expression e) {
+        String name = e instanceof VariableExpression ? quantElementOf.get(((VariableExpression) e).name) : null
+        IndexedNullTarget t = name == null ? indexedAccessTarget(e) : null
+        if (t != null) name = t.containerName
+        if (name == null || isMapName(name) || !hasElementNullity(name) || !boxedNumberElementFormal(name)) return null
+        t != null ? nullityOfExpr(e) : nullEnv.get(((VariableExpression) e).name)
+    }
+
+    private boolean boxedNumberElementFormal(String name) {
+        MethodNode m = vcMethod
+        if (m == null) return false
+        ClassNode t = m.parameters.find { it.name == name }?.type
+        for (ClassNode c = m.declaringClass; t == null && c != null && c.name != 'java.lang.Object'; c = c.superClass) {
+            t = c.getDeclaredField(name)?.type
+        }
+        if (t == null) return false
+        org.codehaus.groovy.ast.GenericsType[] gs = t.genericsTypes
+        ClassNode el = t.isArray() ? t.componentType : gs != null && gs.length == 1 ? gs[0].type : null
+        el != null && !ClassHelper.isPrimitiveType(el) && isNumber(el)
     }
 
     private static boolean isNumberLiteral(Expression e) {
@@ -6462,12 +6500,17 @@ class Encoder implements TheoryApi {
         // Phase 486 — a number map's read compares as Groovy compares a null: below every number, equal only to null
         // (measured on Groovy 6.0.0: `null < 3`, `null <= 3`, `null != 3` and `null == null` hold; `null > 3`, `null >= 3`,
         // `null == 3` and `3 < null` don't). So `@Requires({ m.get('x') == 3 })` or `m.x >= 5` makes the value non-null,
-        // and `m[k] < 1000` doesn't — the body's unboxing of it then has its obligation met, or not
+        // and `m[k] < 1000` doesn't — the body's unboxing of it then has its obligation met, or not. Phase 488 — so does a
+        // parameter's or a field's list or array element of a boxed number, in a quantifier too (`xs.every { it >= 0 }`)
         if (op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN, Types.COMPARE_LESS_THAN_EQUAL,
                    Types.COMPARE_GREATER_THAN, Types.COMPARE_GREATER_THAN_EQUAL] && !literalEqInProgress.contains(be) &&
             !isNullLiteral(be.leftExpression) && !isNullLiteral(be.rightExpression) &&   // `m.get(k) == null` is Phase 483's
-            quantDepth == 0 && !mentionsOld(be)) {   // a quantifier's reads, and a snapshot's (no value-null flags), as before
-            Object ln = numberMapReadNullity(be.leftExpression), rn = numberMapReadNullity(be.rightExpression)
+            !mentionsOld(be)) {   // a snapshot's reads (no value-null flags), as before
+            // a map's in a quantifier, as before
+            Object ln = (quantDepth == 0 ? numberMapReadNullity(be.leftExpression) : null) ?:
+                (nullAwareElements ? numberElementReadNullity(be.leftExpression) : null)
+            Object rn = (quantDepth == 0 ? numberMapReadNullity(be.rightExpression) : null) ?:
+                (nullAwareElements ? numberElementReadNullity(be.rightExpression) : null)
             if (ln != null || rn != null) {
                 Object f = session.boolLit(false)
                 ln = ln ?: f; rn = rn ?: f
@@ -7725,6 +7768,12 @@ class Encoder implements TheoryApi {
     /** Phase 380 — the enclosing quantifiers' variables with a constant lower bound, and how deep in quantifiers. */
     private final Map<String, Long> quantLowerBounds = new HashMap<String, Long>()
     private int quantDepth = 0
+    /** Phase 488 — the enclosing element quantifiers' parameters, and whose elements they are ({@code xs.every { it >= 0 }}) */
+    private final Map<String, String> quantElementOf = new HashMap<String, String>()
+    /** Phase 488 — while the method's own @Requires is assumed (and a findAll's predicate): a parameter's or a field's
+     *  element compares as Groovy compares a null. Not in a goal: a list's value models (isSorted, max/min, first, drop,
+     *  minus) don't carry the elements' null flags, so `result == xs[0]` or a gap fact would no longer prove */
+    boolean nullAwareElements = false
 
     /** Phase 382 — {@code t + k}, or {@code t} itself when k is 0: a folded `0..<a.length` keeps the bound term
      *  `a.length` (as before Phase 381), not `a.length + 0`, which the facts over `a.length` don't match. */
@@ -9682,6 +9731,8 @@ class Encoder implements TheoryApi {
         env.put(pname, binding)
         // Phase 445 — the parameter is the element: its nullity is the element's (`xs.every { it != null }`)
         Object prevNull = elementOf != null ? nullEnv.get(pname) : null
+        String prevOf = quantElementOf.get(pname)
+        if (elementOf != null) quantElementOf.put(pname, elementOf) else quantElementOf.remove(pname)
         if (elementOf != null) {
             nullEnv.put(pname, nonNullElementContainers.contains(elementOf) ? session.boolLit(false) :
                 session.eq(session.select(elementNullityFor(elementOf), iv), session.intLit(1L)))
@@ -9704,6 +9755,7 @@ class Encoder implements TheoryApi {
             triggerSink = prevSink
             if (prevBinding == null) env.remove(pname) else env.put(pname, prevBinding)
             if (elementOf != null) { if (prevNull == null) nullEnv.remove(pname) else nullEnv.put(pname, prevNull) }
+            if (prevOf == null) quantElementOf.remove(pname) else quantElementOf.put(pname, prevOf)
             quantDepth--
             if (prevLo == null) quantLowerBounds.remove(pname) else quantLowerBounds.put(pname, prevLo)
         }

@@ -32,7 +32,7 @@ class G257_he043_pairs_sum_to_zero {
         // `return false` direction needs a nested "no pair so far" invariant. This is the edge of the fragment.
         [group: 'HE043 pairs_sum_to_zero', name: 'a pair sums to zero (nested existential)', ok: true,
          src: tc('''class C {
-                        @Requires({ l != null })
+                        @Requires({ l != null && l.every { it != null } })
                         @Ensures({ result == (0..<l.size()).any { i -> (0..<i).any { j -> l[i] + l[j] == 0 } } })
                         static boolean pairsSumToZero(List<Integer> l) {
                             List<Integer> seen = []

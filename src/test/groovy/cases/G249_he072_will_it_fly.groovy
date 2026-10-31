@@ -62,7 +62,7 @@ class G249_he072_will_it_fly {
         // short-circuits on a non-palindrome regardless of the sum — so the break-free form computes the same value.)
         [group: 'HE072 will_it_fly', name: 'will_it_fly is palindrome AND within weight', ok: true,
          src: tc('''class C {
-                        @Requires({ q != null })
+                        @Requires({ q != null && q.every { it != null } })
                         @Ensures({ result == ((0..<q.size()).every { q[it] == q[q.size() - 1 - it] } && ((int) q.sum(0)) <= w) })
                         static boolean willItFly(List<Integer> q, int w) {
                             boolean palindrome = true

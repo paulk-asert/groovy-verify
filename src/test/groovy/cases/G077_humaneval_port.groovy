@@ -56,7 +56,7 @@ class G077_humaneval_port {
         // size/array are aliased to the local's threaded state).
         [group: 'HumanEval port', name: 'get_positive (Verus 030): result.size() <= xs.size()', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         @Ensures({ result.size() <= xs.size() })   // ← the spec the Verus original omits
                         static List<Integer> getPositive(List<Integer> xs) {
                             List<Integer> positive = []
@@ -106,7 +106,7 @@ class G077_humaneval_port {
         // doesn't yet route through that path for a mutating local's size.
         [group: 'HumanEval port', name: 'get_positive (Verus 030, stronger): every result element is positive', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         @Ensures({ Forall.range(0, result.size(), { int k -> result[k] > 0 }) })
                         static List<Integer> getPositive(List<Integer> xs) {
                             List<Integer> positive = []

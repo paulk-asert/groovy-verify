@@ -47,7 +47,7 @@ class G098_p83_named_map {
         // The faithful HumanEval 008 (sum_product) as a NAMED-tuple map — the user's example.
         [group: 'P83 named-map', name: 'sum_product as a named-tuple map', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result.sum == xs.sum() && result.product == xs.inject(1) { a, x -> a * x } })
                         static Map<String, Integer> sumProduct(List<Integer> xs) {
                             int s = xs[0]

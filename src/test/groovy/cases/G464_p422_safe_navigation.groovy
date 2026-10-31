@@ -73,7 +73,7 @@ class G464_p422_safe_navigation {
         [group: "P422 safe navigation", name: "where a null is harmless, nothing is reported",
          ok: true,
          src: tc('''class A {
-                        static int f(List<Integer> xs) { if (xs?.size() > 0) return xs[0]; return 0 }
+                        static Integer f(List<Integer> xs) { if (xs?.size() > 0) return xs[0]; return 0 }
                         static int g(List<Integer> xs) { int n = xs?.size() ?: 0; return n }
                         static String h(String s) { s?.trim() + 'x' }
                         static Integer i(String s) { s?.trim()?.length() }

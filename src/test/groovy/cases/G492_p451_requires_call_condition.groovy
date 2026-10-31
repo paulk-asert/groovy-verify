@@ -33,7 +33,7 @@ class G492_p451_requires_call_condition {
         // Each was a List index may be outside [0, size)
         [group: "P451 a @Requires callee in a condition", name: "an if on a callee with a @Requires", ok: true,
          src: tc('''class A {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int f(List<Integer> xs) {
                             if (g(xs)) return xs[0]
                             return 0
@@ -45,7 +45,7 @@ class G492_p451_requires_call_condition {
 
         [group: "P451 a @Requires callee in a condition", name: "… an @Ensures that only implies it", ok: true,
          src: tc('''class A {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int f(List<Integer> xs) {
                             if (g(xs)) return xs[0]
                             return 0
@@ -57,7 +57,7 @@ class G492_p451_requires_call_condition {
 
         [group: "P451 a @Requires callee in a condition", name: "… a ternary on one", ok: true,
          src: tc('''class A {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int f(List<Integer> xs) { g(xs) ? xs[0] : 0 }
                         @Requires({ ys != null })
                         @Ensures({ result == (ys.size() > 0) })

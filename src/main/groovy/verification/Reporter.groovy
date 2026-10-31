@@ -966,9 +966,10 @@ class Reporter {
     }
 
     /** Phase 486 — a map's value unboxed where it's used (`m.get('x') + 1`, `int v = m['x']`), null for a missing key or a
-     *  null put: what that null throws there */
-    static String formatNullUnboxed(String read, String exception, String how, CheckResult result) {
-        implicit("Possible ${exception}: ${read} is null for a missing key or a null value, and ${how}",
+     *  null put (Phase 488 — or a list's null element, {@code why}): what that null throws there */
+    static String formatNullUnboxed(String read, String exception, String how, CheckResult result,
+                                    String why = 'for a missing key or a null value') {
+        implicit("Possible ${exception}: ${read} is null ${why}, and ${how}",
             "${read} != null",
             "Could not decide value non-null", result)
     }

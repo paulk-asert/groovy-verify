@@ -43,7 +43,7 @@ class G095_p51_sum {
         // so the returned value equals the whole-list sum. Non-empty per the GDK `[].sum()==null` limit.
         [group: 'P51 sum', name: 'running total equals list sum', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs.sum() })
                         static int total(List<Integer> xs) {
                             int s = xs[0]

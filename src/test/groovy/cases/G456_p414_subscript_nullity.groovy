@@ -98,7 +98,7 @@ class G456_p414_subscript_nullity {
         [group: "P414 subscript nullity", name: "… nor one that calls `xs.size()` a null `xs`",
          ok: true,
          src: tc('''class A {
-                        @Requires({ xs.size() > 0 })
+                        @Requires({ xs.size() > 0 && xs.every { it != null } })
                         static int f(List<Integer> xs) { xs.get(0) }
                     }''')],
 

@@ -50,7 +50,7 @@ class G105_p79_tuples {
         // The faithful HumanEval 008 (sum_product) as a TYPED tuple return.
         [group: 'P79 tuples', name: 'sum_product returns Tuple2(sum, product)', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result.v1 == xs.sum() && result.v2 == xs.inject(1) { a, x -> a * x } })
                         static Tuple2<Integer, Integer> sumProduct(List<Integer> xs) {
                             int s = xs[0]

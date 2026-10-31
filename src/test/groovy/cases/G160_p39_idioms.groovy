@@ -30,7 +30,7 @@ class G160_p39_idioms {
         // xs.get(i) is sugar for xs[i] — both lower to (select xs i).
         [group: 'P39 idioms', name: 'xs.get(i) === xs[i]', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && 0 <= i && i < xs.size() })
+                        @Requires({ xs != null && 0 <= i && i < xs.size() && xs.every { it != null } })
                         @Ensures({ result == xs[i] })
                         static int f(List<Integer> xs, int i) { xs.get(i) }
                     }''')],

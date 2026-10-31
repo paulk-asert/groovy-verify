@@ -30,7 +30,7 @@ class G252_he062_derivative {
         // the next coefficient times its power. Requires a non-empty coefficient list (a polynomial has a constant term).
         [group: 'HE062 derivative', name: 'each output is the coefficient times its power', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() >= 1 })
+                        @Requires({ xs != null && xs.size() >= 1 && xs.every { it != null } })
                         @Ensures({ result.size() == xs.size() - 1 && (0..<result.size()).every { result[it] == xs[it + 1] * (it + 1) } })
                         static List<Integer> derivative(List<Integer> xs) {
                             List<Integer> result = []

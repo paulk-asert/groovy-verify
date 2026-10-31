@@ -49,11 +49,12 @@ prints `also leaned on: @Positive x`.
 ## Size constraints
 
 A `@Size` / `@NotEmpty` on a collection, array, or `String` is read as a *length* fact, so an index into it is in
-bounds — a `@NotEmpty List` discharges `xs[0]`:
+bounds — a `@NotEmpty List` discharges `xs[0]` (its element unboxed to an `int` is another matter: `[null]` isn't
+empty, so the element type says `@NonNull`):
 
 <!-- doclint:case jakarta-validation/notempty-list-index-verifies -->
 ```groovy
-class C { static int h(@NotEmpty List<Integer> xs) { xs[0] } }
+class C { static int h(@NotEmpty List<@NonNull Integer> xs) { xs[0] } }
 ```
 
 The same holds for a `@Size(min = 1) int[]` (its `a[0]`) and a `@NotEmpty String` (its `s.charAt(0)`); drop the

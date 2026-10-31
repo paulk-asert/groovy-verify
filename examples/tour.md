@@ -502,12 +502,13 @@ than risk mis-modeling.
 **Lists and boxed types — same reasoning, same syntax.** The encoder never inspects whether a value
 is `int` or `Integer`, or whether a sequence is an `int[]` or a `List` — it models every integer type
 as a mathematical integer and any subscripted, sized receiver as its contents. So `max` above proves
-identically declared `Integer max(Integer a, Integer b)`, and the sorted-`diff` holds verbatim over a
-`List<Integer>`, in the same idiom (`xs[i]`, `xs.size()`):
+identically declared `Integer max(Integer a, Integer b)`, and the sorted-`diff` holds over a `List<Integer>`, in the
+same idiom (`xs[i]`, `xs.size()`), once its elements are stated non-null — a null element unboxed throws, and `[null,
+null]` is sorted (`null <= null`):
 
 <!-- doclint:case boxed-list/list-integer-sorted-diff-verified -->
 ```groovy
-@Requires({ (0..<xs.size() - 1).every { xs[it] <= xs[it + 1] } && 0 <= k && k + 1 < xs.size() })
+@Requires({ xs.every { it != null } && (0..<xs.size() - 1).every { xs[it] <= xs[it + 1] } && 0 <= k && k + 1 < xs.size() })
 @Ensures({ result <= 0 })
 static int diff(List<Integer> xs, int k) { xs[k] - xs[k + 1] }
 ```

@@ -49,7 +49,7 @@ class G003_jakarta_validation {
         [group: 'jakarta validation', name: 'unbounded array index refuted', expect: 'IndexOutOfBoundsException',
          src: tc('class C { static int g(int[] a) { a[0] } }')],
         [group: 'jakarta validation', name: '@NotEmpty list index verifies', ok: true,
-         src: tc('class C { static int h(@NotEmpty List<Integer> xs) { xs[0] } }')],
+         src: HDR + NONNULL_TYPEUSE_ANN + tc('class C { static int h(@NotEmpty List<@NonNull Integer> xs) { xs[0] } }')],
         [group: 'jakarta validation', name: '@NotEmpty string charAt verifies', ok: true,
          src: tc('class C { static char c(@NotEmpty String s) { s.charAt(0) } }')],
     ]

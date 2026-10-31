@@ -32,7 +32,7 @@ class G254_he009_rolling_max {
         // the loop invariant carries directly (max_so_far is tied to the last pushed element).
         [group: 'HE009 rolling_max', name: 'running max dominates each element and is non-decreasing', ok: true,
          src: tc('''class C {
-                        @Requires({ numbers != null })
+                        @Requires({ numbers != null && numbers.every { it != null } })
                         @Ensures({ result.size() == numbers.size() &&
                                    (0..<numbers.size()).every { numbers[it] <= result[it] } &&
                                    (0..<numbers.size()).every { it == 0 || result[it - 1] <= result[it] } })

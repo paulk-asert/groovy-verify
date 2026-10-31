@@ -30,7 +30,8 @@ class G251_he152_compare {
         // body uses — Math.abs is modelled for FP only, and this keeps spec and code identical).
         [group: 'HE152 compare', name: 'every element is the absolute difference', ok: true,
          src: tc('''class C {
-                        @Requires({ game != null && guess != null && game.size() == guess.size() })
+                        @Requires({ game != null && guess != null && game.size() == guess.size() &&
+                                    game.every { it != null } && guess.every { it != null } })
                         @Ensures({ result.size() == game.size() &&
                                    (0..<game.size()).every { result[it] == (game[it] > guess[it] ? game[it] - guess[it] : guess[it] - game[it]) } })
                         static List<Integer> compare(List<Integer> game, List<Integer> guess) {
@@ -51,7 +52,8 @@ class G251_he152_compare {
         // Soundness: the *signed* difference (forgetting the abs) refutes — it is negative when guess exceeds game.
         [group: 'HE152 compare', name: 'signed difference (no abs) refutes', expect: 'Cannot prove postcondition',
          src: tc('''class C {
-                        @Requires({ game != null && guess != null && game.size() == guess.size() })
+                        @Requires({ game != null && guess != null && game.size() == guess.size() &&
+                                    game.every { it != null } && guess.every { it != null } })
                         @Ensures({ result.size() == game.size() &&
                                    (0..<game.size()).every { result[it] == game[it] - guess[it] } })
                         static List<Integer> compare(List<Integer> game, List<Integer> guess) {

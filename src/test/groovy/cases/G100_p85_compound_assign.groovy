@@ -32,7 +32,7 @@ class G100_p85_compound_assign {
         // (No overlap with contracts: contract closures are pure predicates and never contain assignments.)
         [group: 'P85 compound assign', name: 'sumProduct loop body with += *=', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs.sum() + xs.inject(1) { a, x -> a * x } })
                         static int sumProduct(List<Integer> xs) {
                             int s = xs[0]

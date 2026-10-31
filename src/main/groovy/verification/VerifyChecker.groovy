@@ -6077,6 +6077,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  c.count == 5`, with `c.count` an open getter's read, assumed neither, so `c.bump()` "failed on" `f(null)`. Each part
      *  dropped is a witness taint: a call the model builds may not meet it. */
     private void assumeRequiresParts(SmtSession s, Encoder enc, Expression req) {
+        // Phase 488 — assumed, a parameter's element compares as a null does (`xs.every { it >= 0 }` makes each non-null)
+        boolean prevAware = enc.nullAwareElements
+        enc.nullAwareElements = true
+        try { assumeRequiresPartsAware(s, enc, req) } finally { enc.nullAwareElements = prevAware }
+    }
+    private void assumeRequiresPartsAware(SmtSession s, Encoder enc, Expression req) {
         Object whole = enc.translateBool(req)
         if (whole != null) {
             s.assertExpr(whole)
@@ -6471,6 +6477,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (be.operation.type == Types.ASSIGN && !(be instanceof DeclarationExpression)) {
                     ClassNode p = primitiveOf(be.leftExpression)
                     if (p != null) reg(be.rightExpression, gce, cast(p))
+                } else if (sym in ['+=', '-=', '*=', '/=', '%='] && be.leftExpression instanceof VariableExpression &&
+                           !(Encoder.staticTypeOf(be.leftExpression)?.name in ['java.lang.String', 'java.lang.Object'])) {
+                    // Phase 488 — a compound assignment's right operand (`s += xs[i]`; a String's takes a null)
+                    reg(be.rightExpression, sym == '%=' ? npe : gre, operand)
                 } else if (sym in ['+', '-', '*', '/', '%'] &&
                            ((ClassNode) be.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE))?.name != 'java.lang.String') {
                     reg(be.leftExpression, npe, operand)
@@ -7471,20 +7481,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (site instanceof DerefSite) {
             DerefSite df = (DerefSite) site
             // Phase 486 — a map's value unboxed where it's used (`m.get('x') + 1`, `int v = m['x']`) is null for a missing
-            // key or a null put, and throws; a list's element or an object's property isn't checked here
+            // key or a null put, and throws; Phase 488 — so is a list's or an array's null element (`xs[0] + 1`). An
+            // object's property isn't checked here
             if (df.unboxed != null) {
-                if (!enc.isMapName(df.receiver) || currentNonNullElementContainers.contains(df.receiver)) return
+                boolean map = enc.isMapName(df.receiver)
+                if (!map && !(enc.hasElementNullity(df.receiver) && Encoder.indexedAccessTarget(df.unboxed) != null) ||   // not `xs.x`
+                    currentNonNullElementContainers.contains(df.receiver)) return
                 Object nul = enc.nullityOfExpr(df.unboxed)
                 if (nul == null) {
                     addStaticTypeError(Reporter.formatImplicitSkipped("unboxed value",
-                        "key '${asWritten(df.indexExpr)}' is outside fragment"), df.node)
+                        "${map ? 'key' : 'index'} '${asWritten(df.indexExpr)}' is outside fragment"), df.node)
                     return
                 }
                 s.assertExpr(nul)
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
                     addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullUnboxed(asWritten(df.unboxed), df.unboxThrows,
-                        df.unboxHow, r), r, UNBOX_REPRO_EXCEPTIONS.get(df.unboxThrows)), df), df.node)
+                        df.unboxHow, r, map ? 'for a missing key or a null value' : 'for a null element'), r,
+                        UNBOX_REPRO_EXCEPTIONS.get(df.unboxThrows)), df), df.node)
                 }
                 explainIfVerified(s, r, "${asWritten(df.unboxed)} != null")
                 return
@@ -22187,6 +22201,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // variable null): `@Ensures({ s != null })` on the formal is about the actual
             if (located != null && located != formals[i].name && !ClassHelper.isPrimitiveType(ft) && enc.peekNullity(formals[i].name) == null) {
                 enc.bindNullity(formals[i].name, callerView { enc.nullityOf(located) })
+            }
+            // Phase 488 — and one bound to any other actual whose nullity the caller knows (`Collections.fill(xs, 9)`:
+            // `obj != null ==> …`)
+            if (located == null && h != null && !ClassHelper.isPrimitiveType(ft) && enc.peekNullity(formals[i].name) == null) {
+                Object nul = callerView { enc.nullityOfExpr(actual) }
+                if (nul != null) {
+                    if (!savedListOracles.containsKey(formals[i].name)) {
+                        savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
+                    }
+                    enc.bindNullity(formals[i].name, nul)
+                }
             }
             // Phase 447 — a read-only set or map formal bound to a named one of the caller's is that set or map
             if (located != null && located != formals[i].name && !(modSet != null && formals[i].name in modSet)) {

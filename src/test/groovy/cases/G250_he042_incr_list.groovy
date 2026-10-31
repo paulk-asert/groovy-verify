@@ -31,7 +31,7 @@ class G250_he042_incr_list {
         // 042 incr_list: each output is the input + 1.
         [group: 'HE042 incr_list', name: 'every element is the input plus one', ok: true,
          src: tc('''class C {
-                        @Requires({ l != null })
+                        @Requires({ l != null && l.every { it != null } })
                         @Ensures({ result.size() == l.size() && (0..<l.size()).every { result[it] == l[it] + 1 } })
                         static List<Integer> incrList(List<Integer> l) {
                             List<Integer> result = []

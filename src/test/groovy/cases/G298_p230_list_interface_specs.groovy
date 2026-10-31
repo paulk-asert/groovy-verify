@@ -29,7 +29,7 @@ class G298_p230_list_interface_specs {
         // ---------- Phase 230: the List interface (the registry consumption story completes) ----------
         [group: 'P230 list interface specs', name: 'indexOf-then-get: the native bounds obligation discharged by the registry fact', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         static int findOrLast(List<Integer> xs, int v) {
                             int i = xs.indexOf(v)
                             if (i >= 0) {

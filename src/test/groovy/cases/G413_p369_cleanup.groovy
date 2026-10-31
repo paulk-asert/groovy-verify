@@ -55,7 +55,7 @@ class G413_p369_cleanup {
         // Before: a bounds warning — Groovy's xs[-1] is the last element, which the encoder read as index -1.
         [group: "P369 cleanup", name: "xs[-1] is the last element", ok: true,
          src: tc('''final class A {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs[xs.size() - 1] })
                         static int g(List<Integer> xs) { xs[-1] }
                     }''')],

@@ -42,7 +42,7 @@ class G063_boxed_list {
                    }''')],
         [group: 'boxed & list', name: 'Integer[] sorted-diff verified', ok: true,
          src: tc('''class C {
-                       @Requires({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && 0 <= k && k + 1 < a.length })
+                       @Requires({ a.every { it != null } && (0..<a.length - 1).every { a[it] <= a[it + 1] } && 0 <= k && k + 1 < a.length })
                        @Ensures({ result <= 0 })
                        static int diff(Integer[] a, int k) { a[k] - a[k + 1] }
                    }''')],
@@ -68,7 +68,7 @@ class G063_boxed_list {
                    }''')],
         [group: 'boxed & list', name: 'List<Integer> sorted-diff verified', ok: true,
          src: tc('''class C {
-                       @Requires({ (0..<xs.size() - 1).every { xs[it] <= xs[it + 1] } && 0 <= k && k + 1 < xs.size() })
+                       @Requires({ xs.every { it != null } && (0..<xs.size() - 1).every { xs[it] <= xs[it + 1] } && 0 <= k && k + 1 < xs.size() })
                        @Ensures({ result <= 0 })
                        static int diff(List<Integer> xs, int k) { xs[k] - xs[k + 1] }
                    }''')],

@@ -48,7 +48,7 @@ class G103_p78_int_return {
         // array-typed. Both aggregates proven element-wise off the loop invariant (sum + inject product).
         [group: 'P78 int[] return', name: 'sum_product returns int[] [sum, product]', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result[0] == xs.sum() && result[1] == xs.inject(1) { a, x -> a * x } })
                         static int[] sumProduct(List<Integer> xs) {
                             int s = xs[0], p = xs[0], i = 1

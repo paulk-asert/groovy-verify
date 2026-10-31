@@ -38,7 +38,7 @@ class G097_p53_product {
         // step, so the returned value equals the whole-list product (the inject fold).
         [group: 'P53 product', name: 'running product equals list product', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs.inject(1) { a, x -> a * x } })
                         static int product(List<Integer> xs) {
                             int p = xs[0]
@@ -65,7 +65,7 @@ class G097_p53_product {
         // `return [sum, product]` version is in the P78 group, now that list returns are modelled.)
         [group: 'P53 product', name: 'sum_product: both aggregations in one loop', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs.sum() + xs.inject(1) { a, x -> a * x } })
                         static int sumPlusProduct(List<Integer> xs) {
                             int s = xs[0]

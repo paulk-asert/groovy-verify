@@ -31,7 +31,7 @@ class G255_he085_add {
         // summed are all even, so the running sum stays even — a parity invariant the loop carries (sum % 2 == 0).
         [group: 'HE085 add', name: 'sum of even elements is even', ok: true,
          src: tc('''class C {
-                        @Requires({ lst != null })
+                        @Requires({ lst != null && lst.every { it != null } })
                         @Ensures({ result % 2 == 0 })
                         static int add(List<Integer> lst) {
                             int sum = 0

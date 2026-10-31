@@ -74,12 +74,15 @@ class Collections {
 
     // ── the size-preserving mutators (Phase 229) ──
 
+    // Phase 488 — and a list of two or more has no null left: each element meets a compareTo, and a null throws there
+    // (Comparable's contract: e.compareTo(null) throws a NullPointerException)
     @Modifies({ list })
-    @Ensures({ list.indices.every { it == 0 || list[it - 1] <= list[it] } })
+    @Ensures({ list.indices.every { it == 0 || list[it - 1] <= list[it] } && (list.size() < 2 || list.every { it != null }) })
     static void sort(List list) {}
 
+    // Phase 488 — and a non-null value's elements aren't null (`null == 9` is false, but the element's flag is its own)
     @Modifies({ list })
-    @Ensures({ list.every { it == obj } })
+    @Ensures({ list.every { it == obj } && (obj != null ==> list.every { it != null }) })
     static void fill(List list, Object obj) {}
 
     // Content havoced, size preserved — stated post-state facts limited to what is honestly true

@@ -38,7 +38,7 @@ class G102_p78_list_return {
         // against its aggregate — what previously had to collapse to `s + p` for lack of tuple/list returns.
         [group: 'P78 list return', name: 'sum_product returns [sum, product]', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result[0] == xs.sum() && result[1] == xs.inject(1) { a, x -> a * x } })
                         static List<Integer> sumProduct(List<Integer> xs) {
                             int s = xs[0]

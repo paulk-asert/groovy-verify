@@ -72,7 +72,7 @@ Task 030 — filter a list to its positive elements:
 
 <!-- doclint:case humaneval-port/get-positive-verus-030-result-size-xs-size -->
 ```groovy
-@Requires({ xs != null })
+@Requires({ xs != null && xs.every { it != null } })
 @Ensures({ result.size() <= xs.size() })            // ← the spec the Verus original omits
 static List<Integer> getPositive(List<Integer> xs) {
     List<Integer> positive = []
@@ -103,7 +103,7 @@ builds a fresh list whose every element is a function of the input's, and the sp
 
 <!-- doclint:case he042-incr-list/every-element-is-the-input-plus-one -->
 ```groovy
-@Requires({ l != null })
+@Requires({ l != null && l.every { it != null } })
 @Ensures({ result.size() == l.size() && (0..<l.size()).every { result[it] == l[it] + 1 } })
 static List<Integer> incrList(List<Integer> l) {
     List<Integer> result = []
@@ -246,7 +246,7 @@ original scans a growing `seen` accumulator with a nested loop and a `break`; re
 
 <!-- doclint:case he043-pairs-sum-to-zero/a-pair-sums-to-zero-nested-existential -->
 ```groovy
-@Requires({ l != null })
+@Requires({ l != null && l.every { it != null } })
 @Ensures({ result == (0..<l.size()).any { i -> (0..<i).any { j -> l[i] + l[j] == 0 } } })
 static boolean pairsSumToZero(List<Integer> l) {
     List<Integer> seen = []
@@ -277,7 +277,7 @@ binding keys off the return *expression*, not the declared type:
 
 <!-- doclint:case p78-int-return/sum-product-returns-int-sum-product -->
 ```groovy
-@Requires({ xs != null && xs.size() > 0 })
+@Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
 @Ensures({ result[0] == xs.sum() && result[1] == xs.inject(1) { a, x -> a * x } })
 static int[] sumProduct(List<Integer> xs) {
     int s = xs[0], p = xs[0], i = 1

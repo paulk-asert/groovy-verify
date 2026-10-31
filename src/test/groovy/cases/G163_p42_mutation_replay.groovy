@@ -32,7 +32,7 @@ class G163_p42_mutation_replay {
         // and implicit-obligation passes now agree.
         [group: 'P42 mutation replay', name: 'add then in-bounds read passes implicit bounds', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int firstAfterPush(List<Integer> xs, int v) {
                             xs.add(v)
                             xs[0]
@@ -51,7 +51,7 @@ class G163_p42_mutation_replay {
         // Two adds chain through the implicit pass too: after add(a); add(b), xs[1] is in bounds.
         [group: 'P42 mutation replay', name: 'two adds then xs[1] read passes bounds', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int secondAfterPushTwo(List<Integer> xs, int a, int b) {
                             xs.add(a)
                             xs.add(b)
@@ -62,7 +62,7 @@ class G163_p42_mutation_replay {
         // obligations see the post-mutation state.
         [group: 'P42 mutation replay', name: 'add then guarded read inside branch', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int guardedAfterPush(List<Integer> xs, int v) {
                             xs.add(v)
                             if (xs.size() > 0) return xs[0]

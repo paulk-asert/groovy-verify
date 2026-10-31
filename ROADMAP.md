@@ -20092,6 +20092,64 @@ applying it to an `int[]`'s element fails three corpus cases (the three-way part
 `parameter int[] element values shown in counterexample`), to a computed list P255's priming send; without the null
 rendering three.
 
+## Phase 488 — an element unboxed  *(shipped — soundness)*
+
+Phase 486's check, extended to a list's or a boxed array's element: `xs[i]`, `xs.get(i)` or `a[i]` of a boxed number
+used where it's unboxed must not be null. The positions are Phase 486's: an arithmetic operand, a negation, an
+`intdiv`'s receiver or argument, or a primitive's result or value. A compound assignment's right operand joins them,
+for a map's value too. Measured on Groovy 6.0.0: with `[null]`, `xs[0] + 1` throws `NullPointerException` ("Cannot
+execute null+1"), `1 + xs[0]` a `GroovyRuntimeException` ("Ambiguous method overloading"), `int v = xs[0]` a
+`GroovyCastException`, and `s += xs[0]` a `GroovyRuntimeException` for an `int`, `long` or `Integer` `s`. `s %= xs[0]`
+throws `NullPointerException`, and a String's `s += xs[0]` takes the null ("anull"). The report says "for a null
+element", and a failing call shows it (`f([null])`, `f(new Integer[1])`).
+
+**Corpus:** 37 cases had no word on their elements, and a `[null]` call throws where they passed. Each now states
+it, as Paul chose for maps and Errors: the HumanEval and Verus ports' running totals, `sum_product` in all six
+spellings, `get_positive`, `will_it_fly`, `incr_list`, `compare`, `derivative`, `rolling_max`, `pairs_sum_to_zero`,
+the sorted-diff pair (`[null, null]` is sorted: `null <= null`), the `add`-then-read trio (an `add` doesn't make
+`xs[0]` the added value when `xs` had one), a field `pop`, a `List<BigDecimal>` transfer, `xs.get(i) === xs[i]`,
+`xs[-1]`, indexOf-then-get (its fallback `xs[xs.size() - 1]` throws on `[null]`), and P414/P450/P451's reads. These
+gain `xs.every { it != null }`. `@NotEmpty List<Integer>` becomes `List<@NonNull Integer>`, since `[null]` isn't empty,
+and P422's `xs?.size() > 0` reader returns an `Integer`.
+
+**False alarms fixed:**
+- A parameter's or a field's boxed-number element compares as Groovy compares a null, as Phase 486's map value does. A
+  null is below every number and equal only to null, so `xs.every { it >= 0 }`, `(0..<n).every { a[it] > 0 }` or
+  `3 < xs[0]` makes it non-null and `it <= 9` doesn't. This applies only where the method's own `@Requires` is
+  assumed, and in a `findAll`'s predicate: `xs.findAll { it > 0 }` keeps no null, `it < 5` may.
+  - **Not in a goal:** the first try read every such comparison this way and failed 20 cases. The value models
+    (isSorted's gap fact, `max`/`min`, `first`/`head`/`last`, `drop`, `minus`, `binarySearch`'s precondition) don't
+    carry element flags, so `result == xs[0]` stopped proving. Phase 487's 71 had the same cause.
+- `Collections.fill(list, obj)` leaves no null when `obj` isn't one. To read `obj != null` at the call, a reference
+  formal now takes the nullity of any actual the caller knows (`9`), not only of a named variable (Phase 448).
+- `Collections.sort(list)` leaves no null in a list of two or more. Each element meets a `compareTo`, and
+  `Comparable`'s contract has `e.compareTo(null)` throw (measured: `[3, null]`, `[null, 3]` and `[1, 2, null, 0]`
+  throw; `[null]` sorts).
+- `xs[-1]`'s null flag is the last element's (Phase 369's index), not index −1's.
+
+**Not changed:** a goal's comparison of an element still reads its value as present. A callee's `@Requires` is a
+goal at its call, so the callee assumes `xs.every { it >= 0 }` makes the elements non-null while the call is checked
+by their values only. A caller can meet it with a null only where its model knows a null element's value and not its
+flag. That gap is recorded here.
+
+**Shipped tests:** group `P488 an element unboxed`, 31 cases. Each failing call was run on Groovy 6.0.0 and throws as
+shown; each `ok` one returns. Measured at the parent commit, the thirteen
+cases that expect a report passed silently: each element unboxed, the compound pair, an `add` before a read, `it <= 9`,
+`findAll { it < 5 }`, a fill with a value that may be null, and a sort of one. The eighteen `ok` cases were unchanged.
+All fifteen mutations were killed:
+- without the site, 13 cases fail; with the map's wording, the same 13;
+- without the compound operand two, with `%=` taken as a `GroovyRuntimeException` one, with a String's compound
+  checked one;
+- without the element comparison four;
+- without the quantifier's element two, one of them the corpus's `List<Integer> index read (element-wise every)`;
+- without the `@Requires` assumption's reading six, three of them corpus cases;
+- with every comparison read so, two corpus cases (the `decimal max`/`min` pair);
+- without the `findAll` predicate's reading two;
+- without `xs[-1]`'s index two;
+- without the formal's nullity from its actual two; without `fill`'s fact two, without `sort`'s two, with `sort`'s
+  for a list of one one.
+
+
 ## Definition of done, per increment
 
 An increment is done when:

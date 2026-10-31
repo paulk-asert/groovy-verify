@@ -85,7 +85,7 @@ class G491_p450_call_condition_ensures {
         // A false alarm before: the guard read the caller's `ys`, not `xs`
         [group: "P450 a call's @Ensures in a condition", name: "an inlined size guard is the argument's", ok: true,
          src: tc('''class A {
-                        @Requires({ xs != null })
+                        @Requires({ xs != null && xs.every { it != null } })
                         static int f(List<Integer> xs) {
                             if (g(xs)) return xs[0]
                             return 0

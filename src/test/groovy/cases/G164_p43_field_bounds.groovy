@@ -63,7 +63,7 @@ class G164_p43_field_bounds {
         [group: 'P43 field bounds', name: 'field pop preserves implicit check downstream', ok: true,
          src: tc('''class C {
                         List<Integer> xs
-                        @Requires({ xs != null && xs.size() > 1 })
+                        @Requires({ xs != null && xs.size() > 1 && xs.every { it != null } })
                         @Modifies({ this.xs })
                         @Ensures({ xs.size() == old.xs.size() - 1 })
                         int popThenRead() { xs.removeLast(); xs[0] }

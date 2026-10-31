@@ -209,7 +209,7 @@ obligation discharged by the registry fact plus the found-check:
 <!-- doclint:case p230-list-interface-specs/indexof-then-get-the-native-bounds-obligation-discharged-by-the-registry-fact -->
 ```groovy
 class C {
-    @Requires({ xs != null && xs.size() > 0 })
+    @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
     static int findOrLast(List<Integer> xs, int v) {
         int i = xs.indexOf(v)
         if (i >= 0) {
