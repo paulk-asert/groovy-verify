@@ -4982,6 +4982,19 @@ class Encoder implements TheoryApi {
             Object idxH = indexTerm(ind.containerName, ind.indexExpr)   // Phase 488 — `xs[-1]`'s is the last element's (Phase 369)
             return idxH == null ? null : session.eq(session.select(elementNullityFor(ind.containerName), idxH), session.intLit(1L))
         }
+        // Phase 489 — `xs.first()` / `xs.last()` is that element; `xs.max()` / `xs.min()` is null when every element is
+        IndexedNullTarget ec = elementCallTarget(e)
+        if (ec != null && hasElementNullity(ec.containerName)) {
+            if (nonNullElementContainers.contains(ec.containerName)) return session.boolLit(false)
+            Object nulls = elementNullityFor(ec.containerName)
+            if (ec.indexExpr != null) {
+                return session.eq(session.select(nulls, indexTerm(ec.containerName, ec.indexExpr)), session.intLit(1L))
+            }
+            Object k = session.boundIntVar('allNull$k' + (quantCounter++))
+            Object sel = session.select(nulls, k)
+            return session.forall([k], session.implies(session.and([session.le(session.intLit(0L), k), session.lt(k, sizeOf(ec.containerName))]),
+                session.eq(sel, session.intLit(1L))), [sel])
+        }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
             isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
         // Phase 487 — nor is a number's arithmetic: a null operand throws instead (`out.add(2 * xs[i])`); another
@@ -9886,6 +9899,30 @@ class Encoder implements TheoryApi {
             }
         }
         return null
+    }
+
+    /**
+     * Phase 489 — a call that returns an element of a named list or array: {@code xs.first()} / {@code xs.head()} (index
+     * 0), {@code xs.last()} (index -1, the last by Phase 369's {@link #indexTerm}), and {@code xs.max()} / {@code xs.min()}
+     * (no index: null when every element is, or the list is empty — measured on Groovy 6.0.0, they skip nulls). Not a
+     * safe call's. Null for anything else.
+     */
+    static IndexedNullTarget elementCallTarget(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) e
+        String m = mce.methodAsString
+        if (mce.safe || mce.spreadSafe || !(mce.objectExpression instanceof VariableExpression) || !argList(mce).isEmpty() ||
+            !(m in ['first', 'head', 'last', 'max', 'min'])) return null
+        // a list's or an array's, by its declaration — a channel's `first()` is a receive
+        org.codehaus.groovy.ast.Variable v = ((VariableExpression) mce.objectExpression).accessedVariable
+        ClassNode rt = v == null ? null : (v.originType ?: v.type)
+        boolean seq = false
+        try { seq = rt != null && (rt.isArray() || rt.name == 'java.util.List' || rt.implementsInterface(ClassHelper.make(List))) } catch (Throwable ignored) { }
+        if (!seq) return null
+        IndexedNullTarget t = new IndexedNullTarget()
+        t.containerName = ((VariableExpression) mce.objectExpression).name
+        t.indexExpr = m in ['first', 'head'] ? new ConstantExpression(0) : m == 'last' ? new ConstantExpression(-1) : null
+        t
     }
 
     private static boolean isNullLiteral(Expression e) {

@@ -37,21 +37,21 @@ class G160_p39_idioms {
         // xs.first() === xs[0]; needs the precondition to discharge the bounds check.
         [group: 'P39 idioms', name: 'xs.first() === xs[0]', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs[0] })
                         static int f(List<Integer> xs) { xs.first() }
                     }''')],
         // xs.head() — Groovy idiomatic alias for first().
         [group: 'P39 idioms', name: 'xs.head() === xs[0]', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs[0] })
                         static int f(List<Integer> xs) { xs.head() }
                     }''')],
         // xs.last() === xs[size-1].
         [group: 'P39 idioms', name: 'xs.last() === xs[size-1]', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && xs.size() > 0 })
+                        @Requires({ xs != null && xs.size() > 0 && xs.every { it != null } })
                         @Ensures({ result == xs[xs.size() - 1] })
                         static int f(List<Integer> xs) { xs.last() }
                     }''')],

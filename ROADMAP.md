@@ -20150,6 +20150,56 @@ All fifteen mutations were killed:
   for a list of one one.
 
 
+## Phase 489 — an element call unboxed  *(shipped — soundness)*
+
+Sizing the next step showed what this slice is. Reading every element comparison as Groovy compares a null, in goals as
+well as an assumed `@Requires` (Phase 488 stopped there), failed 19 cases when only a formal's element was read so.
+That reading is inconsistent: `out.add(xs[i])` then `out[k] <= cap` reads one side with null and the other without.
+Reading every list's and boxed array's element so failed 68. In each, a model pins element values but not their null
+flags: list building (`<<`, `add`, `[x] + xs`, a spread, `* n`, `minus`, `drop`), the channel queues, and
+`max`/`min`/`isSorted`/`first`/`last`. Paul's call was models first, then the flip:
+- 489 (this): `first`/`head`/`last`/`max`/`min` unboxed;
+- 490: list building carries flags;
+- 491: the channel queues do;
+- 492: comparisons read null in goals, which closes Phase 488's call-site gap.
+
+It turned up a soundness gap: `int f(List<Integer> xs) { xs.first() }` on `[null]` throws `GroovyCastException`, and it
+passed. Phase 488 checked a subscript and a `get` only.
+
+**The check:** a call that returns an element of a named list or array is a read Phase 488's check covers:
+- `xs.first()` and `xs.head()` read index 0, `xs.last()` the last element (Phase 369's index);
+- `xs.max()` and `xs.min()` are null only when every element is null, or there is none. Measured on Groovy 6.0.0,
+  they skip nulls: `[null, 3].min()` is 3, `[null].max()` and `[].max()` are null. The report says so: "xs.max() is
+  null when every element is (or there is none)".
+
+A channel's `first()` is a receive, so the receiver must be declared a list, a collection or an array. A primitive
+array's call returns a primitive, which is never null.
+
+**Fixed on the way:** a failing call whose list had no element value pinned showed every element as `null`, even one
+the precondition made non-null. `@Requires({ xs[0] != null })` showed `f([null, null])`, a call the precondition
+rejects. A non-null element's flag is any value but 1, and the repro read only 0 as non-null; it now shows the type's
+zero there (`f([0, null])`).
+
+**Corpus:** four cases changed, each throwing on `[null]` where it passed. G160's `first`/`head`/`last` idioms gain
+`xs.every { it != null }`, and P368's `last()` "discharged by non-emptiness" returns an `Integer`. That case is about
+the bounds.
+
+**Not changed here:** `isSorted()` putting nulls first (measured: `[null, 1]` is sorted, `[1, null]` isn't) is part of
+what `<=` means once comparisons read null, so it waits for Phase 492. So does `max`/`min`'s value skipping null
+elements.
+
+**Shipped tests:** group `P489 an element call unboxed`, 11 cases. Each failing call was run on Groovy 6.0.0 and
+throws as shown; each `ok` one returns. Measured at the parent commit, the six cases that
+expect a report passed silently (`first`, `head`, `last`, an `Integer[]`'s `first`, `max`, `min`), and the five `ok`
+cases were unchanged. All nine mutations were killed:
+- without the calls six fail; without `max`/`min` two;
+- with `last()` read at index 0 two;
+- without the declared-sequence check four corpus channel cases (`c03`, the consumer loops);
+- with the extremum's nullity as the first element's one;
+- without the unboxing registration six; without its wording two;
+- with the repro's fallback all `null`, or only a 0 flag read as non-null, one each.
+
+
 ## Definition of done, per increment
 
 An increment is done when:

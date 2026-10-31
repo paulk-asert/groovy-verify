@@ -115,7 +115,7 @@ class G412_p368_encoder_audited {
         [group: "P368 the encoder audited", name: "… discharged by non-emptiness", ok: true,
          src: tc('''final class A {
                         @Requires({ xs != null && xs.size() > 0 })
-                        static int g(List<Integer> xs) { xs.last() }
+                        static Integer g(List<Integer> xs) { xs.last() }
                     }''')],
     ]
 }

@@ -3789,7 +3789,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (elems != null && (elems.any { it != 0L } || shown.contains('null'))) return "[${shown.join(', ')}]"
             List<String> strs = pinnedStrings(p.name, n, ce, sortedCe)   // Phase 443
             if (strs != null) return "[${strs.join(', ')}]"
-            return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
+            // Phase 489 — an element the model made non-null, its type's zero (`@Requires({ xs[0] != null })` showed `[null, …]`)
+            org.codehaus.groovy.ast.GenericsType[] gs = t.genericsTypes
+            ClassNode et = gs != null && gs.length == 1 ? gs[0].type : null
+            String zero = et == null ? null : et.name == 'java.lang.String' ? '""' :
+                (ClassHelper.isNumberType(et) || et.name in ['java.math.BigInteger', 'java.math.BigDecimal']) ? '0' : null
+            List<String> filled = new ArrayList<String>()
+            for (long k = 0; k < n; k++) {
+                Long flag = ce.get(p.name + '$nullElem[' + k + ']')   // null is 1, anything else isn't
+                filled.add(zero != null && flag != null && flag != 1L ? zero : 'null')
+            }
+            return n == 0L ? '[]' : '[' + filled.join(', ') + ']'
         }
         // Phase 369 — a non-null object: `new C(…)` with the properties the model fixed (Phase 45's `c$field`), when C
         // can be built so — it rendered `null` here, so `g(C c)` under `@Requires({ c != null })` read `fails on: g(null)`.
@@ -6438,6 +6448,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean boxedNumber = t != null && !ClassHelper.isPrimitiveType(t) &&
                 (ClassHelper.isNumberType(t) || t.name in ['java.math.BigInteger', 'java.math.BigDecimal'])
             boolean read = Encoder.indexedAccessTarget(e) != null && !(e instanceof MethodCallExpression && ((MethodCallExpression) e).safe) ||
+                Encoder.elementCallTarget(e) != null ||   // Phase 489 — `xs.first()`, `xs.max()`
                 e instanceof PropertyExpression && !((PropertyExpression) e).safe && !((PropertyExpression) e).spreadSafe &&
                 ((PropertyExpression) e).objectExpression instanceof VariableExpression && ((PropertyExpression) e).propertyAsString != null
             if (boxedNumber && read) out.putIfAbsent(safeCallKey(e), [exc, how] as String[])
@@ -7485,7 +7496,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // object's property isn't checked here
             if (df.unboxed != null) {
                 boolean map = enc.isMapName(df.receiver)
-                if (!map && !(enc.hasElementNullity(df.receiver) && Encoder.indexedAccessTarget(df.unboxed) != null) ||   // not `xs.x`
+                Encoder.IndexedNullTarget ec = Encoder.elementCallTarget(df.unboxed)   // Phase 489
+                if (!map && !(enc.hasElementNullity(df.receiver) && (Encoder.indexedAccessTarget(df.unboxed) != null || ec != null)) ||   // not `xs.x`
                     currentNonNullElementContainers.contains(df.receiver)) return
                 Object nul = enc.nullityOfExpr(df.unboxed)
                 if (nul == null) {
@@ -7497,7 +7509,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
                     addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullUnboxed(asWritten(df.unboxed), df.unboxThrows,
-                        df.unboxHow, r, map ? 'for a missing key or a null value' : 'for a null element'), r,
+                        df.unboxHow, r, map ? 'for a missing key or a null value' : ec != null && ec.indexExpr == null ?
+                            'when every element is (or there is none)' : 'for a null element'), r,
                         UNBOX_REPRO_EXCEPTIONS.get(df.unboxThrows)), df), df.node)
                 }
                 explainIfVerified(s, r, "${asWritten(df.unboxed)} != null")
@@ -12466,9 +12479,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         private void unboxedSite(Expression e) {
             String[] at = unboxedReads?.get(safeCallKey(e))
             if (at == null) return
-            Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e)
+            Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e) ?: Encoder.elementCallTarget(e)   // Phase 489
             String recv = ind != null ? ind.containerName : ((VariableExpression) ((PropertyExpression) e).objectExpression).name
-            Expression key = ind != null ? ind.indexExpr : new ConstantExpression(((PropertyExpression) e).propertyAsString)
+            Expression key = ind != null ? (ind.indexExpr ?: e) : new ConstantExpression(((PropertyExpression) e).propertyAsString)
             derefSites.add(new DerefSite(node: e, receiver: recv, indexExpr: key, unboxed: e, unboxThrows: at[0], unboxHow: at[1]))
         }
 
