@@ -20528,7 +20528,7 @@ parameter shadows. Without that, the default fact was the parameter's: `A(int co
 was dropped).
 
 **Open:** a precise name for a shadowed field (`this$count`), so a setter `void set(int count) { this.count = count }`
-under an invariant verifies rather than being refused. A static method whose own `old.xs` names a parameter `xs` is
+under an invariant verifies rather than being refused (the setter shape: Phase 498). A static method whose own `old.xs` names a parameter `xs` is
 also refused when an instance field is called `xs` too, as `old.f` can't be told apart there.
 
 **Shipped tests:** group `P497 shadowed fields`, 18 cases. Twelve failed at the parent commit, eight of them by
@@ -20542,6 +20542,49 @@ Mutation-checked, all 13 killed: no class-invariant use (2), no callee contracts
 a callee's own formal counted as the field (2), no `this.f` (6), no locals (1), the invariant on a static method
 (1), no constructor exemption (2), its single-use (1), its never-reassigned (1) and its no-call (1) conditions, the
 Phase 15b default kept (2), and the method's own contracts unread (1).
+
+## Phase 498 — the setter idiom  *(shipped — completeness)*
+
+Phase 497 refused `void set(int count) { this.count = count }` under a class invariant, since field and parameter
+were one name. A full own name for a shadowed field would touch every place the checker turns `this.f` into `f`.
+The setter needs much less. Before the copy, the one thing that reads the field is the class invariant assumed at
+entry. From the copy on, field and parameter are one value.
+
+So Phase 497's constructor idiom extends to any instance method, a setter's included:
+- the leading statements copy a same-named parameter into the field;
+- that is the body's only `this.f`, and the parameter is never reassigned;
+- the method makes no call on `this`.
+
+The invariant assumed at entry reads such a field's entry value as `this$count`
+(`VerifyChecker.currentFieldCopies`, through Phase 45's receiver context with `this` as the receiver). The invariant
+proved at exit, the `@Ensures`' `this.count` and every later read are the parameter's value, which they are.
+
+Three more conditions, each on what would read the entry value under the parameter's name:
+- the method's own `@Requires` doesn't read `this.count` or `old.count`;
+- its `@Ensures` doesn't read `old.count`;
+- the parameter's type is the field's.
+
+Otherwise the method is refused, as in Phase 497. A copied boolean field's `this$f` is a Bool, like an object
+parameter's. A counterexample shows the entry value as `this.count`, as the source spells it.
+
+**Open:** a field read before it's copied, or written other than by its parameter's copy, is still refused. So is
+`old.count` in a setter's postcondition. Both need the field's own name throughout.
+
+**Shipped tests:** group `P498 setter idiom`, 14 cases. Eleven were refused at the parent commit; they now verify,
+or fail for the setter's own reason: no precondition, the other field's entry value, a boolean's or a String's
+value. The
+three still refused (a `@Requires` on the entry value, an `@Ensures` on `old.count`, a parameter of another
+type) held there too. Phase 497's "a setter's, under the invariant" now expects the invariant failure, not the
+refusal.
+
+Mutation-checked, all 7 killed:
+- the entry invariant read under the parameter's name (5). The setter without a precondition, and the other
+  field's entry value, both proved again;
+- the constructor idiom only (10);
+- the type check (1), the `@Requires` check (1), the `old.count` check (1);
+- a copied boolean's entry value an Int (1). It's still sound, as the encoder reads an Int as `!= 0`, but its
+  counterexample showed `this.locked = 1`;
+- the counterexample's `this$count` (1).
 
 ## Definition of done, per increment
 

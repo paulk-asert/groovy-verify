@@ -249,6 +249,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private List<Expression> currentClassInvariants = Collections.<Expression> emptyList()
     /**
+     * Phase 498 — the fields this method's leading statements copy a same-named parameter into ({@code this.count =
+     * count}, Phase 497's idiom): the class invariant assumed at entry speaks of their ENTRY value, {@code this$count},
+     * not of the parameter; from the copy on, field and parameter are one value under one name.
+     */
+    private Set<String> currentFieldCopies = Collections.<String> emptySet()
+    /**
      * Phase 15b — true while {@link #afterVisitMethod} is processing a constructor. The class
      * invariant is *not* assumed at constructor entry (the invariant hasn't been established yet —
      * it's the goal, not a precondition), but it IS conjoined into the exit obligation just as for
@@ -5088,11 +5094,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (body == null) body = node.code
             // Phase 497 — a field a parameter or local shadows is one SMT name with it: a check that reads the field
             // would read the shadow. Refused, loudly, until a shadowed field has a name of its own.
-            List<String[]> shadowed = shadowedFieldReads(node, body)
+            Set<String> copies = new LinkedHashSet<String>()
+            List<String[]> shadowed = shadowedFieldReads(node, body, copies)
             if (!shadowed.isEmpty()) {
                 for (String[] sh : shadowed) addStaticTypeError(Reporter.formatShadowedField(sh[0], sh[1], node.name, sh[2]), node)
                 return
             }
+            currentFieldCopies = copies
+            for (String f : copies) if (currentBooleanLocals.contains(f)) currentBooleanLocals.add('this$' + f)   // Phase 498
 
             // Phase 240 — PAR disjointness (fork-window interference), BEFORE the Phase 118/119
             // desugaring flattens `async { … }` arms into the body: the safe-value model those
@@ -5308,6 +5317,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentEvaluator = null
             sizeAccessors = [:]
             currentClassInvariants = Collections.<Expression> emptyList()
+            currentFieldCopies = Collections.<String> emptySet()
             currentIsConstructor = false
             currentOverflowChecking = false
             currentAssertsTrusted = false
@@ -19040,7 +19050,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // checkPath when classInvs are conjoined into the goal).
         if (currentIsConstructor) return
         for (Expression inv : currentClassInvariants) {
-            Object h = enc.translate(inv)
+            // Phase 498 — a copied field's entry value is its own, `this$count`: the parameter is another value until the copy
+            Object h = currentFieldCopies.isEmpty() ? enc.translate(inv) : enc.translateUnderReceiver(inv, 'this', currentFieldCopies)
             if (h != null) {
                 s.assertExpr(h)
                 if (Reporter.EXPLAIN) s.explainNoteFact('@Invariant ' + shownText(inv), h)
@@ -22783,7 +22794,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code count >= 0} proved {@code f(int count)}'s parameter non-negative). Each entry is
      * {@code [field, 'parameter'|'local', where the field is read]}; empty when no shadowed field is read.
      */
-    static List<String[]> shadowedFieldReads(MethodNode node, Statement body) {
+    static List<String[]> shadowedFieldReads(MethodNode node, Statement body, Set<String> copiesOut = null) {
         ClassNode cn = node.declaringClass
         Set<String> fields = new HashSet<String>()
         for (ClassNode c = cn; c != null && c != ClassHelper.OBJECT_TYPE; c = c.superClass) {
@@ -22843,7 +22854,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         body?.visit(walk)
-        if (node instanceof ConstructorNode && ownCalls.isEmpty()) shadow.keySet().removeAll(constructorCopies(node, body))
+        if (!node.isStatic() && ownCalls.isEmpty()) {
+            Set<String> copies = fieldCopies(node, body)
+            shadow.keySet().removeAll(copies)
+            copiesOut?.addAll(copies)
+        }
         if (shadow.isEmpty()) return out
         // the method's own contracts: a bare name there is the parameter's, `this.f` / `old.f` the field's
         for (String kind : ['requires', 'ensures', 'modifies']) contractAstFor(node, kind)?.visit(walk)
@@ -22875,11 +22890,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * reassigned. From the copy on, field and parameter are one value, so one name for both is exact; and a
      * constructor assumes no invariant, so nothing reads the field before it. (The caller rules out a call on this,
      * whose contract could read or write the field.)
+     *
+     * <p>Phase 498 — any instance method's too, a setter's: the one thing that reads the field before the copy is the
+     * class invariant assumed at entry, which reads it as {@code this$count} ({@link #currentFieldCopies}). So the
+     * method's own {@code @Requires} may not read {@code this.count} or {@code old.count}, nor its {@code @Ensures}
+     * {@code old.count}: both are the entry value. And the parameter's type is the field's, so the two values are
+     * of one type.
      */
-    private static Set<String> constructorCopies(MethodNode node, Statement body) {
+    private static Set<String> fieldCopies(MethodNode node, Statement body) {
         Set<String> out = new LinkedHashSet<String>()
         if (!(body instanceof BlockStatement)) return out
-        Set<String> params = node.parameters*.name as Set<String>
+        Map<String, ClassNode> params = new HashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) params.put(p.name, p.type)
+        Set<String> entryReads = new HashSet<String>()
+        Expression req = contractAstFor(node, 'requires'), ens = contractAstFor(node, 'ensures')
+        if (req != null) entryReads.addAll(qualifiedNames(req, ['this', 'super', 'old']))
+        if (ens != null) entryReads.addAll(qualifiedNames(ens, ['old']))
         for (Statement st : ((BlockStatement) body).statements) {
             Expression x = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
             if (x instanceof ConstructorCallExpression && ((ConstructorCallExpression) x).specialCall) continue   // super(…) / this(…)
@@ -22889,8 +22915,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!(l instanceof PropertyExpression) || !(((PropertyExpression) l).objectExpression instanceof VariableExpression) ||
                     ((VariableExpression) ((PropertyExpression) l).objectExpression).name != 'this' ||
                     !(r instanceof VariableExpression) || ((VariableExpression) r).name != ((PropertyExpression) l).propertyAsString ||
-                    !params.contains(((VariableExpression) r).name)) break
-            out.add(((VariableExpression) r).name)
+                    !params.containsKey(((VariableExpression) r).name)) break
+            String f = ((VariableExpression) r).name
+            FieldNode fn = null
+            for (ClassNode c = node.declaringClass; c != null && fn == null; c = c.superClass) fn = c.getDeclaredField(f)
+            if (fn == null || fn.type.redirect() != params.get(f).redirect() || entryReads.contains(f)) break
+            out.add(f)
         }
         if (out.isEmpty()) return out
         Map<String, Integer> thisUses = new HashMap<String, Integer>()
@@ -22919,6 +22949,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         })
         out.removeIf { String f -> thisUses.get(f) != 1 || reassigned.contains(f) }
+        out
+    }
+
+    /** Phase 498 — the properties a contract reads on one of {@code receivers} ({@code this.f}, {@code old.f}). */
+    private static Set<String> qualifiedNames(Expression e, List<String> receivers) {
+        Set<String> out = new HashSet<String>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name in receivers && pe.propertyAsString != null) {
+                    out.add(pe.propertyAsString)
+                }
+                super.visitPropertyExpression(pe)
+            }
+        })
         out
     }
 

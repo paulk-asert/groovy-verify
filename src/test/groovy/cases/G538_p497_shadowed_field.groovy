@@ -73,7 +73,8 @@ class G538_p497_shadowed_field {
                         @Ensures({ result })
                         boolean f() { int count = -1; count < 0 }
                     }''')],
-        [group: "P497 shadowed fields", name: "a setter's, under the invariant", expect: ["field 'count' is shadowed by a parameter of set, and this.count uses the field"],
+        // refused until Phase 498 verified the setter idiom; refuted since, as the setter breaks the invariant
+        [group: "P497 shadowed fields", name: "a setter's, under the invariant", expect: ['Cannot prove class invariant of set'],
          src: tc('''@Invariant({ count >= 0 })
                     class A {
                         int count

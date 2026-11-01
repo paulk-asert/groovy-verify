@@ -1165,9 +1165,13 @@ class Reporter {
     private static String formatModel(Map<String, Long> ce, Set<String> booleanKeys, Map<String, String> textValues) {
         if (!ce && !textValues) return "(solver gave no values)"
         ((ce ?: [:]).entrySet()
-          .collect { "${it.key} = ${booleanKeys?.contains(it.key) ? it.value != 0L : it.value}".toString() } +   // Phase 430
-         (textValues ?: [:]).collect { k, v -> "${k} = ${v}".toString() })                                       // Phase 440
+          .collect { "${shownKey(it.key)} = ${booleanKeys?.contains(it.key) ? it.value != 0L : it.value}".toString() } +   // Phase 430
+         (textValues ?: [:]).collect { k, v -> "${shownKey(k)} = ${v}".toString() })                                       // Phase 440
           .sort()
           .join(", ")
     }
+
+    /** Phase 498 — a field's entry value its shadowing parameter's copy overwrites ({@code this$count}) as the source
+     *  spells the field, {@code this.count}. */
+    private static String shownKey(String key) { key.startsWith('this$') ? 'this.' + key.substring(5) : key }
 }
