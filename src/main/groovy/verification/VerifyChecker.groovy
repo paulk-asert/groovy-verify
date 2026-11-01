@@ -3483,6 +3483,48 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /**
+     * Phase 503 — a write the model doesn't take, into a receiver's field its class invariant reads: a mutating call on
+     * it ({@code b.xs.clear()}, {@code b.m.put(k, v)}), a {@code <<}, an element store. Phase 501 models a direct write
+     * to a receiver's list, and the receiver owes its invariant at the exit; any other such write owed nothing, so a
+     * write that broke the invariant compiled cleanly — the receiver handed to a call, a list of strings, a map, an
+     * alias, a loop. Loud now: once per receiver's field, saying why when it can.
+     */
+    private void reportUncheckedInvariantWrites(MethodNode node, Statement body) {
+        if (body == null || currentObjectParams.isEmpty()) return
+        Map<String, ClassNode> modelled = receiverListsOf(node)
+        Set<String> reported = new HashSet<String>()
+        Closure check = { Expression target, Expression at ->
+            if (!(target instanceof PropertyExpression) || !(((PropertyExpression) target).objectExpression instanceof VariableExpression)) return
+            String v = ((VariableExpression) ((PropertyExpression) target).objectExpression).name
+            String f = ((PropertyExpression) target).propertyAsString
+            String owner = currentObjectParams.containsKey(v) ? v : currentObjectAliases.get(v)
+            if (f == null || owner == null || modelled.containsKey(owner + '$' + f)) return   // Phase 501's: owed at the exit
+            ClassNode t = currentObjectParams.get(owner)
+            if (!classInvariantTexts(t).any { Expression inv -> contractNames(inv).contains(f) }) return
+            if (!reported.add(owner + '$' + f)) return
+            String handed = callHandedParam(node, owner)
+            String why = handed != null ? "'${owner}' is also handed to '${handed}'".toString() :
+                "the verifier doesn't model '${v}.${f}' in ${node.name}".toString()
+            addStaticTypeError(Reporter.formatInvariantUnchecked(t.nameWithoutPackage, owner, asSpelled(at), why), at)
+        }
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (mce.methodAsString in LOOP_MUTATORS) check(mce.objectExpression, mce)
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.LEFT_SHIFT) check(be.leftExpression, be)
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && !(be instanceof DeclarationExpression) &&
+                        be.leftExpression instanceof BinaryExpression &&
+                        ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                    check(((BinaryExpression) be.leftExpression).leftExpression, be)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+    }
+
     /** Phase 433 — the names that are object parameter {@code obj}: itself and its local aliases. */
     private Set<String> namesOfParam(String obj) {
         Set<String> names = new HashSet<String>([obj])
@@ -3501,16 +3543,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Closure<Boolean> inArgs = { Expression args ->
             args instanceof TupleExpression && ((TupleExpression) args).expressions.any { named(it) } }
         body.visit(new CodeVisitorSupport() {
+            // Phase 503 — as written (`h(b)`, not the resolved `Client.h(b)` / `this.println(c)`)
             @Override void visitMethodCallExpression(MethodCallExpression mce) {
-                if (found == null && (named(mce.objectExpression) || inArgs(mce.arguments))) found = clip(mce.text)
+                if (found == null && (named(mce.objectExpression) || inArgs(mce.arguments))) found = clip(asSpelled(mce))
                 super.visitMethodCallExpression(mce)
             }
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
-                if (found == null && inArgs(sce.arguments)) found = clip(sce.text)
+                if (found == null && inArgs(sce.arguments)) found = clip(asSpelled(sce))
                 super.visitStaticMethodCallExpression(sce)
             }
             @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {
-                if (found == null && inArgs(cce.arguments)) found = clip(cce.text)
+                if (found == null && inArgs(cce.arguments)) found = clip(asSpelled(cce))
                 super.visitConstructorCallExpression(cce)
             }
         })
@@ -5344,6 +5387,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
             currentFieldCopies = copies
+            loudPass(node, node.name, 'the receiver-invariant check') { reportUncheckedInvariantWrites(node, body) }   // Phase 503
             for (String f : copies) if (currentBooleanLocals.contains(f)) currentBooleanLocals.add('this$' + f)   // Phase 498
 
             // Phase 240 — PAR disjointness (fork-window interference), BEFORE the Phase 118/119

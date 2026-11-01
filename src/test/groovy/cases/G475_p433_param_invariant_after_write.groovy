@@ -94,7 +94,7 @@ class G475_p433_param_invariant_after_write {
                     final class C { int n }''')],
 
         [group: "P433 a written parameter owes its invariant", name: "a call handed the parameter is declined",
-         expect: "field write 'c.n = 1' is outside fragment — 'C' declares an @Invariant, which the call 'this.println(c)' would assume of 'c' while the write may have broken it",
+         expect: "field write 'c.n = 1' is outside fragment — 'C' declares an @Invariant, which the call 'println(c)' would assume of 'c' while the write may have broken it",
          src: tc('''class A {
                         @Requires({ c != null })
                         static void cl(C c) { c.n = 1; println(c) }

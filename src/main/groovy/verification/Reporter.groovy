@@ -1108,6 +1108,12 @@ class Reporter {
         "spike's supported fragment, so the inductive hypothesis at this recursive call is not justified."
     }
 
+    /** Phase 503 — a write the model doesn't take into a receiver's field its class invariant reads. */
+    static String formatInvariantUnchecked(String cls, String recv, String write, String why) {
+        "Skipped the class invariant check of ${cls} for '${recv}' after '${write}' (${why}). The write may break the " +
+        "invariant, and nothing proves it holds: the method proceeds unchecked."
+    }
+
     /** Phase 497 — a method whose checks read a field a parameter or local of the same name shadows. */
     static String formatShadowedField(String field, String shadower, String methodName, String where) {
         "Skipped verification of ${methodName}: field '${field}' is shadowed by a ${shadower} of ${methodName}, and ${where} " +

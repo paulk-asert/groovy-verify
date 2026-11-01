@@ -20708,7 +20708,7 @@ writes do: `b` joins `writtenObjectParams`. `writesThroughInvariantParam` counts
 - so does a receiver handed to a call. That covers a callee whose frame is empty (`@Modifies({ [] })`): it assumes
   the invariant the write may have broken, so `b.xs.clear(); h(b); b.xs.add(1)` would prove what `h` promises of
   a non-empty list. But when the receiver is handed on, a write that breaks its invariant is silent, as at the
-  parent: the lists aren't modelled, so nothing is owed;
+  parent: the lists aren't modelled, so nothing is owed (loud since Phase 503);
 - an unmodelled receiver list's obligations are silent, as before Phase 500: `b.xs.get(1)` after
   `Integer r = b.xs.pop()` reports nothing. Phase 408 made the array analogue loud (and Phase 502 the list's).
 
@@ -20767,6 +20767,52 @@ Mutation-checked, all 7 killed:
 - no literal rule (1), every literal read decided (1);
 - any call reported (1), any receiver type reported (1);
 - the list shown as resolved, `C.g()` (2).
+
+## Phase 503 — unchecked receiver invariants  *(shipped — soundness: loud)*
+
+Phase 501 re-proves a receiver's class invariant after a direct write to its list, which the model takes. Any other
+write into a receiver's field owed nothing, so a write that broke the invariant compiled cleanly. Measured at the
+parent:
+- `b.xs.clear(); h(b)`: the receiver handed to a call, so its lists aren't modelled;
+- `b.names.add('x')`: a `List<String>`;
+- `b.m.put('a', 1)`: a map;
+- `B c = b; c.xs.clear()`: through an alias;
+- `b.xs.add(i)` in a loop;
+- `b.xs.clear()` with two parameters of the class;
+- `b.xs[0] = -1` and `b.names << 'x'`.
+
+Each was under an invariant that the write breaks.
+
+**Loud now.** `VerifyChecker.reportUncheckedInvariantWrites` finds a write into a field of an object parameter, or of
+a local alias of one, where the parameter's class invariant reads that field. The writes are a mutating call (the
+loop mutators' names: `add`, `clear`, `put`, `remove`, `set`, `pop`, …), a `<<`, or an element store. Unless Phase
+501 models the write, the method reports the check it skips, once per receiver's field: "Skipped the class
+invariant check of B for 'b' after 'b.xs.clear()' ('b' is also handed to 'h(b)')". Otherwise the reason is that the
+verifier doesn't model the field there. A write into a field the invariant doesn't read, and a read with the
+receiver handed on, aren't reported.
+
+**As written.** The call a receiver is handed to is shown from its own source columns, `h(b)`, not the resolved
+`Client.h(b)`. Phase 433's message shares the helper, so its `this.println(c)` is `println(c)` now (G475's case
+updated).
+
+**Open:**
+- a write through a call that's handed the receiver (`g(b)` adding to `b.xs`) is the callee's own write. Its
+  invariant is owed there, when the callee writes it directly; otherwise this report is the callee's;
+- an unknown mutator on a field (`b.sb.append(…)`) isn't recognised.
+
+**Shipped tests:** group `P503 unchecked receiver invariant`, 12 cases. All nine of the reporting cases compiled
+cleanly at the parent. The three that report nothing passed there too: a write the model takes, a read with the
+receiver handed on, and a field the invariant doesn't read.
+
+Mutation-checked, all 10 killed:
+- not run (9);
+- a write the model takes reported too (1);
+- any field of a class with an invariant (1);
+- no calls (7), no `<<` (1), no element stores (1);
+- reported per write, not per field (1);
+- no handing call named (1);
+- an alias's write unseen (1);
+- the handing call shown as resolved (1 in P503, and G475's in P433).
 
 ## Definition of done, per increment
 
