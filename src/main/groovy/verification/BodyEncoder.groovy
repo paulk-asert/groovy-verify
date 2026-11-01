@@ -257,6 +257,12 @@ class BodyEncoder {
         for (int i = 0; i < stmts.size(); i++) {
             Statement s = stmts.get(i)
             boolean tail = tailContext && (i == stmts.size() - 1)
+            // Phase 505 — a list written inside an expression where it may not run (`b && xs.pop() > 0`), or as a value
+            // (`boolean t = xs.add(v)`): the value's hoist took the write as certain, or not at all
+            List<MethodCallExpression> lw = Encoder.nestedListWrites(s)
+            if (!lw.isEmpty()) {
+                throw new UnsupportedConstructException("a list written inside an expression, '${lw[0].text}' (line ${s.lineNumber})")
+            }
             List<Path> next = new ArrayList<Path>()
             for (Path p : current) {
                 WalkResult r = walkOne(s, p, tail)

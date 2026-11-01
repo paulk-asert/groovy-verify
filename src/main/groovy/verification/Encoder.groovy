@@ -9479,8 +9479,69 @@ class Encoder implements TheoryApi {
     static Set<String> nestedTargets(Statement st) { nestedTargets(st, false) }
 
     /** Phase 391 — {@code literalArgs} false leaves out what a closure literal handed to the statement's own call writes
-     *  (`h({ x -> x[0] = 1 }, a)`): that is the call's to frame, by the literal it runs (Phase 390's site frame). */
+     *  (`h({ x -> x[0] = 1 }, a)`): that is the call's to frame, by the literal it runs (Phase 390's site frame).
+     *  Phase 505 — and the lists a call inside it writes ({@link #nestedListWrites}). */
     static Set<String> nestedTargets(Statement st, boolean skipLiteralArgs) {
+        Set<String> out = nestedAssignTargets(st, skipLiteralArgs)
+        for (MethodCallExpression c : nestedListWrites(st)) out.add(listWriteName(c))
+        out
+    }
+
+    /** Phase 505 — the lists written by a call inside {@code st}'s own expression that the passes don't take as the
+     *  statement's write: not a call statement's own call ({@code xs.add(v)}), nor a removal whose value the statement
+     *  keeps ({@code Integer r = xs.pop()}, {@code return xs.pop()}), each modelled. One left inside by
+     *  {@link #expandStatementRemovals} may not run ({@code b && xs.pop() > 0}), and a write used as a value
+     *  ({@code boolean t = xs.add(v)}) isn't modelled, so a replay that read the statement as its top-level binding kept
+     *  the list as it was. A list's, by a name or a receiver's field ({@code b.xs}), outside a closure. */
+    static List<MethodCallExpression> nestedListWrites(Statement st) {
+        Expression e = ownExpressions(st).isEmpty() ? null : ownExpressions(st).get(0)
+        if (e == null) return Collections.<MethodCallExpression> emptyList()
+        Expression top = null
+        if (st instanceof ExpressionStatement) {
+            top = e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN ?
+                bareRemoval(((BinaryExpression) e).rightExpression) : e
+        } else if (st instanceof ReturnStatement) {
+            top = bareRemoval(e)
+        }
+        List<MethodCallExpression> out = new ArrayList<MethodCallExpression>()
+        Expression t = top
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+            @Override void visitMethodCallExpression(MethodCallExpression c) {
+                if (!c.is(t) && c.methodAsString in LIST_WRITERS && listWriteName(c) != null) out.add(c)
+                super.visitMethodCallExpression(c)
+            }
+        })
+        out
+    }
+
+    /** Phase 505 — the GDK and JDK calls that write the list they're called on */
+    private static final Set<String> LIST_WRITERS = ['add', 'addAll', 'addFirst', 'addLast', 'clear', 'leftShift', 'pop',
+        'push', 'putAt', 'remove', 'removeAll', 'removeAt', 'removeFirst', 'removeIf', 'removeLast', 'replaceAll',
+        'retainAll', 'set', 'shuffle', 'sort', 'swap', 'unique'] as Set<String>
+
+    /** Phase 505 — the list {@code c} is called on, as the passes name it ({@code xs}, a receiver's {@code b$xs}); null
+     *  when that isn't a list read by a name or a receiver's field */
+    private static String listWriteName(MethodCallExpression c) {
+        Expression r = c.objectExpression
+        String n = r instanceof VariableExpression ? ((VariableExpression) r).name :
+            r instanceof PropertyExpression && ((PropertyExpression) r).objectExpression instanceof VariableExpression &&
+                ((PropertyExpression) r).propertyAsString != null ?
+                ((VariableExpression) ((PropertyExpression) r).objectExpression).name + '$' + ((PropertyExpression) r).propertyAsString : null
+        if (n == null || n == 'this') return null
+        ClassNode rt = listReceiverType(r)
+        rt != null && !rt.isArray() && isSequenceType(rt) ? n : null
+    }
+
+    /** Phase 505 — {@code e} when it is a removal, under any casts; else null */
+    private static Expression bareRemoval(Expression e) {
+        Expression x = e
+        while (x instanceof CastExpression) x = ((CastExpression) x).expression
+        isRemovalCall(x) ? x : null
+    }
+
+    /** Phase 373's assignments and increments inside {@code st}, and what a closure literal in it writes */
+    private static Set<String> nestedAssignTargets(Statement st, boolean skipLiteralArgs) {
         Set<String> out = new LinkedHashSet<String>()
         Expression top = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
         Set<ClosureExpression> skipped = Collections.newSetFromMap(new IdentityHashMap<ClosureExpression, Boolean>())
@@ -9534,12 +9595,319 @@ class Encoder implements TheoryApi {
      */
     static List<Statement> expandIncDecStatements(List<Statement> stmts) {
         List<Statement> out = new ArrayList<Statement>(stmts.size())
-        for (Statement st : stmts) {
-            List<Statement> exp = expandStatementIncDec(st)
-            if (exp != null) out.addAll(exp) else out.add(st)
+        for (Statement st0 : stmts) {
+            List<Statement> lowered = expandStatementRemovals(st0)   // Phase 505
+            for (Statement st : (lowered ?: [st0])) {
+                List<Statement> exp = expandStatementIncDec(st)
+                if (exp != null) out.addAll(exp) else out.add(st)
+            }
         }
         out
     }
+
+    /**
+     * Phase 505 — a removal inside a statement's expression ({@code xs.pop() + xs.get(0)}, {@code g(xs.pop())},
+     * {@code if (xs.pop() > 0)}) as a declaration of its value before the statement, where it runs. The passes take a
+     * kept removal's value and write (Phase 504) only at the top of a statement: inside one, the write was dropped, so
+     * a read after it, in the statement or after it, saw the list as it was. A part evaluated before a removal is kept
+     * in a local first, as its value was ({@code xs.get(0) + xs.pop()}). Null — the statement as it was — when it has
+     * no removal inside, or one where it may not run (an operand of {@code &&}, {@code ||}, {@code ?:}, a {@code ?.}
+     * call's argument, a closure) or beside another write inside it.
+     */
+    private static List<Statement> expandStatementRemovals(Statement st) {
+        Expression own, top
+        if (st instanceof ExpressionStatement) {
+            own = ((ExpressionStatement) st).expression
+            top = own instanceof BinaryExpression && ((BinaryExpression) own).operation.type == Types.ASSIGN ?
+                bareRemoval(((BinaryExpression) own).rightExpression) : own
+        } else if (st instanceof ReturnStatement) {
+            own = ((ReturnStatement) st).expression
+            top = own == null ? null : bareRemoval(own)
+        } else if (st instanceof org.codehaus.groovy.ast.stmt.IfStatement) {
+            own = ((org.codehaus.groovy.ast.stmt.IfStatement) st).booleanExpression.expression
+            top = null
+        } else {
+            return null
+        }
+        if (own == null || !nestedRemoval(own, top) || !nestedAssignTargets(st, false).isEmpty() || anyIncDec(own) ||
+            containsCallableCall(st)) return null
+        RemovalLowering rl = new RemovalLowering(top)
+        Statement main
+        if (st instanceof ExpressionStatement && own instanceof BinaryExpression &&
+                ((BinaryExpression) own).operation.type == Types.ASSIGN) {
+            BinaryExpression be = (BinaryExpression) own
+            Expression lhs = be.leftExpression
+            Expression rhs
+            if (lhs instanceof BinaryExpression && ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                // `a[i] = v`: the list, the index, then the value
+                BinaryExpression sub = (BinaryExpression) lhs
+                List<Expression> vs = rl.sequence([sub.leftExpression, sub.rightExpression, be.rightExpression])
+                if (!vs.get(0).is(sub.leftExpression) || !vs.get(1).is(sub.rightExpression)) {
+                    BinaryExpression nsub = new BinaryExpression(vs.get(0), sub.operation, vs.get(1))
+                    nsub.setSourcePosition(sub)
+                    lhs = nsub
+                }
+                rhs = vs.get(2)
+            } else {
+                if (!(lhs instanceof VariableExpression) && !(lhs instanceof PropertyExpression)) return null
+                rhs = rl.lower(be.rightExpression)
+            }
+            if (rl.failed) return null
+            BinaryExpression nb = be instanceof DeclarationExpression ?
+                new DeclarationExpression((VariableExpression) lhs, be.operation, rhs) : new BinaryExpression(lhs, be.operation, rhs)
+            nb.setSourcePosition(be)
+            nb.copyNodeMetaData(be)
+            main = new ExpressionStatement(nb)
+        } else if (st instanceof org.codehaus.groovy.ast.stmt.IfStatement) {
+            org.codehaus.groovy.ast.stmt.IfStatement ifs = (org.codehaus.groovy.ast.stmt.IfStatement) st
+            Expression c = rl.lower(own)
+            if (rl.failed) return null
+            BooleanExpression nc = new BooleanExpression(c)
+            nc.setSourcePosition(ifs.booleanExpression)
+            main = new org.codehaus.groovy.ast.stmt.IfStatement(nc, ifs.ifBlock, ifs.elseBlock)
+        } else {
+            Expression v = rl.lower(own)
+            if (rl.failed) return null
+            main = st instanceof ReturnStatement ? new ReturnStatement(v) : new ExpressionStatement(v)
+        }
+        main.setSourcePosition(st)
+        main.copyNodeMetaData(st)
+        List<Statement> out = new ArrayList<Statement>(rl.pre)
+        out.add(main)
+        out
+    }
+
+    /** Phase 505 — a call that removes an element and returns it, as {@link #removedElementTarget} names them, on a
+     *  list it reads by a name or a property ({@code b.xs.pop()}) */
+    private static boolean isRemovalCall(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) e
+        String m = mce.methodAsString
+        List<Expression> args = argList(mce)
+        if (mce.safe || mce.spreadSafe || !(m == 'pop' || m == 'removeLast') && !(m == 'removeAt' || m == 'remove' &&
+                args.size() == 1 && staticTypeOf(args[0])?.name == 'int')) return false
+        if (args.size() != (m == 'pop' || m == 'removeLast' ? 0 : 1)) return false
+        Expression r = mce.objectExpression
+        if (!(r instanceof VariableExpression) && !(r instanceof PropertyExpression)) return false
+        ClassNode rt = listReceiverType(r)
+        rt != null && !rt.isArray() && isSequenceType(rt)
+    }
+
+    /** Phase 505 — {@code xs.add(v)} on a list, whose value is always true */
+    private static boolean isListAdd(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.safe || mce.spreadSafe || mce.methodAsString != 'add' || argList(mce).size() != 1) return false
+        Expression r = mce.objectExpression
+        if (!(r instanceof VariableExpression) && !(r instanceof PropertyExpression)) return false
+        ClassNode rt = listReceiverType(r)
+        rt != null && !rt.isArray() && isSequenceType(rt)
+    }
+
+    /** Phase 505 — the type of the list a call is made on: a receiver's field ({@code b.xs}) by its declaration, as a
+     *  contract's or an untyped body's property carries none */
+    private static ClassNode listReceiverType(Expression r) {
+        ClassNode t = staticTypeOf(r)
+        if (isSequenceType(t) || !(r instanceof PropertyExpression)) return t
+        PropertyExpression pe = (PropertyExpression) r
+        if (!(pe.objectExpression instanceof VariableExpression) || pe.propertyAsString == null) return t
+        ClassNode ot = staticTypeOf(pe.objectExpression)
+        FieldNode f = ot?.getField(pe.propertyAsString)
+        f != null ? f.type : t
+    }
+
+    /** Phase 505 — is there a removal in {@code e} other than {@code top} itself (outside a closure)? */
+    private static boolean nestedRemoval(Expression e, Expression top) {
+        boolean[] found = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+            @Override void visitMethodCallExpression(MethodCallExpression c) {
+                if (!c.is(top) && (isRemovalCall(c) || isListAdd(c))) found[0] = true
+                super.visitMethodCallExpression(c)
+            }
+        })
+        found[0]
+    }
+
+    private static final java.util.concurrent.atomic.AtomicInteger REMOVED_COUNTER =
+        new java.util.concurrent.atomic.AtomicInteger()
+
+    /** Phase 505 — an expression's removals moved out in the order they run ({@link #expandStatementRemovals}). */
+    private static final class RemovalLowering {
+        final Expression top
+        final List<Statement> pre = new ArrayList<Statement>()
+        boolean failed = false
+
+        RemovalLowering(Expression top) { this.top = top }
+
+        /** {@code e} with each removal in it a local declared in {@link #pre}; {@link #failed} when one may not run */
+        Expression lower(Expression e) {
+            if (failed || e == null || !nestedRemoval(e, null)) return e
+            if (e instanceof MethodCallExpression) {
+                MethodCallExpression mce = (MethodCallExpression) e
+                if (mce.safe || mce.spreadSafe || !(mce.arguments instanceof TupleExpression)) { failed = true; return e }
+                List<Expression> parts = new ArrayList<Expression>()
+                parts.add(mce.objectExpression)
+                parts.addAll(((TupleExpression) mce.arguments).expressions)
+                List<Expression> vs = sequence(parts)
+                MethodCallExpression c = mce
+                if ((0..<parts.size()).any { int k -> !vs.get(k).is(parts.get(k)) }) {
+                    c = new MethodCallExpression(vs.get(0), mce.method, new ArgumentListExpression(vs.subList(1, vs.size())))
+                    c.implicitThis = mce.implicitThis
+                    c.methodTarget = mce.methodTarget
+                    c.copyNodeMetaData(mce)
+                    c.setSourcePosition(mce)
+                }
+                if (mce.is(top)) return c
+                if (isListAdd(mce)) {   // `boolean t = xs.add(v)`: the add, and then its value, always true for a list
+                    Statement call = new ExpressionStatement(c)
+                    call.setSourcePosition(mce)
+                    pre.add(call)
+                    return ConstantExpression.PRIM_TRUE
+                }
+                return isRemovalCall(mce) ? hoist(c, mce) : c
+            }
+            if (e instanceof StaticMethodCallExpression) {
+                StaticMethodCallExpression sce = (StaticMethodCallExpression) e
+                if (!(sce.arguments instanceof TupleExpression)) { failed = true; return e }
+                List<Expression> parts = ((TupleExpression) sce.arguments).expressions
+                List<Expression> vs = sequence(parts)
+                StaticMethodCallExpression c = new StaticMethodCallExpression(sce.ownerType, sce.method, new ArgumentListExpression(vs))
+                c.metaMethod = sce.metaMethod
+                c.copyNodeMetaData(sce)
+                c.setSourcePosition(sce)
+                return c
+            }
+            if (e instanceof ConstructorCallExpression) {
+                ConstructorCallExpression cce = (ConstructorCallExpression) e
+                if (!(cce.arguments instanceof TupleExpression)) { failed = true; return e }
+                List<Expression> vs = sequence(((TupleExpression) cce.arguments).expressions)
+                ConstructorCallExpression c = new ConstructorCallExpression(cce.type, new ArgumentListExpression(vs))
+                c.copyNodeMetaData(cce)
+                c.setSourcePosition(cce)
+                return c
+            }
+            if (e instanceof BinaryExpression && !(e instanceof DeclarationExpression)) {
+                BinaryExpression be = (BinaryExpression) e
+                int op = be.operation.type
+                if (Types.ofType(op, Types.ASSIGNMENT_OPERATOR)) { failed = true; return e }
+                Expression l, r
+                if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+                    // the right operand runs only when the left lets it
+                    if (nestedRemoval(be.rightExpression, null)) { failed = true; return e }
+                    l = lower(be.leftExpression)
+                    r = be.rightExpression
+                } else {
+                    List<Expression> vs = sequence([be.leftExpression, be.rightExpression])
+                    l = vs.get(0); r = vs.get(1)
+                }
+                BinaryExpression b = new BinaryExpression(l, be.operation, r)
+                b.copyNodeMetaData(be)
+                b.setSourcePosition(be)
+                return b
+            }
+            if (e instanceof TernaryExpression) {
+                TernaryExpression te = (TernaryExpression) e
+                if (nestedRemoval(te.trueExpression, null) || nestedRemoval(te.falseExpression, null)) { failed = true; return e }
+                Expression c = lower(te.booleanExpression.expression)
+                BooleanExpression bc = new BooleanExpression(c)
+                bc.setSourcePosition(te.booleanExpression)
+                TernaryExpression t = e instanceof ElvisOperatorExpression ?
+                    new ElvisOperatorExpression(c, te.falseExpression) : new TernaryExpression(bc, te.trueExpression, te.falseExpression)
+                t.copyNodeMetaData(te)
+                t.setSourcePosition(te)
+                return t
+            }
+            if (e instanceof NotExpression || e instanceof BooleanExpression || e instanceof UnaryMinusExpression ||
+                    e instanceof CastExpression) {
+                Expression inner = e instanceof NotExpression ? ((NotExpression) e).expression :
+                    e instanceof BooleanExpression ? ((BooleanExpression) e).expression :
+                    e instanceof UnaryMinusExpression ? ((UnaryMinusExpression) e).expression : ((CastExpression) e).expression
+                Expression v = lower(inner)
+                Expression w = e instanceof NotExpression ? new NotExpression(v) :
+                    e instanceof BooleanExpression ? new BooleanExpression(v) :
+                    e instanceof UnaryMinusExpression ? new UnaryMinusExpression(v) :
+                    (Expression) new CastExpression(((CastExpression) e).type, v, ((CastExpression) e).ignoringAutoboxing)
+                w.copyNodeMetaData(e)
+                w.setSourcePosition(e)
+                return w
+            }
+            failed = true
+            e
+        }
+
+        /** {@code parts} lowered left to right; a value before a part that removes, read before it, is kept first */
+        List<Expression> sequence(List<Expression> parts) {
+            List<Expression> vs = new ArrayList<Expression>()
+            for (Expression part : parts) {
+                int mark = pre.size()
+                Expression v = lower(part)
+                if (pre.size() > mark) {
+                    List<Statement> kept = new ArrayList<Statement>()
+                    for (int j = 0; j < vs.size(); j++) {
+                        Expression w = vs.get(j)
+                        if (w instanceof VariableExpression || w instanceof ConstantExpression || w instanceof ClassExpression ||
+                            w instanceof PropertyExpression && ((PropertyExpression) w).objectExpression instanceof VariableExpression) continue
+                        kept.add(declare('$kept' + REMOVED_COUNTER.incrementAndGet(), w, w))
+                        vs.set(j, use((DeclarationExpression) ((ExpressionStatement) kept.last()).expression, w))
+                    }
+                    pre.addAll(mark, kept)
+                }
+                vs.add(v)
+            }
+            vs
+        }
+
+        /** the removal {@code c} (as {@code orig} was written) declared as a local of its own, and that local */
+        private Expression hoist(MethodCallExpression c, MethodCallExpression orig) {
+            Statement d = declare('$removed' + REMOVED_COUNTER.incrementAndGet(), c, orig)
+            pre.add(d)
+            use((DeclarationExpression) ((ExpressionStatement) d).expression, orig)
+        }
+
+        private static Statement declare(String name, Expression value, Expression at) {
+            ClassNode t = loweredType(at)
+            VariableExpression v = new VariableExpression(name, t)
+            v.accessedVariable = v
+            v.setSourcePosition(at)
+            DeclarationExpression de = new DeclarationExpression(v, Token.newSymbol(Types.ASSIGN, at.lineNumber, at.columnNumber), value)
+            de.setSourcePosition(at)
+            Statement s = new ExpressionStatement(de)
+            s.setSourcePosition(at)
+            s
+        }
+
+        private static Expression use(DeclarationExpression de, Expression at) {
+            VariableExpression d = (VariableExpression) de.leftExpression
+            VariableExpression v = new VariableExpression(d.name, d.originType)
+            v.accessedVariable = d
+            v.setSourcePosition(at)
+            v.putNodeMetaData(LOWERED_FROM_KEY, at)
+            v
+        }
+    }
+
+    /** Phase 505 — the type of a local {@link #expandStatementRemovals} keeps {@code e} in: as STC inferred it, else (a
+     *  body not yet checked) a list's element, read or removed ({@code b.xs.pop()}, {@code b.xs.get(0)}), or its size */
+    private static ClassNode loweredType(Expression e) {
+        ClassNode t = (ClassNode) e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
+        if (t != null) return t
+        Expression r = e instanceof MethodCallExpression ? ((MethodCallExpression) e).objectExpression :
+            e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET ?
+                ((BinaryExpression) e).leftExpression : null
+        ClassNode rt = r instanceof VariableExpression || r instanceof PropertyExpression ? listReceiverType(r) : null
+        if (rt != null && !rt.isArray() && isSequenceType(rt)) {
+            String m = e instanceof MethodCallExpression ? ((MethodCallExpression) e).methodAsString : 'getAt'
+            if (m == 'size') return ClassHelper.int_TYPE
+            if ((isRemovalCall(e) || m in ['get', 'getAt', 'first', 'head', 'last']) && rt.genericsTypes?.length == 1) {
+                return rt.genericsTypes[0].type
+            }
+        }
+        (e instanceof VariableExpression ? staticTypeOf(e) : null) ?: e.type ?: ClassHelper.OBJECT_TYPE
+    }
+
+    /** Phase 505 — on a local {@link #expandStatementRemovals} reads in place of a part of the statement: that part */
+    static final String LOWERED_FROM_KEY = 'verification.loweredFrom'
 
     private static List<Statement> expandStatementIncDec(Statement st) {
         if (!(st instanceof ExpressionStatement)) return null

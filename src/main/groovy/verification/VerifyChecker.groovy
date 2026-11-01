@@ -1974,6 +1974,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (kept.isEmpty()) return body
         Closure<Statement> strip
         strip = { Statement st ->
+            // Phase 505 — a removal inside an expression as the passes take it: a kept removal before the statement
+            List<Statement> low = Encoder.expandIncDecStatements([st] as List<Statement>)
+            if (low.size() != 1 || !low[0].is(st)) return strip(new BlockStatement(low, new VariableScope()))
             Object[] w = receiverListWriteParts(st, kept)
             if (w != null) {   // a braceless if's branch, too
                 written.add((String) w[0])

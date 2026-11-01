@@ -20849,7 +20849,7 @@ writes a receiver's list keeps its lists modelled only when that list is the onl
 
 **Open:**
 - a removal inside an expression (`xs.pop() + xs.get(0)`) still doesn't shrink the list for the obligations after it
-  in the same expression;
+  in the same expression (modelled since Phase 505);
 - a receiver's element nullity isn't tied to its precondition: `b.xs[1] == 4` doesn't make `b.xs[1]` non-null, so
   `b.xs.size() + b.xs[1]` reports a null element, with a repro the precondition rules out (as at the parent);
 - `b.xs.set(i, v)` on a receiver's list, and removals from lists of other element types, aren't modelled.
@@ -20882,6 +20882,89 @@ Mutation-checked, 21 of 22 killed:
 
 One survives: the strip keeping a write's operands for `writesNoArray`. An operand that writes, such as
 `b.xs[0] = (d.n = 5)`, doesn't translate in the replay either, so the method is refused with the operand dropped too.
+
+## Phase 505 — removals in expressions  *(shipped — soundness)*
+
+Phase 504 took a kept removal's value and write at the top of a statement (`Integer r = xs.pop()`). Inside an
+expression, the obligation passes dropped the write, so a read after it, in the same statement or after it, saw the
+list as it was. Measured at the parent:
+- **A read after a removal in the same statement.** `xs.pop() + xs.get(0)` on a one-element list compiled cleanly;
+  so did the same returned, in a declaration's value, as a call's arguments (`g(xs.pop(), xs.get(0))`), by index
+  (`xs.removeAt(1) * 2 + xs.get(1)`), and a stack's `xs.add(xs.removeLast() + xs.removeLast())`.
+- **A read after the statement.** `int r = xs.pop() + 1; xs.get(1)` and `if (xs.pop() > 0) { return xs.get(0) }`.
+- **A value read before a removal, read after it.** The postcondition path hoisted the removal and then translated
+  the rest of the expression, so `xs.get(0) + xs.pop()` read the element after the pop: on `[1, 5]` it proved
+  `result == 6` (the call returns 2), and refuted the true `result == 2`.
+- **A removal that may not run.** The hoist took `b && xs.pop() > 0` as always removing, so
+  `@Ensures({ xs.size() == 1 })` proved, for `b` false too. The obligation pass took it as never removing.
+- **A list write used as a value.** `boolean t = xs.remove((Object) 5); xs.get(1)` compiled cleanly.
+
+**Lowering.** `Encoder.expandStatementRemovals` (run with the `++`/`--` expansion, so in every pass) moves each
+removal inside a statement's expression to a declaration of its value before the statement, where it runs:
+`int r = xs.pop() + xs.get(0)` is `Integer $removed1 = xs.pop(); int r = $removed1 + xs.get(0)`. It also moves a
+removal in an if's condition, a call's arguments, an element store's index or value, and under casts, `!` and unary
+minus. A part evaluated before the removal is kept in a local first (`$kept`), as its value was read then. The
+receiver and the list itself are references and aren't kept. Each pass then takes the declaration as Phase 504's
+kept removal. A diagnostic shows the removal as written (`xs.pop() is null for a null element`).
+- **An add used as a value.** `boolean t = xs.add(v)` is the add, then `true` (a list's add always returns it).
+- **A receiver's list.** The `b.xs` of a receiver's list is typed by its field's declaration where the body carries
+  no inferred type, so `b.xs.pop() + b.xs.get(0)` is modelled too. Phase 501's write strip lowers first.
+
+**What isn't lowered is a write inside the statement.** These are left as they were:
+- a removal where it may not run (an operand of `&&` or `||` after the first, a ternary's arm, an elvis's
+  fallback, a `?.` call's arguments);
+- one beside another write inside the statement;
+- any other list write used as a value (`remove(Object)`, `addAll`, `retainAll`, `set`, `sort`, …).
+
+`Encoder.nestedListWrites` names their lists among Phase 373's nested targets, so:
+- the obligation pass leaves the method for the region pass;
+- the region pass checks the statement's own sites with the list havocked;
+- a replay refuses the statement;
+- the postcondition walk skips loudly: "a list written inside an expression, 'xs.pop()'".
+
+A call statement's own call and a kept removal at a statement's top are the statement's modelled write, not counted.
+
+**Open:**
+- a removal that may not run isn't modelled by the way it runs (EvalOrder's ways), and its own check reads the list
+  havocked: `b && xs.pop() > 0` on a two-element list reports the pop, unless the left operand guards it
+  (`!xs.isEmpty() && xs.pop() > 0` proves);
+- a list write used as a value other than `add(v)`, and a map's (`def old = m.put(k, v)`), aren't modelled;
+- a removal in a loop's condition (`while (xs.pop() > 0)`) isn't lowered.
+
+**Shipped tests:** group `P505 removals in expressions`, 30 cases. 24 fail at the parent commit, and 15 of those
+compiled cleanly where the method is wrong:
+- eight reads after a removal, in the statement or after it (above);
+- the postcondition that read a value after the removal it preceded (`result == 6`);
+- a removal under `&&`, and under a ternary's arm, read after;
+- a list's `remove(Object)` kept as a value, then a read past the end;
+- three postconditions over a removal that may not run (under `&&`, assigned and returned, and in a ternary's arm),
+  which proved.
+
+The other 9 were refuted or skipped falsely at the parent:
+- the value read before a removal;
+- a stack's two removals and a push;
+- sizes either side of a removal, a receiver's too;
+- a receiver's removal, then a read (skipped);
+- the add as a value and the list it grew (skipped), and a read after an add inside an expression (refuted);
+- the `retainAll` postcondition's skip, now named.
+
+Six pass at the parent, as guards:
+- the read after an if's condition removal, where an arm writes;
+- a removal in a loop's body;
+- a read before the removal;
+- two removals;
+- the unboxed removal's message;
+- a guarded removal under `&&`.
+
+Mutation-checked, 12 of 12 killed:
+- the lowering off (13, and 1 in Phase 494's group);
+- no value kept from before a removal (5);
+- the add as a value not lowered (3);
+- a removal under `&&` hoisted always (3), and one in a ternary's arm (1);
+- the nested list writes not among the nested targets (3), and not refused by the postcondition walk (3);
+- only `pop` among the list writers (2);
+- a receiver's field untyped (2), its strip not lowered (2), and the kept local typed `Object` (2);
+- a kept removal at a statement's top counted as a nested write (10, and 9 in Phase 504's group, 5 in Phase 494's).
 
 ## Definition of done, per increment
 
