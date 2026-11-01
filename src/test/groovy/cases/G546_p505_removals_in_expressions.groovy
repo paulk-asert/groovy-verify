@@ -24,12 +24,13 @@ import static cases.CaseDsl.*
  * and {@code xs.pop() + xs.get(0)} on a one-element list compiled cleanly. Each such removal is now a declaration of its
  * value before the statement, where it runs, and a part evaluated before it is kept first. One that may not run (under
  * {@code &&}, {@code ||} or {@code ?:}) and any other list write used as a value ({@code boolean t = xs.remove(o)}) are
- * a write inside the statement (Phase 373), and its postcondition is skipped.
+ * a write inside the statement (Phase 373), and its postcondition is skipped. (Phase 506 runs one that may not run on
+ * its way only: the cases below that read it as any list now see it removed, or not, by the way taken.)
  */
 class G546_p505_removals_in_expressions {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = "Phase 505: a removal inside an expression (`xs.pop() + xs.get(0)`, `g(xs.pop())`, `if (xs.pop() > 0)`) shrinks the list where it runs; one that may not run, or a list write used as a value, is a write inside the statement."
+    static final String DESCRIPTION = "Phase 505: a removal inside an expression (`xs.pop() + xs.get(0)`, `g(xs.pop())`, `if (xs.pop() > 0)`) shrinks the list where it runs; another list write used as a value is a write inside the statement."
 
     static String client(String method) { """final class B { List<Integer> xs }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
@@ -154,19 +155,19 @@ class G546_p505_removals_in_expressions {
                         @Requires({ xs != null && xs.size() == 2 && xs[0] != null })
                         static Integer f(List<Integer> xs, boolean b) { int t = b ? xs.pop() : 0; xs.get(1) }
                     }''')],
-        [group: "P505 removals in expressions", name: "… its postcondition, skipped", expect: ["Skipped verification of postcondition for f (a list written inside an expression, 'xs.pop()'"],
+        [group: "P505 removals in expressions", name: "… its postcondition, on the way that doesn't remove", expect: ['Cannot prove postcondition', 'fails on: f([', ', false)'],
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() == 2 && xs[0] != null })
                         @Ensures({ xs.size() == 1 })
                         static void f(List<Integer> xs, boolean b) { boolean t = b && xs.pop() > 0 }
                     }''')],
-        [group: "P505 removals in expressions", name: "… and returned", expect: ["Skipped verification of postcondition for f (a list written inside an expression, 'xs.pop()'"],
+        [group: "P505 removals in expressions", name: "… and returned", expect: ['Cannot prove postcondition', 'fails on: f([', ', false)'],
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() == 2 && xs[0] != null })
                         @Ensures({ xs.size() == 1 })
                         static boolean f(List<Integer> xs, boolean b) { return b && xs.pop() > 0 }
                     }''')],
-        [group: "P505 removals in expressions", name: "… a ternary's arm, its postcondition skipped", expect: ["Skipped verification of postcondition for f (a list written inside an expression, 'xs.pop()'"],
+        [group: "P505 removals in expressions", name: "… a ternary's arm, its postcondition", expect: ['Cannot prove postcondition', 'fails on: f([', ', false)'],
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() == 2 && xs[0] != null })
                         @Ensures({ result == 1 })

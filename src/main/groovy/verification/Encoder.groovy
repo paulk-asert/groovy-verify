@@ -9490,8 +9490,8 @@ class Encoder implements TheoryApi {
     /** Phase 505 — the lists written by a call inside {@code st}'s own expression that the passes don't take as the
      *  statement's write: not a call statement's own call ({@code xs.add(v)}), nor a removal whose value the statement
      *  keeps ({@code Integer r = xs.pop()}, {@code return xs.pop()}), each modelled. One left inside by
-     *  {@link #expandStatementRemovals} may not run ({@code b && xs.pop() > 0}), and a write used as a value
-     *  ({@code boolean t = xs.add(v)}) isn't modelled, so a replay that read the statement as its top-level binding kept
+     *  {@link #expandStatementRemovals} isn't lowered, and a write used as a value
+     *  ({@code boolean t = xs.remove(o)}) isn't modelled, so a replay that read the statement as its top-level binding kept
      *  the list as it was. A list's, by a name or a receiver's field ({@code b.xs}), outside a closure. */
     static List<MethodCallExpression> nestedListWrites(Statement st) {
         Expression e = ownExpressions(st).isEmpty() ? null : ownExpressions(st).get(0)
@@ -9610,9 +9610,10 @@ class Encoder implements TheoryApi {
      * {@code if (xs.pop() > 0)}) as a declaration of its value before the statement, where it runs. The passes take a
      * kept removal's value and write (Phase 504) only at the top of a statement: inside one, the write was dropped, so
      * a read after it, in the statement or after it, saw the list as it was. A part evaluated before a removal is kept
-     * in a local first, as its value was ({@code xs.get(0) + xs.pop()}). Null — the statement as it was — when it has
-     * no removal inside, or one where it may not run (an operand of {@code &&}, {@code ||}, {@code ?:}, a {@code ?.}
-     * call's argument, a closure) or beside another write inside it.
+     * in a local first, as its value was ({@code xs.get(0) + xs.pop()}). Phase 506 — one that may not run (under
+     * {@code &&}, {@code ||}, {@code ?:} or an elvis) runs in an if, on its way only, its value a local. Null — the
+     * statement as it was — when it has no removal inside, or one not lowered (a {@code ?.} call's argument, a
+     * closure, an elvis's boxed left value not a name) or beside another write inside it.
      */
     private static List<Statement> expandStatementRemovals(Statement st) {
         Expression own, top
@@ -9793,10 +9794,9 @@ class Encoder implements TheoryApi {
                 if (Types.ofType(op, Types.ASSIGNMENT_OPERATOR)) { failed = true; return e }
                 Expression l, r
                 if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
-                    // the right operand runs only when the left lets it
-                    if (nestedRemoval(be.rightExpression, null)) { failed = true; return e }
                     l = lower(be.leftExpression)
                     r = be.rightExpression
+                    if (nestedRemoval(r, null)) return shortCircuit(be, l)   // Phase 506
                 } else {
                     List<Expression> vs = sequence([be.leftExpression, be.rightExpression])
                     l = vs.get(0); r = vs.get(1)
@@ -9808,7 +9808,10 @@ class Encoder implements TheoryApi {
             }
             if (e instanceof TernaryExpression) {
                 TernaryExpression te = (TernaryExpression) e
-                if (nestedRemoval(te.trueExpression, null) || nestedRemoval(te.falseExpression, null)) { failed = true; return e }
+                if (e instanceof ElvisOperatorExpression ? nestedRemoval(te.falseExpression, null) :
+                        nestedRemoval(te.trueExpression, null) || nestedRemoval(te.falseExpression, null)) {
+                    return arms(te)   // Phase 506
+                }
                 Expression c = lower(te.booleanExpression.expression)
                 BooleanExpression bc = new BooleanExpression(c)
                 bc.setSourcePosition(te.booleanExpression)
@@ -9834,6 +9837,133 @@ class Encoder implements TheoryApi {
             }
             failed = true
             e
+        }
+
+        /**
+         * Phase 506 — {@code l && r} (or {@code ||}) with a removal in {@code r}, which runs only when {@code l} lets it:
+         * its value a local, set by an if that runs {@code r}, its removals inside it, only then —
+         * {@code boolean $a = false; if (l) { …; if (r) $a = true }} ({@code ||}: {@code true}, {@code !l}, {@code !r}).
+         */
+        private Expression shortCircuit(BinaryExpression be, Expression l) {
+            boolean and = be.operation.type == Types.LOGICAL_AND
+            RemovalLowering inner = new RemovalLowering(null)
+            Expression r = inner.lower(be.rightExpression)
+            if (inner.failed) { failed = true; return be }
+            Statement d = declare('$cond' + REMOVED_COUNTER.incrementAndGet(), new ConstantExpression(!and, true), be,
+                ClassHelper.boolean_TYPE)
+            DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) d).expression
+            List<Statement> body = new ArrayList<Statement>(inner.pre)
+            body.add(when(and ? r : new NotExpression(r), assign(de, new ConstantExpression(and, true), be), be.rightExpression))
+            pre.add(d)
+            pre.add(when(and ? l : new NotExpression(l), block(body), be.leftExpression))
+            use(de, be)
+        }
+
+        /**
+         * Phase 506 — a ternary ({@code c ? t : f}) with a removal in an arm, which runs only on its way: its value a
+         * local, set in an if's arms, each arm's removals inside it — {@code T $t = <zero>; if (c) { …; $t = t } else
+         * { …; $t = f }}; an elvis ({@code a ?: f}), {@code T $t = a; if (!$t) { …; $t = f }}.
+         */
+        private Expression arms(TernaryExpression te) {
+            boolean elvis = te instanceof ElvisOperatorExpression
+            Expression c = lower(elvis ? te.trueExpression : te.booleanExpression.expression)
+            if (failed) return te
+            ClassNode t = armType(te)
+            Expression zero = elvis ? c : zeroOf(t)
+            if (zero == null) { failed = true; return te }
+            Statement d = declare('$value' + REMOVED_COUNTER.incrementAndGet(), zero, te, t)
+            DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) d).expression
+            Statement no = arm(de, te.falseExpression, te)
+            Statement yes = elvis ? null : arm(de, te.trueExpression, te)
+            if (failed) return te
+            pre.add(d)
+            if (elvis) {
+                Expression falsy = falsyOf(use(de, te), c, t, te)
+                if (falsy == null) { failed = true; return te }
+                pre.add(when(falsy, no, te.falseExpression))
+            } else {
+                org.codehaus.groovy.ast.stmt.IfStatement ifs = new org.codehaus.groovy.ast.stmt.IfStatement(boolOf(c, te.booleanExpression), yes, no)
+                ifs.setSourcePosition(te)
+                pre.add(ifs)
+            }
+            use(de, te)
+        }
+
+        /** an arm's removals, then its value kept in {@code de}'s local */
+        private Statement arm(DeclarationExpression de, Expression v, Expression at) {
+            RemovalLowering inner = new RemovalLowering(null)
+            Expression w = inner.lower(v)
+            if (inner.failed) { failed = true; return null }
+            List<Statement> body = new ArrayList<Statement>(inner.pre)
+            body.add(assign(de, w, at))
+            block(body)
+        }
+
+        /** a ternary's type: as STC inferred it, else its arms' when they agree */
+        private static ClassNode armType(TernaryExpression te) {
+            ClassNode t = (ClassNode) te.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
+            if (t != null) return t
+            ClassNode a = loweredType(te.trueExpression), b = loweredType(te.falseExpression)
+            a == b ? a : ClassHelper.OBJECT_TYPE
+        }
+
+        /** the value a local of type {@code t} starts with until an arm sets it, never read: its primitive's zero (a
+         *  boxed one's too, as a null isn't in the passes' fragment), else null; none for a primitive not listed */
+        private static Expression zeroOf(ClassNode t) {
+            ClassNode u = ClassHelper.getUnwrapper(t)
+            if (u == ClassHelper.boolean_TYPE) return new ConstantExpression(false, true)
+            if (u == ClassHelper.int_TYPE) return new ConstantExpression(0, true)
+            if (u == ClassHelper.long_TYPE) return new ConstantExpression(0L, true)
+            if (u == ClassHelper.double_TYPE) return new ConstantExpression(0.0d, true)
+            ClassHelper.isPrimitiveType(t) ? null : ConstantExpression.NULL
+        }
+
+        /** an elvis's left value {@code v} false by Groovy truth, spelt out (the passes' conditions take a boolean):
+         *  a number's zero or a boolean's false, or a boxed one's null — asked of the value it was kept from,
+         *  {@code c}, a name the passes know the nullity of; null for another type, or a boxed value not a name */
+        private static Expression falsyOf(Expression v, Expression c, ClassNode t, Expression at) {
+            ClassNode u = ClassHelper.getUnwrapper(t)
+            Expression f
+            if (u == ClassHelper.boolean_TYPE) f = new NotExpression(v)
+            else if (u == ClassHelper.int_TYPE || u == ClassHelper.long_TYPE) {
+                f = new BinaryExpression(v, Token.newSymbol(Types.COMPARE_EQUAL, at.lineNumber, at.columnNumber),
+                    new ConstantExpression(u == ClassHelper.int_TYPE ? (Object) 0 : (Object) 0L, true))
+            } else return null
+            ClassNode ct = staticTypeOf(c)
+            if (ct != null && ClassHelper.isPrimitiveType(ct)) return f
+            if (!(c instanceof VariableExpression)) return null
+            new BinaryExpression(new BinaryExpression(c, Token.newSymbol(Types.COMPARE_EQUAL, at.lineNumber, at.columnNumber),
+                ConstantExpression.NULL), Token.newSymbol(Types.LOGICAL_OR, at.lineNumber, at.columnNumber), f)
+        }
+
+        private static Statement when(Expression c, Statement then, Expression at) {
+            org.codehaus.groovy.ast.stmt.IfStatement ifs = new org.codehaus.groovy.ast.stmt.IfStatement(boolOf(c, at), then, EmptyStatement.INSTANCE)
+            ifs.setSourcePosition(at)
+            ifs
+        }
+
+        private static BooleanExpression boolOf(Expression c, Expression at) {
+            BooleanExpression b = new BooleanExpression(c)
+            b.setSourcePosition(at)
+            b
+        }
+
+        private static Statement assign(DeclarationExpression de, Expression v, Expression at) {
+            VariableExpression d = (VariableExpression) de.leftExpression
+            VariableExpression x = new VariableExpression(d.name, d.originType)
+            x.accessedVariable = d
+            x.setSourcePosition(at)
+            BinaryExpression a = new BinaryExpression(x, Token.newSymbol(Types.ASSIGN, at.lineNumber, at.columnNumber), v)
+            a.setSourcePosition(at)
+            Statement s = new ExpressionStatement(a)
+            s.setSourcePosition(at)
+            s
+        }
+
+        private static Statement block(List<Statement> body) {
+            BlockStatement b = new BlockStatement(body, new org.codehaus.groovy.ast.VariableScope())
+            if (!body.isEmpty()) b.setSourcePosition(body.get(0))
+            b
         }
 
         /** {@code parts} lowered left to right; a value before a part that removes, read before it, is kept first */
@@ -9866,7 +9996,10 @@ class Encoder implements TheoryApi {
         }
 
         private static Statement declare(String name, Expression value, Expression at) {
-            ClassNode t = loweredType(at)
+            declare(name, value, at, loweredType(at))
+        }
+
+        private static Statement declare(String name, Expression value, Expression at, ClassNode t) {
             VariableExpression v = new VariableExpression(name, t)
             v.accessedVariable = v
             v.setSourcePosition(at)

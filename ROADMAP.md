@@ -20927,7 +20927,7 @@ A call statement's own call and a kept removal at a statement's top are the stat
 **Open:**
 - a removal that may not run isn't modelled by the way it runs (EvalOrder's ways), and its own check reads the list
   havocked: `b && xs.pop() > 0` on a two-element list reports the pop, unless the left operand guards it
-  (`!xs.isEmpty() && xs.pop() > 0` proves);
+  (`!xs.isEmpty() && xs.pop() > 0` proves) *(modelled since Phase 506)*;
 - a list write used as a value other than `add(v)`, and a map's (`def old = m.put(k, v)`), aren't modelled;
 - a removal in a loop's condition (`while (xs.pop() > 0)`) isn't lowered.
 
@@ -20965,6 +20965,61 @@ Mutation-checked, 12 of 12 killed:
 - only `pop` among the list writers (2);
 - a receiver's field untyped (2), its strip not lowered (2), and the kept local typed `Object` (2);
 - a kept removal at a statement's top counted as a nested write (10, and 9 in Phase 504's group, 5 in Phase 494's).
+
+## Phase 506 — removals that may not run  *(shipped — precision)*
+
+Phase 505 left a removal that may not run inside its statement, as a write the passes don't model: the safety checks
+took the list as any list from there on, and the postcondition was skipped. Measured at the parent:
+- **A false alarm after it.** `boolean t = b && xs.pop() > 0; xs.get(0)` on a two-element list reported the read,
+  though either way an element is left; so did the same under `||`, in a ternary's arm, in an if's condition, a
+  receiver's list, and one guarded by its size (`xs.size() > 1 && xs.pop() > 0`).
+- **Its postcondition skipped.** `@Ensures({ xs.size() == (b ? 1 : 2) })` over `b && xs.pop() > 0`, a returned
+  `b || xs.pop() > 0`, a ternary's value (`xs.get(0) + (b ? xs.pop() : 0)`), and an elvis's fallback
+  (`n ?: xs.pop()`).
+
+**Lowering.** `Encoder.expandStatementRemovals`'s lowering runs a removal that may not run in an if, on its way
+only, its value a local:
+- `l && r` is `boolean $cond = false; if (l) { …r's removals…; if (r) $cond = true }`;
+- `l || r` starts `true` and runs `r` under `!l`, setting `false` under `!r`;
+- a ternary `c ? t : f` is `T $value = <zero>; if (c) { …; $value = t } else { …; $value = f }`, the zero never read
+  (a boxed type's primitive zero, as a null isn't in the postcondition fragment);
+- an elvis `a ?: f` is `T $value = a; if (<a falsy>) { …; $value = f }`, Groovy truth spelt out for a number or a
+  boolean, its null asked of `a` itself (a name the passes know the nullity of; a generated local's isn't known).
+
+Each arm's removals are lowered by Phase 505's sequencing inside it. A removal on the left of `&&` runs always and is
+hoisted as before. Not lowered (left a write inside the statement, as Phase 505): a removal in a `?.` call's
+arguments, an elvis over another type or a boxed value that isn't a name, a ternary of a primitive other than
+`boolean`, `int`, `long` or `double`.
+
+**Open:**
+- the plain elvis's Groovy truth ignores a boxed value's null (`Integer n`, `n ?: 5`): `@Ensures({ n != null ||
+  result == 5 })` is refuted on `f(null)`. Pre-existing and unrelated to removals; a false alarm, not unsound (the
+  null's value is free, so the true run is among the modelled ones);
+- a list write used as a value other than `add(v)`, a map's (`def old = m.put(k, v)`), and a removal in a loop's
+  condition, as Phase 505.
+
+**Shipped tests:** group `P506 removals that may not run`, 23 cases. 22 fail at the parent commit; none compiled
+cleanly where the method is wrong (Phase 505 made these loud):
+- 11 false alarms, the read after it or the removal itself reported (`&&`, `||`, a ternary's arm, an if's
+  condition, a size guard, and six postcondition cases whose pop was reported with the postcondition skipped);
+- two receiver cases whose index check was skipped (`'b.xs.pop()' indexes the list 'b.xs', which isn't a variable
+  … the verifier models`);
+- six real reads past the end reported with no failing call, now with one on the way that removes
+  (`fails on: f([…], true)`);
+- the unboxed arm's message (`xs.pop() is null for a null element`), behind a false alarm on the pop;
+- two postconditions refuted by the way taken, behind a false alarm on the pop.
+
+One passes at the parent, as a guard: a removal under `&&` in a loop's body, read past the end.
+
+Phase 505's three postconditions over a removal that may not run (skipped there) are now refuted on the way that
+doesn't remove (`fails on: f([…], false)`).
+
+Mutation-checked, 10 of 10 killed:
+- `&&`/`||` not lowered (15, and 2 in Phase 505's group); a ternary's or an elvis's arms not lowered (7, and 1);
+- `$cond` started at the other value (3); the left operand's `!` dropped for `||` (2); the right's (1);
+- the right operand's removals left out of its if (10, and 3);
+- the ternary's arms swapped (3, and 1); a boxed ternary started at null (3, and 1);
+- the elvis's null not asked (1), its zero test negated (1).
 
 ## Definition of done, per increment
 
