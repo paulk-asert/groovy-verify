@@ -1770,8 +1770,14 @@ class Encoder implements TheoryApi {
      * doesn't translate, so the Elvis skips before reaching here).
      */
     private Object groovyTruth(Expression operand, Object aTerm) {
-        ClassNode t = operand.getType()
-        if (isIntLikeType(t)) return session.ne(aTerm, session.intLit(0L))
+        ClassNode t = declaredTypeOf(operand)
+        if (isIntLikeType(t)) {
+            Object nonZero = session.ne(aTerm, session.intLit(0L))
+            // Phase 507 — a boxed one's null is false too: `n ?: 5` on a null `Integer n` is 5. Its int term is free
+            // there, so the bare `n != 0` refuted that (`fails on: f(null)`).
+            if (ClassHelper.isPrimitiveType(t) || !(operand instanceof VariableExpression)) return nonZero
+            return session.and([session.not(nullityOf(((VariableExpression) operand).name)), nonZero])
+        }
         if (!(operand instanceof VariableExpression)) return null      // need a name for the nullity oracle
         String name = ((VariableExpression) operand).name
         if (isStringReceiver(operand)) {
@@ -1780,6 +1786,19 @@ class Encoder implements TheoryApi {
         }
         if (isPlainObjectTruth(t)) return session.not(nullityOf(name))
         null
+    }
+
+    /** Phase 507 — {@code e}'s type, or a name's declared one where it carries none: a contract's re-parsed name is
+     *  {@code Object}, and an {@code Integer n} there was taken as a plain object, its truth non-null alone — so
+     *  {@code @Ensures({ result == (n ?: 5) })} read {@code n ?: 5} as 0 for {@code n == 0}, and proved a body that
+     *  returns 0. */
+    private ClassNode declaredTypeOf(Expression e) {
+        ClassNode t = e.getType()
+        if (!(e instanceof VariableExpression) || t != null && t.name != 'java.lang.Object') return t
+        String vn = ((VariableExpression) e).name
+        ClassNode d = scalarTypes?.get(vn)
+        if (d == null && vcMethod != null) d = vcMethod.parameters.find { Parameter p -> p.name == vn }?.type
+        d ?: t
     }
 
     private static boolean isCollectionOrMapType(ClassNode t) {
@@ -10352,7 +10371,13 @@ class Encoder implements TheoryApi {
                 if (!(e instanceof VariableExpression)) return lenPos // a literal / concat is non-null by construction
                 return session.and([session.not(nullityOf(((VariableExpression) e).name)), lenPos])
             }
-            if (session.isInt(h)) return session.ne(h, session.intLit(0L))   // integral truth: != 0
+            if (session.isInt(h)) {                                   // integral truth: != 0
+                Object nonZero = session.ne(h, session.intLit(0L))
+                // Phase 507 — and a boxed name's null is false (`!n`, `if (n)` on a null `Integer n`)
+                ClassNode dt = e instanceof VariableExpression ? declaredTypeOf(e) : null
+                if (dt == null || !isIntLikeType(dt) || ClassHelper.isPrimitiveType(dt)) return nonZero
+                return session.and([session.not(nullityOf(((VariableExpression) e).name)), nonZero])
+            }
         }
         if (e instanceof VariableExpression) {                       // a plain object reference: non-null
             String name = ((VariableExpression) e).name

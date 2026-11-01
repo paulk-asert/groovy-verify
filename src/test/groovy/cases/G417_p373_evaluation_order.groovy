@@ -180,7 +180,8 @@ class G417_p373_evaluation_order {
 
         // Before: compiled cleanly.
         [group: "P373 evaluation order", name: "a write in an elvis arm",
-         expect: ["Possible ArithmeticException: Division by zero", "fails on: f(0)"],  // Phase 374 — its exact witness
+         // Phase 374 — its exact witness; Phase 507 — f(null) or f(0), both falsy (a null Integer's truth was free)
+         expect: ["Possible ArithmeticException: Division by zero", "fails on: f("],
          src: tc('''class A {
                         static int f(Integer x) {
                             int d = 1

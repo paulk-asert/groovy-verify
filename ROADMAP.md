@@ -20994,7 +20994,8 @@ arguments, an elvis over another type or a boxed value that isn't a name, a tern
 **Open:**
 - the plain elvis's Groovy truth ignores a boxed value's null (`Integer n`, `n ?: 5`): `@Ensures({ n != null ||
   result == 5 })` is refuted on `f(null)`. Pre-existing and unrelated to removals; a false alarm, not unsound (the
-  null's value is free, so the true run is among the modelled ones);
+  null's value is free, so the true run is among the modelled ones) *(fixed in Phase 507, which found the contract
+  side unsound)*;
 - a list write used as a value other than `add(v)`, a map's (`def old = m.put(k, v)`), and a removal in a loop's
   condition, as Phase 505.
 
@@ -21020,6 +21021,42 @@ Mutation-checked, 10 of 10 killed:
 - the right operand's removals left out of its if (10, and 3);
 - the ternary's arms swapped (3, and 1); a boxed ternary started at null (3, and 1);
 - the elvis's null not asked (1), its zero test negated (1).
+
+## Phase 507 — a boxed number's truth  *(shipped — soundness)*
+
+Phase 98b's Groovy truth of an integral value was `n != 0`. Measured at the parent:
+- **A contract's elvis, unsound.** A contract is re-parsed, so its `n` carries no type (`Object`), and
+  `groovyTruth` took an `Integer n` as a plain object, its truth non-null alone. `@Ensures({ result == (n ?: 5) })`
+  read `n ?: 5` as `0` for `n == 0` (Groovy's is 5), and proved `n == null ? 5 : n`, which returns 0 for `f(0)`.
+- **A body's elvis on a boxed null.** The truth ignored the null, whose int term is free, so `n ?: 5` on a null
+  `Integer n` could be any value: `@Ensures({ n != null || result == 5 })` was refuted on `f(null)`, for an `Integer`,
+  a `Long` and a local alike, and `n as boolean` too. A false alarm (the true run is among the modelled ones).
+
+**Fix.** `Encoder.declaredTypeOf` gives a name with no type its declared one (the scalar types, else the method's
+formal), so a contract's `n` is an `Integer`. A boxed integral name's truth, in `groovyTruth` (an elvis, `as
+boolean`) and in `truthy` (`!n`, a condition), is now non-null and non-zero; a primitive's stays non-zero, and a boxed
+value not a name stays non-zero (no nullity to ask).
+
+**Open:** a boxed value that isn't a name (`xs.get(0) ?: 5`, `m.get(k) ?: 0`) keeps the non-zero truth alone, so its
+null case is free (a false alarm, as the body's elvis was).
+
+**Shipped tests:** group `P507 elvis on a boxed null`, 14 cases. 10 fail at the parent commit:
+- one compiled cleanly where the method is wrong: the contract's `n ?: 5` against a body returning 0 for `f(0)`;
+- six false alarms on `f(null)`: an elvis on a null `Integer`, its value either way, a `Long`'s, a local's,
+  `n as boolean`, and a contract's elvis against the body that matches it;
+- three refutations without their failing call: an elvis's null not kept and a contract's (none was given, now
+  `f(null)`), and an elvis's zero not kept (`f(null)` was given, which runs correctly; now `f(0)`).
+
+Four pass at the parent, as guards: a contract's `!n`, a boxed null as boolean refuted, an `int`'s elvis by its
+zero, and an elvis's value divided by.
+
+Phase 373's "a write in an elvis arm" (`x ?: (d = 0)` then `100.intdiv(d)`) now finds `f(null)` as readily as `f(0)`,
+both failing; its expectation names the call only (`fails on: f(`).
+
+Mutation-checked, 4 of 4 killed:
+- the elvis's boxed null dropped (9);
+- a contract's name not given its declared type (3), or not from the method's formal (4);
+- `truthy`'s boxed null dropped (1).
 
 ## Definition of done, per increment
 
