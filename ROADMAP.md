@@ -20851,7 +20851,7 @@ writes a receiver's list keeps its lists modelled only when that list is the onl
 - a removal inside an expression (`xs.pop() + xs.get(0)`) still doesn't shrink the list for the obligations after it
   in the same expression (modelled since Phase 505);
 - a receiver's element nullity isn't tied to its precondition: `b.xs[1] == 4` doesn't make `b.xs[1]` non-null, so
-  `b.xs.size() + b.xs[1]` reports a null element, with a repro the precondition rules out (as at the parent);
+  `b.xs.size() + b.xs[1]` reports a null element, with a repro the precondition rules out (as at the parent) *(fixed in Phase 508)*;
 - `b.xs.set(i, v)` on a receiver's list, and removals from lists of other element types, aren't modelled.
 
 **Shipped tests:** group `P504 receiver list values`, 29 cases. 26 fail at the parent commit, and 11 of those
@@ -21057,6 +21057,53 @@ Mutation-checked, 4 of 4 killed:
 - the elvis's boxed null dropped (9);
 - a contract's name not given its declared type (3), or not from the method's formal (4);
 - `truthy`'s boxed null dropped (1).
+
+## Phase 508 — a receiver's element nullity  *(shipped — soundness and precision)*
+
+Phase 504's open item: a receiver's list element compared in the precondition kept a free null flag. Measured at
+the parent:
+- **A false alarm, with a repro the precondition rules out.** `@Requires({ … b.xs[1] == 4 })` and `b.xs.size() +
+  b.xs[1]` reported a null element, `fails on: f(new B(xs: [null, null]))`; so did `b.xs.get(1) == 4`,
+  `4 == b.xs[1]`, `b.xs[1] > 3`, the same with a postcondition, and after a write to the list.
+- **A call on a receiver's element, silent.** `b.xs[0].intValue()` on an `Integer` receiver list had no null
+  obligation, and compiled cleanly for `f(new B(xs: [null, null]))`.
+- **A call on an element of a list not modelled, silent.** `s.ns[0].length()` on a receiver's `List<String>` (Phase
+  504 models integral element lists only) and `g()[0].length()` compiled cleanly; `s.ns.get(0).length()` said only
+  that its index wasn't checked.
+
+**Fix.**
+- `Encoder.elementReadNullity`, which a comparison reads its operands' nullity from (Phases 486–492: a null equals
+  only a null and is below every number), takes a receiver's list as its named list (`b.xs` → `b$xs`, Phase 500), as
+  a parameter's: `b.xs[1] == 4` and `b.xs[1] > 3` make it non-null, `!= 4` and `< 3` don't.
+- A call on a receiver's element (`b.xs[0].intValue()`) is Phase 37's element dereference on the named list, its
+  obligation spelt as written (`b.xs[0] != null`).
+- A call on an element of any other list that isn't a name (`s.ns[0]`, `s.ns.get(0)`, `g()[0]`) is skipped loudly:
+  "Skipped element dereference … the nullity of 's.ns[0]' isn't modelled: it's an element of the list 's.ns', which
+  isn't a variable or field the verifier models". A safe call (`s.ns[0]?.length()`) is harmless and says nothing.
+
+Phase 487's own route for an element equal to a literal (`boxedElementFormal`) still takes a parameter's or a
+field's list only: naming a receiver's there too changed nothing measured (each route alone killed no case), so it
+was left as it was.
+
+**Open:**
+- a call on an element of a literal list (`['ab', null][1].length()`) has no obligation still, and says nothing;
+- `!xs.contains(null)` in a precondition isn't modelled, for a parameter's list or a receiver's;
+- a receiver's `List<String>` (any non-integral element type) isn't modelled (Phase 504).
+
+**Shipped tests:** group `P508 receiver element nullity`, 16 cases. 10 fail at the parent commit:
+- three compiled cleanly where a call can throw: `b.xs[0].intValue()`, `s.ns[0].length()`, `g()[0].length()`;
+- six false alarms: an element equal to a number (by subscript, by `get`, the number first), above one, with its
+  postcondition, and after a write;
+- `s.ns.get(0).length()`, whose element dereference went unsaid.
+
+Six pass at the parent, as guards: an element not equal to a number, below one, another element compared (whose
+repro at the parent, `[null, null]`, broke the precondition; now `[4, null]`), the element call under `b.xs[0] == 4`,
+a safe call, and an element stated non-null.
+
+Mutation-checked, 5 of 5 killed:
+- the comparison's operand not named as a receiver's list (7);
+- a receiver's element call without its obligation (2), its obligation spelt `b$xs[0]` (1);
+- the loud skip off (3), and made for a safe call too (1).
 
 ## Definition of done, per increment
 

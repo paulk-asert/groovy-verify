@@ -1753,6 +1753,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         col.specSite = { Expression call -> specThrowSiteFor(call) }
         col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
         col.unmodelledListIndex = { MethodCallExpression mce -> reportUnmodelledListIndex(mce) }   // Phase 502
+        col.unmodelledElementCall = { MethodCallExpression mce -> reportUnmodelledElementCall(mce) }   // Phase 508
         col.harmlessSafeCalls = harmlessSafeCalls(currentMethod)   // Phase 422
         col.unboxedReads = unboxedReads(currentMethod)   // Phase 486
         col.receiverLists = receiverListsOf(currentMethod)   // Phase 500
@@ -2129,6 +2130,44 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 502 — a list index call whose list isn't a name the verifier models (`b.xs` of a receiver it doesn't
      *  model, `f()`, `xss[0]`): no obligation was made for it, and nothing said so. Loud now, as Phase 408's array. */
+    /** Phase 508 — the list {@code e} reads an element of ({@code s.ns[0]}, {@code f().get(i)}) when that list isn't a
+     *  name (a parameter's, a local's or a field's elements are Phase 37's) nor a literal; else null */
+    static Expression unmodelledElementOf(Expression e) {
+        Expression list = e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET ?
+            ((BinaryExpression) e).leftExpression :
+            e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'get' &&
+                !((MethodCallExpression) e).safe && collectArgumentExpressions((MethodCallExpression) e)?.size() == 1 ?
+                ((MethodCallExpression) e).objectExpression : null
+        list != null && !(list instanceof VariableExpression) && !(list instanceof ListExpression) &&
+            isListType(staticListType(list)) ? list : null
+    }
+
+    /** Phase 508 — a call on an element of a list the verifier doesn't model (`s.ns[0].length()` on a receiver's
+     *  {@code List<String>}): it had no null obligation, and nothing said so. Loud now, as Phase 502's index. */
+    private void reportUnmodelledElementCall(MethodCallExpression mce) {
+        if (reportedIndexSkips.contains(mce)) return
+        if (heldErrors == null) reportedIndexSkips.add(mce)
+        // as spelled: the whole call's text, cut (a part's own columns aren't its own, as Phase 502 found)
+        String call = asSpelled(mce)
+        int dot = call.lastIndexOf('.' + mce.methodAsString + '(')
+        String read = dot > 0 ? call.substring(0, dot) : asWritten(mce.objectExpression)
+        int open = -1
+        if (read.endsWith(']')) {
+            int depth = 0
+            for (int k = read.length() - 1; k >= 0 && open < 0; k--) {
+                char ch = read.charAt(k)
+                if (ch == (char) ']') depth++
+                else if (ch == (char) '[' && --depth == 0) open = k
+            }
+        } else {
+            open = read.lastIndexOf('.get(')
+        }
+        String list = open > 0 ? read.substring(0, open) : asWritten(unmodelledElementOf(mce.objectExpression))
+        addStaticTypeError(Reporter.formatImplicitSkipped('element dereference',
+            "the nullity of '${clip(read)}' isn't modelled: it's an element of the list " +
+            "'${clip(list)}', which isn't a variable or field the verifier models"), mce)
+    }
+
     private void reportUnmodelledListIndex(MethodCallExpression mce) {
         if (reportedIndexSkips.contains(mce)) return
         if (heldErrors == null) reportedIndexSkips.add(mce)
@@ -8012,11 +8051,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object flag = s.select(enc.elementNullityFor(df.receiver), idx)
                 s.assertExpr(s.eq(flag, s.intLit(1L)))   // negation of (flag == 0, i.e. non-null)
                 CheckResult r = shown(s.check())
+                // Phase 508 — a receiver list as the source spells it, `b.xs`
+                String listShown = receiverListsOf(currentMethod).containsKey(df.receiver) ? shownLocation(df.receiver) : df.receiver
                 if (r.status != CheckResult.Status.VERIFIED) {
                     addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
-                        "${df.receiver}[${asWritten(df.indexExpr)}]", df.method, r), r, 'NullPointerException'), df), df.node)
+                        "${listShown}[${asWritten(df.indexExpr)}]", df.method, r), r, 'NullPointerException'), df), df.node)
                 }
-                explainIfVerified(s, r, "${df.receiver}[${asWritten(df.indexExpr)}] != null")
+                explainIfVerified(s, r, "${listShown}[${asWritten(df.indexExpr)}] != null")
                 return
             }
             // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
@@ -12902,6 +12943,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Closure<Object> unmodelledIndex = null
         /** Phase 502 — told of a list's throwing index call the collector makes no obligation for (null: not told). */
         Closure<Object> unmodelledListIndex = null
+        /** Phase 508 — a call on an element of a list that isn't a name the verifier models ({@link #unmodelledElementOf}) */
+        Closure<Object> unmodelledElementCall = null
         /** Phase 413 — the named array a receiver's array field reads as (`h.arr` → `h$arr`), or null (null: none). */
         Closure<String> receiverArray = null
         /** Phase 500 — the method's named receiver lists ({@code b$xs}, read as {@code b.xs}): their sites */
@@ -13305,11 +13348,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } else if (!mce.implicitThis) {
                 // Phase 37 — xs[i].method() and xs.get(i).method() shapes. The dereference target
                 // is the element value at idx, with the per-element nullity oracle as the obligation.
-                Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(recv)
+                // Phase 508 — a receiver's list's too (`s.ns[0].length()`, the list `s$ns`): it had no obligation, silently
+                Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(recv) ?: receiverListAccess(recv, receiverLists)
                 if (ind != null) {
                     derefSites.add(new DerefSite(
                         node: mce, receiver: ind.containerName,
                         method: mce.methodAsString, indexExpr: ind.indexExpr))
+                } else if (unmodelledElementCall != null && !mce.safe && !mce.spreadSafe && unmodelledElementOf(recv) != null) {
+                    unmodelledElementCall.call(mce)
                 }
                 // Phase 502 — any other list (`b.xs` unmodelled, `f()`, `xss[0]`): a throwing index call on it had no
                 // obligation, and said nothing

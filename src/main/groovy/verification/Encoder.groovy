@@ -5234,7 +5234,8 @@ class Encoder implements TheoryApi {
      *  {@code xs.last()}, {@code xs.max()} or {@code xs.min()}, which is an element (or null) */
     Object elementReadNullity(Expression e) {
         String name = e instanceof VariableExpression ? quantElementOf.get(((VariableExpression) e).name) : null
-        IndexedNullTarget t = name == null ? indexedAccessTarget(e) ?: elementCallTargetHere(e) : null
+        Expression named = asNamedLists(e)   // Phase 508 — a receiver's list's (`b.xs[1] > 3`, the list `b$xs`)
+        IndexedNullTarget t = name == null ? indexedAccessTarget(named) ?: elementCallTargetHere(named) : null
         if (t != null) name = t.containerName
         if (name == null || isMapName(name) || !hasElementNullity(name) || !boxedElements(name)) return null
         t != null ? nullityOfExpr(e) : nullEnv.get(((VariableExpression) e).name)
