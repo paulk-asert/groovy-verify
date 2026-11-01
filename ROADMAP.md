@@ -20710,7 +20710,7 @@ writes do: `b` joins `writtenObjectParams`. `writesThroughInvariantParam` counts
   a non-empty list. But when the receiver is handed on, a write that breaks its invariant is silent, as at the
   parent: the lists aren't modelled, so nothing is owed;
 - an unmodelled receiver list's obligations are silent, as before Phase 500: `b.xs.get(1)` after
-  `Integer r = b.xs.pop()` reports nothing. Phase 408 made the array analogue loud.
+  `Integer r = b.xs.pop()` reports nothing. Phase 408 made the array analogue loud (and Phase 502 the list's).
 
 **Shipped tests:** group `P501 receiver list writes`, 14 cases. Eight failed at the parent commit: five proofs were
 skipped, and three compiled cleanly where the method is wrong (a `get` after a `clear`, and two writes that break
@@ -20729,6 +20729,44 @@ Two survive, each declining a shape the replay doesn't write faithfully:
   reads `Integer r = b.xs.pop()` without the write. Unmodelled, the same read has no obligation at all, so the two
   can't be told apart until the open item above is closed.
 - A loop's write kept. A loop is outside the postcondition path anyway.
+
+## Phase 502 — unmodelled list indices  *(shipped — soundness: loud)*
+
+A List call that throws for its index, or on an empty list, got its bounds obligation only on a list the verifier
+names: a parameter, a local, a field, and since Phase 500 a modelled receiver's `b.xs`. On any other list it had
+none, and said nothing. Measured at the parent, each of these compiled cleanly:
+- `b.xs.get(1)` with `b` handed to a call (Phase 501's open item);
+- `b.xs.first()` with two parameters of the class;
+- `b.names.get(3)` on a `List<String>` field;
+- `g().get(5)`, `g().pop()`, `xss[0].get(5)`;
+- `[10, 20].get(2)`;
+- and `this.xs.get(5)`, though the field is modelled.
+
+**Loud now.** As Phase 408 made an unmodelled array's index loud, the collector reports such a call as an unchecked
+list index: "Skipped list index safety check ('g().get(5)' indexes the list 'g()', which isn't a variable or field
+the verifier models)". The throwing calls are `get(i)`, `removeAt(i)`, `remove(int i)`, `set(i, v)`, `add(i, v)`,
+`first()`, `head()`, `last()`, `pop()` and `removeLast()`, the ones `synthIndexSiteFor` makes sites for. Only on a
+receiver whose static type is a List: a map's `get` and a list's `size()` aren't reported. The call is shown as
+written, from its own source columns (`g()`, not the resolved `C.g()`).
+
+**Decided instead:**
+- `this.xs.get(i)` is the field `xs`'s, checked as `xs.get(i)` is, as Phase 408 made `this.arr[i]` the field's;
+- a literal list's read in bounds by its length (`[10, 20].get(1)`, `[10, 20].first()`, `List.of(10, 20).last()`),
+  which the encoder already folds, needs no report. Past its end, it's reported.
+
+**Open:** a subscript on an unmodelled list (`g()[5]`, `b.xs[5]` unmodelled) doesn't throw past the end, as it reads
+null. Its receiver's nullity and unboxing are another matter, not taken up here.
+
+**Shipped tests:** group `P502 unmodelled list index`, 13 cases. Eight failed at the parent commit, each compiling
+cleanly where the call can throw. Without the literal rule, three existing cases would have been reported: Phase
+38's `List.of(10, 20, 30).get(0)` and Phase 39's `[10, 20, 30].first()` and `.last()`. With it they're unchanged.
+
+Mutation-checked, all 7 killed:
+- `this.xs` left to the skip (2);
+- no report (7);
+- no literal rule (1), every literal read decided (1);
+- any call reported (1), any receiver type reported (1);
+- the list shown as resolved, `C.g()` (2).
 
 ## Definition of done, per increment
 

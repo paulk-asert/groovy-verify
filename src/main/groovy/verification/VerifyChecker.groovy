@@ -1752,6 +1752,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         col.overflowChecking = currentOverflowChecking
         col.specSite = { Expression call -> specThrowSiteFor(call) }
         col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
+        col.unmodelledListIndex = { MethodCallExpression mce -> reportUnmodelledListIndex(mce) }   // Phase 502
         col.harmlessSafeCalls = harmlessSafeCalls(currentMethod)   // Phase 422
         col.unboxedReads = unboxedReads(currentMethod)   // Phase 486
         col.receiverLists = receiverListsOf(currentMethod)   // Phase 500
@@ -1971,6 +1972,64 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                t.name == 'java.lang.String')) return false
         }
         true
+    }
+
+    /** Phase 502 — a List call that throws for an index outside the list or on an empty one: {@code get(i)},
+     *  {@code removeAt(i)}, {@code remove(int i)}, {@code set(i, v)}, {@code add(i, v)}, {@code first()},
+     *  {@code head()}, {@code last()}, {@code pop()}, {@code removeLast()} (as {@code synthIndexSiteFor} makes sites for) */
+    private static boolean throwingListIndex(MethodCallExpression mce) {
+        String m = mce.methodAsString
+        List<Expression> args = collectArgumentExpressions(mce)
+        if (m == null || args == null) return false
+        if (m in ['first', 'head', 'last', 'pop', 'removeLast']) return args.isEmpty()
+        if (m in ['get', 'removeAt']) return args.size() == 1
+        if (m == 'remove') return args.size() == 1 && Encoder.staticTypeOf(args[0])?.name == 'int'
+        if (m in ['set', 'add']) return args.size() == 2
+        false
+    }
+
+    /** Phase 502 — a read of a literal list ({@code [a, b, c]}, {@code List.of(a, b, c)}) in bounds by its length:
+     *  {@code first()}/{@code head()}/{@code last()} of a non-empty one, {@code get(k)} with a constant {@code k} below it */
+    private static boolean literalInBounds(MethodCallExpression mce) {
+        Expression r = mce.objectExpression
+        List<Expression> elems = null
+        if (r instanceof ListExpression) elems = ((ListExpression) r).expressions
+        else if (r instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) r).method == 'of' &&
+                 ((StaticMethodCallExpression) r).ownerType?.name == 'java.util.List') {
+            elems = collectArgumentExpressions((StaticMethodCallExpression) r)
+        } else if (r instanceof MethodCallExpression && ((MethodCallExpression) r).methodAsString == 'of' &&
+                   ((MethodCallExpression) r).objectExpression instanceof ClassExpression &&
+                   ((ClassExpression) ((MethodCallExpression) r).objectExpression).type?.name == 'java.util.List') {
+            elems = collectArgumentExpressions((MethodCallExpression) r)
+        }
+        if (elems == null || elems.any { it instanceof SpreadExpression }) return false
+        String m = mce.methodAsString
+        if (m in ['first', 'head', 'last']) return !elems.isEmpty()
+        if (m == 'get') {
+            List<Expression> args = collectArgumentExpressions(mce)
+            Object k = args?.size() == 1 && args[0] instanceof ConstantExpression ? ((ConstantExpression) args[0]).value : null
+            return k instanceof Integer && 0 <= (int) k && (int) k < elems.size()
+        }
+        false
+    }
+
+    /** Phase 502 — a receiver's static type, STC's inferred one first */
+    private static ClassNode staticListType(Expression e) {
+        ClassNode t = (ClassNode) e.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+        t ?: e.type
+    }
+
+    /** Phase 502 — a list index call whose list isn't a name the verifier models (`b.xs` of a receiver it doesn't
+     *  model, `f()`, `xss[0]`): no obligation was made for it, and nothing said so. Loud now, as Phase 408's array. */
+    private void reportUnmodelledListIndex(MethodCallExpression mce) {
+        if (reportedIndexSkips.contains(mce)) return
+        if (heldErrors == null) reportedIndexSkips.add(mce)
+        String call = asSpelled(mce)
+        int dot = call.lastIndexOf('.' + mce.methodAsString + '(')   // the receiver's own columns aren't its own
+        String list = dot > 0 ? call.substring(0, dot) : asWritten(mce.objectExpression)
+        addStaticTypeError(Reporter.formatImplicitSkipped('list index',
+            "'${clip(call)}' indexes the list '${clip(list)}', which isn't a variable or field the " +
+            "verifier models"), mce)
     }
 
     /** Phase 408 — the index sites reported as unchecked, once each (not while a witness search holds diagnostics). */
@@ -3799,6 +3858,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } finally {
             janitor.cleanup()
         }
+    }
+
+    /** Phase 502 — {@code e} as its line spells it, from its own columns (`g().get(5)`, not the resolved `C.g().get(5)`),
+     *  when it sits on one line; else {@link #asWritten}. A call's columns are its own; its receiver's needn't be. */
+    private String asSpelled(Expression e) {
+        def su = typeCheckingVisitor.typeCheckingContext.source
+        if (su != null && e.lineNumber > 0 && e.lastLineNumber == e.lineNumber && e.columnNumber > 0) {
+            Janitor janitor = new Janitor()
+            try {
+                String line = su.getSample(e.lineNumber, 0, janitor)
+                int from = e.columnNumber - 1, to = e.lastColumnNumber - 1
+                if (line != null && from < to && to <= line.length()) return line.substring(from, to)
+            } catch (Throwable ignored) {
+            } finally {
+                janitor.cleanup()
+            }
+        }
+        asWritten(e)
     }
 
     /** Phase 481 — {@code e} from this method's body as an implicit check's obligation shows it: a string keeps its
@@ -12657,6 +12734,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Closure<SpecThrowSite> specSite = null
         /** Phase 408 — told of an array index the collector makes no obligation for (null: not told). */
         Closure<Object> unmodelledIndex = null
+        /** Phase 502 — told of a list's throwing index call the collector makes no obligation for (null: not told). */
+        Closure<Object> unmodelledListIndex = null
         /** Phase 413 — the named array a receiver's array field reads as (`h.arr` → `h$arr`), or null (null: none). */
         Closure<String> receiverArray = null
         /** Phase 500 — the method's named receiver lists ({@code b$xs}, read as {@code b.xs}): their sites */
@@ -13050,6 +13129,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // refutes uniformly whether xs is a parameter or a field.
                     synthIndexSiteFor(mce, v.name, ((FieldNode) accessed).type)
                 }
+            } else if (!mce.implicitThis && recv instanceof PropertyExpression && !((PropertyExpression) recv).safe &&
+                       ((PropertyExpression) recv).objectExpression instanceof VariableExpression &&
+                       ((VariableExpression) ((PropertyExpression) recv).objectExpression).name == 'this' &&
+                       ((PropertyExpression) recv).propertyAsString != null && isListType(staticListType(recv))) {
+                // Phase 502 — `this.xs.get(i)` is the field `xs`'s, as Phase 408 made `this.arr[i]` the field's (and as
+                // Phase 43 a field's read carries no receiver-nullity obligation)
+                synthIndexSiteFor(mce, ((PropertyExpression) recv).propertyAsString, staticListType(recv))
             } else if (!mce.implicitThis) {
                 // Phase 37 — xs[i].method() and xs.get(i).method() shapes. The dereference target
                 // is the element value at idx, with the per-element nullity oracle as the obligation.
@@ -13058,6 +13144,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     derefSites.add(new DerefSite(
                         node: mce, receiver: ind.containerName,
                         method: mce.methodAsString, indexExpr: ind.indexExpr))
+                }
+                // Phase 502 — any other list (`b.xs` unmodelled, `f()`, `xss[0]`): a throwing index call on it had no
+                // obligation, and said nothing
+                if (unmodelledListIndex != null && !(recv instanceof VariableExpression) && throwingListIndex(mce) &&
+                        isListType(staticListType(recv)) && !literalInBounds(mce)) {
+                    unmodelledListIndex.call(mce)
                 }
             }
             super.visitMethodCallExpression(mce)
