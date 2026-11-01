@@ -1107,6 +1107,13 @@ class Reporter {
         "spike's supported fragment, so the inductive hypothesis at this recursive call is not justified."
     }
 
+    /** Phase 497 — a method whose checks read a field a parameter or local of the same name shadows. */
+    static String formatShadowedField(String field, String shadower, String methodName, String where) {
+        "Skipped verification of ${methodName}: field '${field}' is shadowed by a ${shadower} of ${methodName}, and ${where} " +
+        "uses the field. A shadowed field isn't yet told apart from its shadow, so the method proceeds unchecked; " +
+        "rename the ${shadower} to have it verified."
+    }
+
     static String formatLoopSkipped(String methodName, String reason) {
         "Skipped loop verification for ${methodName} (${reason}). " +
         "The loop or its surrounding code uses a construct outside the spike's " +

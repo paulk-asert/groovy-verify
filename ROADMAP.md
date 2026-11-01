@@ -20474,7 +20474,7 @@ number type, a subscript included. So `b.xs[0]` (an Integer) read as never null,
 known value with null, `b.xs[0] != null` proved. It takes the arithmetic operators only now, as Phase 487's typed
 rule does.
 
-**Found and left open: a field a parameter or local shadows.** Inside a method, a field and a parameter of the same
+**Found and left open: a field a parameter or local shadows** (closed by refusal in Phase 497). Inside a method, a field and a parameter of the same
 name are one SMT name. So:
 - `@Invariant({ count >= 0 })` assumed at entry of `f(int count)` constrains the parameter: `count >= 0` proves.
 - A same-class callee's `@Requires({ v == 5 })` on the field is met by the caller's parameter: `if (v == 5) g()` passes.
@@ -20490,6 +20490,58 @@ Mutation-checked: the subscript taken for arithmetic (1), no scoping at all (4),
 the elements' (1). Two survive and are kept for consistency with the data they type: the type predicates' scoping
 (`isListTyped` and the rest), and Phase 492's declaration lookup declining a receiver's field. Neither is reachable
 while a receiver's collection field isn't in a body's fragment.
+
+## Phase 497 — shadowed fields  *(shipped — soundness)*
+
+Phase 496's open finding. Inside a method, a field and a parameter or local of the same name are one SMT name: the
+encoder names a field by its own name (`this.count` and a class invariant's bare `count` are both `count`), and the
+parameter by its own too. So:
+- a class invariant's `count >= 0`, assumed at entry of `f(int count)`, constrained the parameter;
+- a same-class callee's `@Requires({ v == 5 })` on the field was met by the caller's parameter `v`;
+- `this.count = 3; count` returned 3, and `@Ensures({ this.count == count })` held of any body;
+- a constructor's entry assumption that an int field is 0 (Phase 15b) pinned a same-named parameter to 0.
+
+**Refused, loudly.** Giving a shadowed field a name of its own would touch every place the checker turns `this.f`
+into `f`: the body's reads and writes, class invariants, same-class callee contracts, `old.f`, `@Modifies` and the
+frame. That's a redesign. Instead, `VerifyChecker.shadowedFieldReads` finds a field shadowed by a parameter, a
+local, a for or catch variable, or a closure parameter, and refuses the method when anything its checks read uses
+the field:
+- the body (`this.f`, `old.f`, or the bare field outside a block-scoped local);
+- its own contracts' `this.f` or `old.f`;
+- the class invariant, unless the method is static;
+- a same-class callee's `@Requires` or `@Ensures` naming the field rather than its own formal. Instance and
+  resolved static calls both count.
+
+The error says which: "field 'count' is shadowed by a parameter of f, and the class invariant uses the field". A
+method that only shadows a field, and never uses it, is checked as before.
+
+**The constructor idiom stays verified.** Seventeen corpus cases (the `@Monadic` carriers, Maybe, Option) shadow
+in `C(T v) { this.v = v }`. One name is exact there, under these conditions:
+- the constructor's leading statements copy the parameter into the field (after any `super(…)` or `this(…)`);
+- that is the body's only `this.v`, and the parameter is never reassigned;
+- the constructor makes no call on `this`, whose contract could read or write the field;
+- a constructor assumes no invariant on entry.
+
+From the copy on, field and parameter are one value. The Phase 15b default is no longer assumed for a field a
+parameter shadows. Without that, the default fact was the parameter's: `A(int count) { this.count = count }` proved
+`@Invariant({ count >= 0 })` for every `count` (the refutation it gave, `count = 0`, didn't fail at run time and
+was dropped).
+
+**Open:** a precise name for a shadowed field (`this$count`), so a setter `void set(int count) { this.count = count }`
+under an invariant verifies rather than being refused. A static method whose own `old.xs` names a parameter `xs` is
+also refused when an instance field is called `xs` too, as `old.f` can't be told apart there.
+
+**Shipped tests:** group `P497 shadowed fields`, 18 cases. Twelve failed at the parent commit, eight of them by
+compiling cleanly where the method is wrong: the class invariant, the instance and the static callee, `this.count`
+in the body and in the postcondition, the setter, the constructor without its `@Requires`, and the constructor's
+`@Ensures({ count == 0 })`. The other four got a different error there (a spurious postcondition, an invariant
+failure, a skip) and pin the refusal's shape: a local's shadow, a second write, a reassigned parameter, and a call
+in the constructor.
+
+Mutation-checked, all 13 killed: no class-invariant use (2), no callee contracts (2), no resolved static calls (1),
+a callee's own formal counted as the field (2), no `this.f` (6), no locals (1), the invariant on a static method
+(1), no constructor exemption (2), its single-use (1), its never-reassigned (1) and its no-call (1) conditions, the
+Phase 15b default kept (2), and the method's own contracts unread (1).
 
 ## Definition of done, per increment
 

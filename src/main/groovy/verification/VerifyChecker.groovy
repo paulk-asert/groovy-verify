@@ -5086,6 +5086,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Statement body = (Statement) node.getNodeMetaData(
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
+            // Phase 497 — a field a parameter or local shadows is one SMT name with it: a check that reads the field
+            // would read the shadow. Refused, loudly, until a shadowed field has a name of its own.
+            List<String[]> shadowed = shadowedFieldReads(node, body)
+            if (!shadowed.isEmpty()) {
+                for (String[] sh : shadowed) addStaticTypeError(Reporter.formatShadowedField(sh[0], sh[1], node.name, sh[2]), node)
+                return
+            }
 
             // Phase 240 — PAR disjointness (fork-window interference), BEFORE the Phase 118/119
             // desugaring flattens `async { … }` arms into the body: the safe-value model those
@@ -19016,8 +19023,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void initFieldDefaults(SmtSession s, Encoder enc, MethodNode node) {
         ClassNode dc = node?.declaringClass
         if (dc == null) return
+        // Phase 497 — not a field a parameter shadows: one name with it, its 0 was the parameter's. Phase 497's refusal
+        // leaves only the constructor idiom, which copies the parameter in before anything reads the field.
+        Set<String> params = node.parameters*.name as Set<String>
         for (FieldNode f : dc.fields) {
-            if (f.isStatic()) continue
+            if (f.isStatic() || params.contains(f.name)) continue
             if (isIntElement(f.type)) {
                 s.assertExpr(s.eq(enc.varFor(f.name), s.intLit(0L)))
             }
@@ -22767,6 +22777,168 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * re-parsed {@link Expression} the encoder can translate, mirroring the
      * round-trip {@link #contractAstFor} performs for method-level pre/postconditions.
      */
+    /**
+     * Phase 497 — a field a parameter or local of {@code node} shadows, whose value this method's checks read: the SMT
+     * name of a field is its own name, as is the parameter's, so the two were one value (a class invariant's
+     * {@code count >= 0} proved {@code f(int count)}'s parameter non-negative). Each entry is
+     * {@code [field, 'parameter'|'local', where the field is read]}; empty when no shadowed field is read.
+     */
+    static List<String[]> shadowedFieldReads(MethodNode node, Statement body) {
+        ClassNode cn = node.declaringClass
+        Set<String> fields = new HashSet<String>()
+        for (ClassNode c = cn; c != null && c != ClassHelper.OBJECT_TYPE; c = c.superClass) {
+            // a property's field is synthetic, so that isn't the filter
+            for (FieldNode f : c.fields) if (!f.name.contains('$') && f.name != 'metaClass') fields.add(f.name)
+        }
+        Map<String, String> shadow = new LinkedHashMap<String, String>()
+        for (Parameter p : node.parameters) if (fields.contains(p.name)) shadow.put(p.name, 'parameter')
+        List<String[]> out = new ArrayList<String[]>()
+        if (fields.isEmpty()) return out
+        Set<String> fieldReads = new LinkedHashSet<String>()   // a bare body name that IS the field (a block-scoped local's outside)
+        Set<String> thisReads = new LinkedHashSet<String>()
+        List<String> ownCalls = new ArrayList<String>()   // the names of the methods called on this class
+        CodeVisitorSupport walk = new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                Expression l = de.leftExpression
+                List<Expression> vs = l instanceof TupleExpression ? ((TupleExpression) l).expressions : [l]
+                for (Expression v : vs) if (v instanceof VariableExpression && fields.contains(((VariableExpression) v).name)) {
+                    shadow.putIfAbsent(((VariableExpression) v).name, 'local')
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitForLoop(ForStatement fs) {
+                if (fs.variable != null && fields.contains(fs.variable.name)) shadow.putIfAbsent(fs.variable.name, 'local')
+                super.visitForLoop(fs)
+            }
+            @Override void visitCatchStatement(CatchStatement cs) {
+                if (cs.variable != null && fields.contains(cs.variable.name)) shadow.putIfAbsent(cs.variable.name, 'local')
+                super.visitCatchStatement(cs)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                if (ce.parameters != null) for (Parameter p : ce.parameters) if (fields.contains(p.name)) shadow.putIfAbsent(p.name, 'local')
+                super.visitClosureExpression(ce)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                Variable av = ve.accessedVariable
+                if ((av instanceof FieldNode || av instanceof PropertyNode) && fields.contains(ve.name)) fieldReads.add(ve.name)
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name in ['this', 'super', 'old'] && pe.propertyAsString != null) {
+                    thisReads.add(pe.propertyAsString)
+                }
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                Expression r = mce.objectExpression
+                if (mce.implicitThis || (r instanceof VariableExpression && ((VariableExpression) r).name in ['this', 'super']) ||
+                        (r instanceof ClassExpression && ((ClassExpression) r).type?.redirect() == cn.redirect())) {
+                    if (mce.methodAsString != null) ownCalls.add(mce.methodAsString)
+                }
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression smce) {   // a static call, resolved
+                if (smce.ownerType?.redirect() == cn.redirect()) ownCalls.add(smce.method)
+                super.visitStaticMethodCallExpression(smce)
+            }
+        }
+        body?.visit(walk)
+        if (node instanceof ConstructorNode && ownCalls.isEmpty()) shadow.keySet().removeAll(constructorCopies(node, body))
+        if (shadow.isEmpty()) return out
+        // the method's own contracts: a bare name there is the parameter's, `this.f` / `old.f` the field's
+        for (String kind : ['requires', 'ensures', 'modifies']) contractAstFor(node, kind)?.visit(walk)
+        Map<String, String> where = new LinkedHashMap<String, String>()
+        for (String f : fieldReads) if (shadow.containsKey(f)) where.putIfAbsent(f, 'the body')
+        for (String f : thisReads) if (shadow.containsKey(f)) where.putIfAbsent(f, 'this.' + f)
+        if (!node.isStatic()) {
+            for (Expression inv : classInvariantTexts(cn)) {
+                for (String n : contractNames(inv)) if (shadow.containsKey(n)) where.putIfAbsent(n, 'the class invariant')
+            }
+        }
+        for (String mn : new LinkedHashSet<String>(ownCalls)) {
+            for (MethodNode callee : cn.getMethods(mn)) {
+                Set<String> formals = callee.parameters*.name as Set<String>
+                for (String kind : ['requires', 'ensures']) {
+                    Expression c = contractAstFor(callee, kind)
+                    if (c == null) continue
+                    for (String n : contractNames(c)) if (shadow.containsKey(n) && !formals.contains(n)) where.putIfAbsent(n, mn + "'s contract")
+                }
+            }
+        }
+        for (Map.Entry<String, String> w : where.entrySet()) out.add([w.key, shadow.get(w.key), w.value] as String[])
+        out
+    }
+
+    /**
+     * Phase 497 — the constructor idiom: the fields a constructor's leading statements copy their same-named parameter
+     * into ({@code this.count = count}), when that is the body's only {@code this.count} and the parameter is never
+     * reassigned. From the copy on, field and parameter are one value, so one name for both is exact; and a
+     * constructor assumes no invariant, so nothing reads the field before it. (The caller rules out a call on this,
+     * whose contract could read or write the field.)
+     */
+    private static Set<String> constructorCopies(MethodNode node, Statement body) {
+        Set<String> out = new LinkedHashSet<String>()
+        if (!(body instanceof BlockStatement)) return out
+        Set<String> params = node.parameters*.name as Set<String>
+        for (Statement st : ((BlockStatement) body).statements) {
+            Expression x = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
+            if (x instanceof ConstructorCallExpression && ((ConstructorCallExpression) x).specialCall) continue   // super(…) / this(…)
+            if (!(x instanceof BinaryExpression) || x instanceof DeclarationExpression ||
+                    ((BinaryExpression) x).operation.type != Types.ASSIGN) break
+            Expression l = ((BinaryExpression) x).leftExpression, r = ((BinaryExpression) x).rightExpression
+            if (!(l instanceof PropertyExpression) || !(((PropertyExpression) l).objectExpression instanceof VariableExpression) ||
+                    ((VariableExpression) ((PropertyExpression) l).objectExpression).name != 'this' ||
+                    !(r instanceof VariableExpression) || ((VariableExpression) r).name != ((PropertyExpression) l).propertyAsString ||
+                    !params.contains(((VariableExpression) r).name)) break
+            out.add(((VariableExpression) r).name)
+        }
+        if (out.isEmpty()) return out
+        Map<String, Integer> thisUses = new HashMap<String, Integer>()
+        Set<String> reassigned = new HashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name in ['this', 'super'] && pe.propertyAsString != null) {
+                    thisUses.merge(pe.propertyAsString, 1, Integer.&sum)
+                }
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                    reassigned.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                if (pe.expression instanceof VariableExpression) reassigned.add(((VariableExpression) pe.expression).name)
+                super.visitPostfixExpression(pe)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                if (pe.expression instanceof VariableExpression) reassigned.add(((VariableExpression) pe.expression).name)
+                super.visitPrefixExpression(pe)
+            }
+        })
+        out.removeIf { String f -> thisUses.get(f) != 1 || reassigned.contains(f) }
+        out
+    }
+
+    /** Phase 497 — the bare names, and {@code this.}/{@code old.} properties, a re-parsed contract reads. */
+    private static Set<String> contractNames(Expression e) {
+        Set<String> out = new LinkedHashSet<String>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) { out.add(ve.name) }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name in ['this', 'super', 'old'] && pe.propertyAsString != null) {
+                    out.add(pe.propertyAsString)
+                    return
+                }
+                super.visitPropertyExpression(pe)
+            }
+        })
+        out
+    }
+
     static List<Expression> classInvariantTexts(ClassNode cn) {
         List<Expression> out = new ArrayList<Expression>()
         walkClassInvariants(cn, out)
