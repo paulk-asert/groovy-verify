@@ -407,6 +407,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         made.contractedValue = { Expression call -> contractedCallValue(session, made, call) }   // Phase 401
         made.mayShare = arraySharers(currentMethod)   // Phase 404
         made.receiverArrays = receiverArraysOf(currentMethod)   // Phase 413
+        made.receiverLists = receiverListsOf(currentMethod).keySet()   // Phase 500
         MethodNode apartIn = currentMethod
         made.arraysApart = { String a, String b -> bothParameters(apartIn, a, b) }
         made
@@ -1753,6 +1754,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         col.unmodelledIndex = { BinaryExpression be -> reportUnmodelledIndex(be) }   // Phase 408
         col.harmlessSafeCalls = harmlessSafeCalls(currentMethod)   // Phase 422
         col.unboxedReads = unboxedReads(currentMethod)   // Phase 486
+        col.receiverLists = receiverListsOf(currentMethod)   // Phase 500
         Set<String> ras = receiverArraysOf(currentMethod)   // Phase 413
         if (!ras.isEmpty()) col.receiverArray = { PropertyExpression pe ->
             pe.objectExpression instanceof VariableExpression && ras.contains(
@@ -1793,6 +1795,69 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         r
     }
     private static final String RECEIVER_ARRAYS_KEY = 'verify.p413.receiverArrays'
+
+    /**
+     * Phase 500 — {@link #receiverArraysOf}'s lists: {@code b$xs} for a parameter {@code b} of a class (unshared with
+     * another parameter) whose field {@code xs} is a {@code List} of an integral box, read as the field, in a method
+     * that writes no array or list ({@link #writesNoArray}), so the list is the same from entry to exit. Its name is
+     * the one a foreign invariant assumed for {@code b} speaks of (Phase 496). Memoised per method.
+     */
+    static Map<String, ClassNode> receiverListsOf(MethodNode m) {
+        if (m == null) return Collections.<String, ClassNode> emptyMap()
+        Object memo = m.getNodeMetaData(RECEIVER_LISTS_KEY)
+        if (memo != null) return (Map<String, ClassNode>) memo
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        Map<String, Integer> byClass = new HashMap<String, Integer>()
+        for (Parameter par : m.parameters) if (par.type != null) byClass.put(par.type.name, (byClass.get(par.type.name) ?: 0) + 1)
+        for (Parameter par : m.parameters) {
+            ClassNode t = par.type
+            if (t == null || t.isArray() || !t.isPrimaryClassNode() || byClass.get(t.name) > 1) continue
+            for (ClassNode c = t; c != null && c.isPrimaryClassNode(); c = c.superClass) {
+                for (FieldNode f : c.fields) {
+                    if (f.isStatic() || !isListType(f.type) || !f.type.genericsTypes || f.type.genericsTypes.length != 1) continue
+                    ClassNode elem = f.type.genericsTypes[0].type
+                    if (elem == null || !(elem.name in RECEIVER_LIST_ELEMENTS)) continue
+                    if (propertyAccessorReason(t, f.name, false) != null) continue
+                    out.put(par.name + '$' + f.name, elem)
+                }
+            }
+        }
+        if (!out.isEmpty() && !writesNoArray(m)) out.clear()
+        Map<String, ClassNode> r = out.isEmpty() ? Collections.<String, ClassNode> emptyMap() : out
+        m.putNodeMetaData(RECEIVER_LISTS_KEY, r)
+        r
+    }
+    private static final String RECEIVER_LISTS_KEY = 'verify.p500.receiverLists'
+    private static final Set<String> RECEIVER_LIST_ELEMENTS =
+        ['java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte'] as Set<String>
+
+    /** Phase 500 — the named list ({@link #receiverListsOf}) {@code e} is, as {@code b.xs}; else null. */
+    static String receiverListName(Expression e, Map<String, ClassNode> lists) {
+        if (lists == null || lists.isEmpty() || !(e instanceof PropertyExpression) || e instanceof AttributeExpression) return null
+        PropertyExpression pe = (PropertyExpression) e
+        if (pe.safe || !(pe.objectExpression instanceof VariableExpression) || pe.propertyAsString == null) return null
+        String n = ((VariableExpression) pe.objectExpression).name + '$' + pe.propertyAsString
+        lists.containsKey(n) ? n : null
+    }
+
+    /** Phase 500 — {@code b.xs[i]} / {@code b.xs.get(i)} on a named receiver list: Encoder#indexedAccessTarget's. */
+    static Encoder.IndexedNullTarget receiverListAccess(Expression e, Map<String, ClassNode> lists) {
+        String n = null
+        Expression idx = null
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            n = receiverListName(((BinaryExpression) e).leftExpression, lists)
+            idx = ((BinaryExpression) e).rightExpression
+        } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'get' &&
+                   !((MethodCallExpression) e).safe) {
+            List<Expression> args = collectArgumentExpressions((MethodCallExpression) e)
+            if (args != null && args.size() == 1) { n = receiverListName(((MethodCallExpression) e).objectExpression, lists); idx = args.get(0) }
+        }
+        if (n == null) return null
+        Encoder.IndexedNullTarget t = new Encoder.IndexedNullTarget()
+        t.containerName = n
+        t.indexExpr = idx
+        t
+    }
     private static final Set<String> RECEIVER_ARRAY_ELEMENTS = ['int', 'long', 'short', 'byte'] as Set<String>
 
     /**
@@ -3193,7 +3258,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 int br = k.indexOf('[')
                 String base = br >= 0 ? k.substring(0, br) : k
                 if (elementArrays.contains(base)) display.put(k, v)   // param/field array element: meaningful
-                else if (receiverArraysOf(currentMethod).contains(base)) display.put(shownLocation(base) + k.substring(br), v)   // Phase 413
+                else if (receiverArraysOf(currentMethod).contains(base) || receiverListsOf(currentMethod).containsKey(base)) {
+                    display.put(shownLocation(base) + k.substring(br), v)   // Phase 413, 500
+                }
                 return                                                // local/loop element: pre-state, suppress
             }
             // Phase 121 — a trait property is woven onto the implementing class as a `<Trait>__<field>` backing
@@ -3210,6 +3277,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String recv = k.substring(0, k.length() - '.size'.length())
                 if (currentDecimalNames.contains(recv)) return
                 if (receiverArraysOf(currentMethod).contains(recv)) { display.put(shownLocation(recv) + '.length', v); return }   // Phase 413
+                if (receiverListsOf(currentMethod).containsKey(recv)) { display.put(shownLocation(recv) + '.size()', v); return }   // Phase 500
                 display.put(recv + sizeAccessor(recv), v)
             } else {
                 // Phase 369 — an object parameter's field is shown as the source spells it, `c.count` (Phase 45's
@@ -3513,6 +3581,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             shape.add("${shown}.length == ${n}".toString())
             List<Long> elems = pinnedElements(ra, n, ce)
             if (n <= MAX_PINNED_ELEMENTS) for (int k = 0; k < n; k++) elements.add("${shown}[${k}] == ${elems != null ? elems.get(k) : 0L}".toString())
+        }
+        // Phase 500 — and a modelled receiver list (`new B(xs: […])`), its null elements as null
+        for (String rl : receiverListsOf(currentMethod).keySet()) {
+            String shown = shownLocation(rl)
+            if (ce.get(rl.substring(0, rl.indexOf('$')) + '?null') == 1L) continue
+            if (ce.get(rl + '?null') == 1L) { shape.add("${shown} == null".toString()); continue }
+            if (!ce.containsKey(rl + '.size') && !ce.containsKey(rl + '?null')) continue
+            long n = sizeOf(rl, ce)
+            shape.add("${shown} != null".toString())
+            shape.add("${shown}.size() == ${n}".toString())
+            if (n > MAX_PINNED_ELEMENTS) continue
+            List<String> elems = withNullElements(rl, pinnedElements(rl, n, ce) ?: Collections.nCopies((int) n, 0L), ce)
+            for (int k = 0; k < n; k++) elements.add("${shown}[${k}] == ${elems.get(k)}".toString())
         }
     }
 
@@ -3842,6 +3923,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<Long> elems = pinnedElements(an, n, ce)
             props.add(elems != null && elems.any { it != 0L } ? "${pn.name}: [${elems.join(', ')}] as ${comp}[]".toString() :
                       "${pn.name}: new ${comp}[${n}]".toString())
+        }
+        // Phase 500 — a modelled receiver list (`b$xs`): its nullness, size and elements, a null one as null
+        for (PropertyNode pn : t.properties) {
+            if (pn.isStatic() || !isListType(pn.type)) continue
+            String ln = p.name + '$' + pn.name
+            if (ce.get(ln + '?null') == 1L) { props.add("${pn.name}: null".toString()); continue }
+            if (!ce.containsKey(ln + '.size') && !ce.containsKey(ln + '?null')) continue
+            long n = sizeOf(ln, ce)
+            if (n > MAX_REPRO_SIZE) return null
+            List<String> elems = withNullElements(ln, pinnedElements(ln, n, ce) ?: Collections.nCopies((int) n, 0L), ce)
+            props.add("${pn.name}: [${elems.join(', ')}]".toString())
         }
         "new ${t.nameWithoutPackage.replace('$', '.')}(${props.join(', ')})"
     }
@@ -4960,6 +5052,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentNonNullElementContainers = collectNonNullElementContainers(node)
         currentListNames = collectListNames(node)
         currentListElementTypes = collectListElementTypes(node)
+        receiverListsOf(node).each { String n, ClassNode t -> currentListNames.add(n); currentListElementTypes.put(n, t) }   // Phase 500
         currentScalarTypes = collectScalarTypes(node)
         currentAtomicNames = collectAtomicNames(node)
         currentIntegralNames = collectIntegralNames(node)
@@ -6468,6 +6561,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean read = Encoder.indexedAccessTarget(e) != null && !(e instanceof MethodCallExpression && ((MethodCallExpression) e).safe) ||
                 Encoder.elementCallTarget(e) != null ||   // Phase 489 — `xs.first()`, `xs.max()`
                 Encoder.removedElementTarget(e) != null ||   // Phase 493 — `xs.pop()`, `xs.removeAt(i)`
+                receiverListAccess(e, receiverListsOf(m)) != null ||   // Phase 500 — `b.xs[i]`
                 e instanceof PropertyExpression && !((PropertyExpression) e).safe && !((PropertyExpression) e).spreadSafe &&
                 ((PropertyExpression) e).objectExpression instanceof VariableExpression && ((PropertyExpression) e).propertyAsString != null
             if (boxedNumber && read) out.putIfAbsent(safeCallKey(e), [exc, how] as String[])
@@ -7458,6 +7552,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Long neg = ix.node instanceof MethodCallExpression && !ix.string ? null : Encoder.negativeConstant(ix.index)
                 String sizeText = receiverArraysOf(currentMethod).contains(ix.receiver) ?
                     shownLocation(ix.receiver) + '.length' :
+                    receiverListsOf(currentMethod).containsKey(ix.receiver) ? shownLocation(ix.receiver) + '.size()' :   // Phase 500
                     ix.stringExpr instanceof ConstantExpression ? "'${ix.receiver}'.length()".toString() :   // Phase 417
                     ix.string ? ix.receiver + sizeAccessors.getOrDefault(ix.receiver, '.length()') :   // Phase 416
                     ix.receiver + sizeAccessor(ix.receiver)   // Phase 413
@@ -7525,7 +7620,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (df.unboxed != null) {
                 boolean map = enc.isMapName(df.receiver)
                 Encoder.IndexedNullTarget ec = Encoder.elementCallTarget(df.unboxed) ?: Encoder.removedElementTarget(df.unboxed)   // Phase 489, 493
-                if (!map && !(enc.hasElementNullity(df.receiver) && (Encoder.indexedAccessTarget(df.unboxed) != null || ec != null)) ||   // not `xs.x`
+                boolean indexed = Encoder.indexedAccessTarget(df.unboxed) != null ||
+                    receiverListAccess(df.unboxed, receiverListsOf(currentMethod)) != null   // Phase 500 — `b.xs[0]`
+                if (!map && !(enc.hasElementNullity(df.receiver) && (indexed || ec != null)) ||   // not `xs.x`
                     currentNonNullElementContainers.contains(df.receiver)) return
                 Object nul = enc.nullityOfExpr(df.unboxed)
                 if (nul == null) {
@@ -7610,12 +7707,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // check: SAT means the receiver can be null on this path.
             s.assertExpr(enc.nullityOf(df.receiver))
             CheckResult r = shown(s.check())
+            // Phase 500 — a receiver list as the source spells it, `b.xs`
+            String recvShown = receiverListsOf(currentMethod).containsKey(df.receiver) ? shownLocation(df.receiver) : df.receiver
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(df.receiver, df.property, r, df.propertySet)
-                                                                     : df.safeUse ? Reporter.formatNullSafeUse(df.receiver, df.node instanceof Expression ? asWritten((Expression) df.node) : df.node.text, r)
-                                                                     : Reporter.formatNullDereference(df.receiver, df.method, r)), r, 'NullPointerException'), df), df.node)
+                addStaticTypeError(withSuggestion(withRepro((df.property != null ? Reporter.formatNullPropertyRead(recvShown, df.property, r, df.propertySet)
+                                                                     : df.safeUse ? Reporter.formatNullSafeUse(recvShown, df.node instanceof Expression ? asWritten((Expression) df.node) : df.node.text, r)
+                                                                     : Reporter.formatNullDereference(recvShown, df.method, r)), r, 'NullPointerException'), df), df.node)
             }
-            explainIfVerified(s, r, "${df.receiver} != null")
+            explainIfVerified(s, r, "${recvShown} != null")
         }
         if (site instanceof StringCharAtSite) {
             StringCharAtSite cs = (StringCharAtSite) site
@@ -12487,6 +12586,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Closure<Object> unmodelledIndex = null
         /** Phase 413 — the named array a receiver's array field reads as (`h.arr` → `h$arr`), or null (null: none). */
         Closure<String> receiverArray = null
+        /** Phase 500 — the method's named receiver lists ({@code b$xs}, read as {@code b.xs}): their sites */
+        Map<String, ClassNode> receiverLists = Collections.<String, ClassNode> emptyMap()
         /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
         final List<OverflowSite> overflowSites = []
         /** Phase 46e — collected at every {@code charAt(i)} call shape (string-typing checked at discharge). */
@@ -12511,7 +12612,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String[] at = unboxedReads?.get(safeCallKey(e))
             if (at == null) return
             Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e) ?: Encoder.elementCallTarget(e) ?:
-                Encoder.removedElementTarget(e)   // Phase 489, 493
+                Encoder.removedElementTarget(e) ?: receiverListAccess(e, receiverLists)   // Phase 489, 493, 500
             String recv = ind != null ? ind.containerName : ((VariableExpression) ((PropertyExpression) e).objectExpression).name
             Expression key = ind != null ? (ind.indexExpr ?: e) : new ConstantExpression(((PropertyExpression) e).propertyAsString)
             derefSites.add(new DerefSite(node: e, receiver: recv, indexExpr: key, unboxed: e, unboxThrows: at[0], unboxHow: at[1]))
@@ -12640,6 +12741,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     receiver: ((PropertyExpression) be.leftExpression).propertyAsString,
                     index: be.rightExpression,
                     string: isStringTyped(be.leftExpression)))   // Phase 417 — `this.s[0]` too
+            } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && receiverListName(be.leftExpression, receiverLists) != null) {
+                // Phase 500 — a named receiver list's subscript: its bounds, and its receiver's nullity
+                String rl = receiverListName(be.leftExpression, receiverLists)
+                indexSites.add(new IndexSite(node: be, receiver: rl, index: be.rightExpression, nullChecked: true))
+                derefSites.add(new DerefSite(node: be, receiver: rl, method: subscriptMethod(be)))
             } else if (be.operation.type == Types.LEFT_SQUARE_BRACKET && receiverArray != null &&
                        be.leftExpression instanceof PropertyExpression &&
                        receiverArray.call((PropertyExpression) be.leftExpression) != null) {
@@ -12829,7 +12935,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 super.visitMethodCallExpression(mce)
                 return
             }
-            if (!mce.implicitThis && recv instanceof VariableExpression) {
+            String rl = receiverListName(recv, receiverLists)
+            if (rl != null) {
+                // Phase 500 — a named receiver list's call (`b.xs.size()`, `b.xs.get(i)`): a call on a null list throws,
+                // and its index reads in bounds, as a list parameter's
+                derefSites.add(new DerefSite(node: mce, receiver: rl, method: mce.methodAsString))
+                int before = indexSites.size()
+                synthIndexSiteFor(mce, rl, ClassHelper.LIST_TYPE)
+                for (int k = before; k < indexSites.size(); k++) indexSites.get(k).nullChecked = true
+            } else if (!mce.implicitThis && recv instanceof VariableExpression) {
                 VariableExpression v = (VariableExpression) recv
                 Variable accessed = v.accessedVariable
                 // Only real value variables (parameters / locals) — never a class

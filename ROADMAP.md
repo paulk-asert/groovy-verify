@@ -20466,7 +20466,8 @@ variable. So `@Invariant({ xs != null && xs.size() > 0 })` on `B` proved `f(B b,
 `xs != null`. Now one mapping (`Encoder.scoped`) puts every oracle's name for a receiver field under the receiver
 (`b$xs`, `b$xs$nullElem`, a map's and a set's too), and the type predicates and Phase 492's declaration lookup with
 it. The body's `b.xs` is `b$xs` too (Phase 413's receiver arrays), so where both are modelled they now meet. A
-receiver's collection field isn't in the fragment in a body yet, so the invariant can't yet prove anything about it.
+receiver's collection field isn't in the fragment in a body yet (a `List<Integer>` one is since Phase 500), so the
+invariant can't yet prove anything about it.
 The fix is that it no longer proves things about the caller's own names.
 
 **A subscript isn't arithmetic.** Phase 492's "a number's arithmetic is never null" took any binary expression of a
@@ -20623,6 +20624,62 @@ Mutation-checked, all 13 killed:
 - no count law (1);
 - an inserted null havocking the list (3);
 - the size unchanged (6).
+
+## Phase 500 — receiver lists  *(shipped — capability)*
+
+Phase 496 made a foreign invariant assumed for a receiver `b` speak of `b`'s own list (`b$xs`), but a body couldn't
+read that list: `b.xs.size()`, `b.xs[0]` and `b.xs.get(0)` were outside the fragment. So
+`@Invariant({ xs != null && xs.size() > 0 })` on `B` proved nothing about `b.xs.size() > 0`. Three obligations were
+missed silently at the parent: a `get` past the end, a null list's `size()`, and an unboxed null element
+(`b.xs[0] + 1`).
+
+**The named list.** Phase 413 reads a receiver's int array `h.arr` as the named array `h$arr`.
+`VerifyChecker.receiverListsOf` does the same for a field that is a `List` of an integral box (`Integer`, `Long`,
+`Short`, `Byte`), under the same conditions:
+- `b` is a parameter of a class, and no other parameter has that class;
+- the field is read directly, with no getter standing in for it;
+- the method writes no array or list (Phase 413's `writesNoArray`), so it's one list from entry to exit.
+
+The name `b$xs` is registered as a list, with its element type. `Encoder.asNamedLists` rewrites `b.xs` where it is
+a call's receiver or an operand, at the entry of `translate` and `nullityOfExpr`. So every list path takes it as it
+takes a list parameter: size, `isEmpty`, subscripts and `get`, element nullity, a null comparison. A contract's
+`b.xs` reads the same way.
+
+**Its obligations.** The collector gives a receiver list's call the null-receiver check and the index sites a list
+parameter's call gets. Its subscript gets the bounds and the receiver's nullity. Phase 486's unboxed reads take
+`b.xs[i]`, through `receiverListAccess`. The static helpers aren't widened to any `p.f[i]`, which would put
+obligations on receivers the verifier doesn't model.
+
+**As the source spells it.** Counterexamples, obligations and dereference messages show `b.xs`, `b.xs.size()` and
+`b.xs[0]`. A failing call renders the list (`f(new B(xs: [null]))`) and pins it in the repro's precondition check,
+as Phase 413 does an array.
+
+**Open:**
+- a method that writes the list, through `b.xs.add(…)` or an alias, stays a loud skip;
+- so does a method with two parameters of the class (they may share a list);
+- lists of other element types aren't modelled this way.
+
+**Shipped tests:** group `P500 receiver lists`, 15 cases. Eleven failed at the parent commit: seven proofs were
+skipped as outside the fragment, and four obligations were silent (a `get` past the end, a null list's `size()`,
+an unboxed null element, a subscript's bounds). Phase 496's "a receiver's element read may be null" now reaches
+its point: under a precondition bounding the index, `b.xs[0] != null` can't be proved (`fails on: f(new B(xs:
+[null]))`).
+
+Mutation-checked: 12 of 15 killed:
+- the list names unregistered (3), not given to the encoder (8);
+- no rewrite in `translate` (6), nor in `nullityOfExpr` (2);
+- no call sites (2), no subscript site (1);
+- the unboxed read unregistered (1), or undischarged (1);
+- the counterexample's `b$xs.size()` (1), the object literal without its list (4);
+- the dereference's (1) and the bounds' (1) `b$xs`.
+
+Three survive, and are kept as Phase 413's array conditions are:
+- The guard that the method writes no list. A write through a local alias (`t = b.xs; t.add(5)`) is refused anyway
+  by the alias check ("makes 't' share its contents with 'b'"), and a write through `b.xs` itself is a skipped call.
+- The guard against two parameters of the class. The encoder declines an alias-modelled receiver itself, so the
+  values stay outside the fragment. Its obligations are silent there, as at the parent.
+- The repro's precondition pins. The model's own values already meet the precondition, so they matter only to a
+  repaired call.
 
 ## Definition of done, per increment
 

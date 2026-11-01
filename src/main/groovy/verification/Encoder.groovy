@@ -37,6 +37,7 @@ import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.AttributeExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.MethodCall
@@ -2265,6 +2266,63 @@ class Encoder implements TheoryApi {
      *  by the checker only for a method that writes no array and nothing through an object parameter, so each is the
      *  same array, with the same contents, from entry to exit. */
     Set<String> receiverArrays = Collections.<String> emptySet()
+
+    /** Phase 500 — the receivers' list fields this method reads as named lists ({@code b.xs} is the list {@code b$xs}):
+     *  set by the checker, under {@link #receiverArrays}' conditions. */
+    Set<String> receiverLists = Collections.<String> emptySet()
+
+    /** Phase 500 — the named list {@code e} reads, when it is a modelled receiver's list field ({@code b.xs}). */
+    String receiverFieldList(Expression e) {
+        if (receiverLists.isEmpty() || !(e instanceof PropertyExpression)) return null
+        PropertyExpression pe = (PropertyExpression) e
+        if (!(pe.objectExpression instanceof VariableExpression) || pe.propertyAsString == null || pe.safe) return null
+        String recv = ((VariableExpression) pe.objectExpression).name
+        if (!objectParams.containsKey(recv) && objectAliases.containsKey(recv)) recv = objectAliases.get(recv)
+        if (!objectParams.containsKey(recv) || isAliasModeled(recv)) return null
+        String name = recv + '$' + pe.propertyAsString
+        receiverLists.contains(name) ? name : null
+    }
+
+    /** Phase 500 — {@code e} with a receiver's list field ({@code b.xs}) read as its named list {@code b$xs}, where it is
+     *  a call's receiver or an operand, so every list path takes it as it does a list parameter; else {@code e}. */
+    Expression asNamedLists(Expression e) {
+        if (receiverLists.isEmpty()) return e
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            Expression r = namedList(mce.objectExpression)
+            if (r.is(mce.objectExpression)) return e
+            MethodCallExpression out = new MethodCallExpression(r, mce.method, mce.arguments)
+            out.implicitThis = false
+            out.safe = mce.safe
+            out.setSourcePosition(mce); out.copyNodeMetaData(mce)
+            return out
+        }
+        if (e instanceof BinaryExpression && !(e instanceof DeclarationExpression)) {
+            BinaryExpression be = (BinaryExpression) e
+            Expression l = namedList(be.leftExpression), r = namedList(be.rightExpression)
+            if (l.is(be.leftExpression) && r.is(be.rightExpression)) return e
+            BinaryExpression out = new BinaryExpression(l, be.operation, r)
+            out.setSourcePosition(be); out.copyNodeMetaData(be)
+            return out
+        }
+        if (e instanceof PropertyExpression && !(e instanceof AttributeExpression)) {   // `b.xs.size` / `b.xs.empty`
+            PropertyExpression pe = (PropertyExpression) e
+            Expression o = namedList(pe.objectExpression)
+            if (o.is(pe.objectExpression)) return e
+            PropertyExpression out = new PropertyExpression(o, pe.property, pe.safe)
+            out.setSourcePosition(pe); out.copyNodeMetaData(pe)
+            return out
+        }
+        e
+    }
+    private Expression namedList(Expression e) {
+        String n = receiverFieldList(e)
+        if (n == null) return e
+        VariableExpression v = new VariableExpression(n, e.type)
+        v.setAccessedVariable(v)
+        v.setSourcePosition(e); v.copyNodeMetaData(e)
+        v
+    }
 
     /** Phase 413 — the named array {@code e} reads, when it is a modelled receiver's array field ({@code h.arr}). */
     String receiverFieldArray(Expression e) {
@@ -4997,6 +5055,10 @@ class Encoder implements TheoryApi {
      */
     Object nullityOfExpr(Expression e) {
         if (e == null) return null
+        String rl = receiverFieldList(e)   // Phase 500 — `b.xs` is the list `b$xs`, and its element reads read that
+        if (rl != null) return nullityOf(rl)
+        Expression named = asNamedLists(e)
+        if (!named.is(e)) return nullityOfExpr(named)
         // Phase 422 — `x?.m()` is null when x is, else the call's own (a primitive's is never null)
         if (isSafeCall(e)) {
             MethodCallExpression mce = (MethodCallExpression) e
@@ -5406,6 +5468,8 @@ class Encoder implements TheoryApi {
 
     Object translate(Expression expr) {
         if (expr == null) return null
+        Expression named = asNamedLists(expr)   // Phase 500 — `b.xs` as the list `b$xs`
+        if (!named.is(expr)) return translate(named)
         if (isSafeCall(expr)) return translateSafeCall((MethodCallExpression) expr)   // Phase 422
 
         // §III-E declassification is a value-level identity: `Declassify.to('Low', e)` carries the value of `e`

@@ -62,11 +62,12 @@ class G537_p496_contract_scope {
                         static boolean f(B b, int count) { count >= 0 }'''))],
 
         // ---------- a subscript isn't arithmetic ----------
-        [group: "P496 contract scope", name: "a receiver's element read may be null", expect: ["return expression '(b.xs[0] != null)' is outside fragment"],
+        // outside the fragment until Phase 500 modelled a receiver's list; refuted since, as the element may be null
+        [group: "P496 contract scope", name: "a receiver's element read may be null", expect: ['Cannot prove postcondition', 'fails on: f(new B(xs: [null]))'],
          src: tc('''final class B { List<Integer> xs }
                     @TypeChecked(extensions = 'verification.VerifyChecker')
                     final class Client {
-                        @Requires({ b != null })
+                        @Requires({ b != null && b.xs != null && b.xs.size() > 0 })
                         @Ensures({ result })
                         static boolean f(B b) { b.xs[0] != null }
                     }''')],
