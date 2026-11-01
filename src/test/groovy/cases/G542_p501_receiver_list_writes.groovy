@@ -22,8 +22,8 @@ import static cases.CaseDsl.*
  * {@code add(i, v)}, {@code clear()}, {@code pop()}, {@code removeLast()}, {@code removeAt(i)}) writes the named list
  * {@code b$xs} (Phase 500), as a list parameter's mutation is modelled. Such a method's lists were unmodelled, so a
  * {@code b.xs.clear()} that broke {@code B}'s {@code @Invariant({ xs.size() > 0 })} compiled cleanly: {@code b} owes
- * its invariant at the exit now, as a field written through it does (Phase 433). A removal used as a value, a write in
- * a loop, or a receiver handed to a call keeps the lists unmodelled.
+ * its invariant at the exit now, as a field written through it does (Phase 433). A write in a loop, or a receiver
+ * handed to a call, keeps the lists unmodelled (a removal used as a value did too, until Phase 504).
  */
 class G542_p501_receiver_list_writes {
 
@@ -79,7 +79,8 @@ class G542_p501_receiver_list_writes {
                         static void f(B b) { b.xs.pop() }'''))],
 
         // ---------- still unmodelled ----------
-        [group: "P501 receiver list writes", name: "a removal's value", expect: ['outside fragment'],
+        // modelled since Phase 504: the pop leaves one
+        [group: "P501 receiver list writes", name: "a removal's value", expect: ['Cannot prove postcondition', 'fails on: f(new B(xs: ['],
          src: tc(client('xs != null', '''@Requires({ b != null && b.xs.size() == 2 })
                         @Ensures({ result == 2 })
                         static int f(B b) { Integer r = b.xs.pop(); b.xs.size() }'''))],

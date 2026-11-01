@@ -2318,7 +2318,7 @@ class Encoder implements TheoryApi {
     private Expression namedList(Expression e) {
         String n = receiverFieldList(e)
         if (n == null) return e
-        VariableExpression v = new VariableExpression(n, e.type)
+        VariableExpression v = new VariableExpression(n, staticTypeOf(e) ?: e.type)   // Phase 504 — `List<Integer>`, not Object
         v.setAccessedVariable(v)
         v.setSourcePosition(e); v.copyNodeMetaData(e)
         v

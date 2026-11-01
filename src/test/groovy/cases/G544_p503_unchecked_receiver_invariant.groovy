@@ -58,9 +58,10 @@ class G544_p503_unchecked_receiver_invariant {
         [group: "P503 unchecked receiver invariant", name: "with two receivers of the class", expect: ["Skipped the class invariant check of B for 'b' after 'b.xs.clear()'"],
          src: tc(client('xs != null && xs.size() > 0', 'List<Integer> xs', '''@Requires({ b != null && c != null })
                         static void f(B b, B c) { b.xs.clear() }'''))],
-        [group: "P503 unchecked receiver invariant", name: "an element store", expect: ["Skipped the class invariant check of B for 'b' after 'b.xs[0] = -1'"],
-         src: tc(client('xs != null && xs.size() > 0 && xs[0] >= 0', 'List<Integer> xs', '''@Requires({ b != null })
-                        static void f(B b) { b.xs[0] = -1 }'''))],
+        // an Int list's store is modelled since Phase 504, and refuted at the exit (G545); a list of strings' isn't
+        [group: "P503 unchecked receiver invariant", name: "an element store", expect: ["Skipped the class invariant check of B for 'b' after 'b.names[0] = null'"],
+         src: tc(client('names != null && names.size() > 0 && names[0] != null', 'List<String> names', '''@Requires({ b != null })
+                        static void f(B b) { b.names[0] = null }'''))],
         [group: "P503 unchecked receiver invariant", name: "a left shift", expect: ["Skipped the class invariant check of B for 'b' after 'b.names << 'x''"],
          src: tc(client('names != null && names.size() < 3', 'List<String> names', '''@Requires({ b != null })
                         static void f(B b) { b.names << 'x' }'''))],

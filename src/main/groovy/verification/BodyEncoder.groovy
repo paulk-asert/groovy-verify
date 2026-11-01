@@ -18,6 +18,7 @@ package verification
 import groovy.transform.CompileStatic
 import groovy.transform.TupleConstructor
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
+import org.codehaus.groovy.ast.expr.AttributeExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
@@ -83,6 +84,8 @@ class ArrayStore {
     String arr
     Expression index
     Expression value
+    /** Phase 504 — a receiver's field stored through ({@code b.xs} of {@code b.xs[i] = v}): the list it names, if modelled */
+    PropertyExpression field
 }
 
 /** Phase 89 slice 2 — a field write through an object reference on a path: {@code obj.field = value}.
@@ -194,6 +197,13 @@ class RecursionNeedsDecreasesException extends UnsupportedConstructException {
  */
 @CompileStatic
 class BodyEncoder {
+
+    /** Phase 504 — {@code e} as a field read through a named object ({@code b.xs}), else null */
+    private static PropertyExpression receiverField(Expression e) {
+        if (!(e instanceof PropertyExpression) || e instanceof AttributeExpression) return null
+        PropertyExpression pe = (PropertyExpression) e
+        pe.safe || pe.spreadSafe || !(pe.objectExpression instanceof VariableExpression) || pe.propertyAsString == null ? null : pe
+    }
 
     static List<Path> enumeratePaths(Statement body) {
         enumeratePaths(body, false)
@@ -647,6 +657,24 @@ class BodyEncoder {
                     np.steps.add(new ArrayStore(arr, sub.rightExpression, be.rightExpression))
                     if (tail) {
                         np.result = be.leftExpression   // the assigned element's value
+                        res.terminated.add(np)
+                    } else {
+                        res.live.add(np)
+                    }
+                    return res
+                }
+                // Phase 504 — b.xs[k] = v through a receiver's list field: a store step on the list it names (the
+                // replay refuses it, as before, when that isn't a modelled one)
+                if (be.leftExpression instanceof BinaryExpression &&
+                    ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                    receiverField(((BinaryExpression) be.leftExpression).leftExpression) != null) {
+                    BinaryExpression sub = (BinaryExpression) be.leftExpression
+                    PropertyExpression f = receiverField(sub.leftExpression)
+                    Path np = copy(prefix)
+                    np.steps.add(new ArrayStore(((VariableExpression) f.objectExpression).name + '$' + f.propertyAsString,
+                        sub.rightExpression, be.rightExpression, f))
+                    if (tail) {
+                        np.result = be.leftExpression
                         res.terminated.add(np)
                     } else {
                         res.live.add(np)

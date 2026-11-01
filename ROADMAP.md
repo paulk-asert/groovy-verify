@@ -20704,7 +20704,7 @@ writes do: `b` joins `writtenObjectParams`. `writesThroughInvariantParam` counts
 
 **Open:**
 - a removal used as a value (`Integer r = b.xs.pop()`), a write in a loop, and an element store (`b.xs[i] = v`)
-  keep the lists unmodelled, loudly;
+  keep the lists unmodelled, loudly (the value and the store modelled since Phase 504);
 - so does a receiver handed to a call. That covers a callee whose frame is empty (`@Modifies({ [] })`): it assumes
   the invariant the write may have broken, so `b.xs.clear(); h(b); b.xs.add(1)` would prove what `h` promises of
   a non-empty list. But when the receiver is handed on, a write that breaks its invariant is silent, as at the
@@ -20813,6 +20813,75 @@ Mutation-checked, all 10 killed:
 - no handing call named (1);
 - an alias's write unseen (1);
 - the handing call shown as resolved (1 in P503, and G475's in P433).
+
+## Phase 504 — receiver list values  *(shipped — soundness and capability)*
+
+Phase 501 modelled a statement that writes a receiver's list. A removal whose value is kept
+(`Integer r = b.xs.pop()`) and an element store (`b.xs[i] = v`) weren't modelled, so the method's lists weren't
+either: loud since Phase 503, but nothing proved. Two soundness gaps turned up on the way. Measured at the parent:
+- **A list parameter's kept removal wrote nothing in the obligation passes.** `Integer r = xs.pop(); xs.get(1)` on a
+  two-element list compiled cleanly; so did `Integer r; r = xs.pop()`, which the region pass replays. The
+  postcondition path already took the write (Phase 494).
+- **A written receiver list was read as apart from every other list.** The caller may pass `b.xs` itself as a list
+  parameter `ys`, so `b.xs.add(5); ys.size()` with `@Ensures({ result == 0 })` proved, for a call that returns 1.
+  Without a write the two models agree; Phase 501's writes made the difference.
+
+**Kept removals.** In the obligation pass, a declaration or assignment whose value is a removal (`pop()`,
+`removeLast()`, `removeAt(i)`, `remove(int i)`, on a list parameter's or a receiver's list) is the element read before
+the call and then the list's write. An if's arm holding one is a write that outlives it (Phase 477). The region pass
+and loops take one through the call handler, as the straight-line hoist does (`hoistRemoval`). A receiver's
+removal is unboxed where it's used and throws for a null element, as a parameter's.
+
+**Element stores.** `b.xs[i] = v` on a modelled receiver's list is a store on the named list `b$xs`, in a method
+body (`ArrayStore.field`, resolved by `resolvedStore`) and in the obligation pass, and `b` owes its class invariant
+at the exit. Unmodelled, it's refused as before.
+
+**Only one list.** Phase 501's write strip (`withoutReceiverListWrites`) takes kept removals and element stores, and
+leaves their operands for `writesNoArray` to read, so `b.xs.add(ys.pop())` is seen to write `ys`. A method that
+writes a receiver's list keeps its lists modelled only when that list is the only one it reads
+(`listAliasHazard`). Any of these drops them, loudly through Phase 503 when the invariant reads the list:
+- a list parameter;
+- another receiver's list, the same receiver's other list included;
+- a list-typed name, property or call result in the body;
+- a list field a contract names, or the class invariant of an instance method's own class.
+
+`Encoder.namedList` types the named list as the field is declared (`List<Integer>`), not `Object`.
+
+**Open:**
+- a removal inside an expression (`xs.pop() + xs.get(0)`) still doesn't shrink the list for the obligations after it
+  in the same expression;
+- a receiver's element nullity isn't tied to its precondition: `b.xs[1] == 4` doesn't make `b.xs[1]` non-null, so
+  `b.xs.size() + b.xs[1]` reports a null element, with a repro the precondition rules out (as at the parent);
+- `b.xs.set(i, v)` on a receiver's list, and removals from lists of other element types, aren't modelled.
+
+**Shipped tests:** group `P504 receiver list values`, 29 cases. 26 fail at the parent commit, and 11 of those
+compiled cleanly where the method is wrong:
+- four list-parameter removals kept as a value, then a read past the end (declared, assigned, into a parameter, in
+  an if's arm);
+- seven methods that write a receiver's list and read it by another name: a list parameter (in the body, or only in a
+  contract), the receiver's other list (in the body, or only in its invariant), a field a contract reads, a field
+  the body reads, and a field the method's own class invariant reads.
+
+The other 15 were skipped, loudly since Phase 503. Three pass at the parent: a read the removal keeps in bounds, a
+store whose value writes (refused either way), and an array parameter beside the written list.
+- G542's "a removal's value" case is modelled now, and refuted.
+- G544's element store is moved to a `List<String>` field, which stays unmodelled; an Int list's is refuted (G545).
+
+Mutation-checked, 21 of 22 killed:
+- the alias check dropped (7), or each of its parts: a list parameter (1), another receiver's list (1), a contract's
+  list field (1), the class invariant's (1), the body's list reads (1);
+- the kept removal's write dropped from a declaration (2), from an assignment to a parameter (1), from an if's arm
+  (1), and from the region pass's call handler (2);
+- its value not read (1), nor a parameter's (1);
+- the strip without element stores (6) or kept removals (8);
+- a store through a receiver's list unresolved in the path walk (5), never emitted there (5), or not resolved in the
+  obligation pass (1);
+- the receiver's invariant not owed after a store (1);
+- a receiver's removal not unboxed (1);
+- the named list typed as `Object` (6), and the postcondition hoist not taking a receiver's removal (5).
+
+One survives: the strip keeping a write's operands for `writesNoArray`. An operand that writes, such as
+`b.xs[0] = (d.n = 5)`, doesn't translate in the replay either, so the method is refused with the operand dropped too.
 
 ## Definition of done, per increment
 

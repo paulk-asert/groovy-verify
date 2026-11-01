@@ -1824,7 +1824,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         // Phase 501 — but a statement that mutates one directly (`b.xs.add(v)`) is the list's own write, modelled on it
-        if (!out.isEmpty() && !writesNoArray(m, withoutReceiverListWrites(m, out))) out.clear()
+        Set<String> written = new HashSet<String>()
+        if (!out.isEmpty() && !writesNoArray(m, withoutReceiverListWrites(m, out, written))) out.clear()
+        if (!out.isEmpty() && listAliasHazard(m, out, written)) out.clear()   // Phase 504
         Map<String, ClassNode> r = out.isEmpty() ? Collections.<String, ClassNode> emptyMap() : out
         m.putNodeMetaData(RECEIVER_LISTS_KEY, r)
         r
@@ -1838,18 +1840,106 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 501 — a statement that mutates a receiver's list directly, as a list parameter's mutation is modelled:
      *  {@code b.xs.add(v)}, {@code add(i, v)}, {@code clear()}, {@code pop()}, {@code removeLast()}, {@code removeAt(i)},
-     *  {@code remove(int i)}. Its list's name, else null. */
+     *  {@code remove(int i)}; Phase 504 — a removal's value kept ({@code Integer r = b.xs.pop()}, {@code r = …}) and an
+     *  element store ({@code b.xs[i] = v}). Its list's name, else null. */
     static String receiverListWrite(Statement st, Map<String, ClassNode> lists) {
+        Object[] w = receiverListWriteParts(st, lists)
+        w == null ? null : (String) w[0]
+    }
+
+    /** Phase 504 — {@link #receiverListWrite}'s list, and what of the statement is left without the write: its
+     *  arguments, and a declaration or assignment of the removal's value (as of a null), for {@link #writesNoArray} to
+     *  read (`b.xs.add(ys.pop())` writes {@code ys}). Null when it isn't one. */
+    private static Object[] receiverListWriteParts(Statement st, Map<String, ClassNode> lists) {
         Expression x = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
-        if (!(x instanceof MethodCallExpression)) return null
-        MethodCallExpression mce = (MethodCallExpression) x
+        if (x instanceof BinaryExpression && ((BinaryExpression) x).operation.type == Types.ASSIGN) {
+            BinaryExpression be = (BinaryExpression) x
+            Expression l = be.leftExpression
+            if (!(x instanceof DeclarationExpression) && l instanceof BinaryExpression &&
+                    ((BinaryExpression) l).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                String n = receiverListName(((BinaryExpression) l).leftExpression, lists)
+                return n == null ? null : [n, [((BinaryExpression) l).rightExpression, be.rightExpression]] as Object[]
+            }
+            Expression r = stripCasts(be.rightExpression)
+            if (!(l instanceof VariableExpression) || !(r instanceof MethodCallExpression) ||
+                    !(((MethodCallExpression) r).methodAsString in REMOVALS)) return null
+            Object[] call = receiverListCallParts((MethodCallExpression) r, lists)
+            if (call == null) return null
+            BinaryExpression kept = x instanceof DeclarationExpression ?
+                new DeclarationExpression((VariableExpression) l, be.operation, ConstantExpression.NULL) :
+                new BinaryExpression(l, be.operation, ConstantExpression.NULL)
+            return [call[0], ((List<Expression>) call[1]) + [(Expression) kept]] as Object[]
+        }
+        x instanceof MethodCallExpression ? receiverListCallParts((MethodCallExpression) x, lists) : null
+    }
+    private static final Set<String> REMOVALS = ['pop', 'removeLast', 'removeAt', 'remove'] as Set<String>
+
+    private static Object[] receiverListCallParts(MethodCallExpression mce, Map<String, ClassNode> lists) {
         String m = mce.methodAsString
         if (mce.safe || !(m in RECEIVER_LIST_WRITES)) return null
         List<Expression> args = collectArgumentExpressions(mce)
         if (args == null) return null
         boolean shape = m == 'add' ? args.size() in [1, 2] : m in ['removeAt', 'remove'] ?
             args.size() == 1 && Encoder.staticTypeOf(args[0])?.name == 'int' : args.isEmpty()
-        shape ? receiverListName(mce.objectExpression, lists) : null
+        String n = shape ? receiverListName(mce.objectExpression, lists) : null
+        n == null ? null : [n, args] as Object[]
+    }
+
+    /**
+     * Phase 504 — a method that writes a receiver's list (Phase 501) may read that list by another name: a list
+     * parameter the caller passed as {@code b.xs}, another receiver's list, a field, a view ({@code b.xs.subList(0, 1)}).
+     * Each is modelled apart, so after {@code b.xs.add(5)} the model's {@code ys.size()} was still the entry's, and
+     * {@code @Ensures({ result == 0 })} proved of a call that returns 1. So the written list must be the only list it
+     * reads (a local list it makes is already refused, by {@link #writesNoArray}).
+     */
+    private static boolean listAliasHazard(MethodNode m, Map<String, ClassNode> lists, Set<String> written) {
+        if (written.isEmpty()) return false
+        if (lists.size() > 1) return true
+        String only = lists.keySet().iterator().next()
+        for (Parameter par : m.parameters) if (isListType(par.type)) return true
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        boolean[] bad = [false]
+        body?.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (isListType(Encoder.staticTypeOf(ve))) bad[0] = true
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (receiverListName(pe, lists) == only) return
+                if (isListType(Encoder.staticTypeOf(pe))) bad[0] = true
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (isListType(Encoder.staticTypeOf(mce))) bad[0] = true
+                super.visitMethodCallExpression(mce)
+            }
+        })
+        if (bad[0]) return true
+        // a contract is re-parsed, untyped: a list field it names, its own class's or another parameter's (and an
+        // instance method's class invariant, assumed at the entry and owed at the exit, is one too)
+        Map<String, ClassNode> paramTypes = new HashMap<String, ClassNode>()
+        for (Parameter par : m.parameters) paramTypes.put(par.name, par.type)
+        Set<String> ownLists = new HashSet<String>()
+        for (ClassNode c = m.declaringClass; c != null; c = c.superClass) for (FieldNode f : c.fields) if (isListType(f.type)) ownLists.add(f.name)
+        List<Expression> contracts = new ArrayList<Expression>()
+        for (String kind : ['requires', 'ensures']) { Expression c = contractAstFor(m, kind); if (c != null) contracts.add(c) }
+        if (!m.isStatic()) contracts.addAll(classInvariantTexts(m.declaringClass))
+        for (Expression contract : contracts) {
+            contract.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression ve) {
+                    if (ownLists.contains(ve.name) && !paramTypes.containsKey(ve.name)) bad[0] = true
+                }
+                @Override void visitPropertyExpression(PropertyExpression pe) {
+                    if (pe.objectExpression instanceof VariableExpression && pe.propertyAsString != null) {
+                        String o = ((VariableExpression) pe.objectExpression).name
+                        ClassNode t = o in ['this', 'old'] ? m.declaringClass : paramTypes.get(o)
+                        FieldNode f = t?.getField(pe.propertyAsString)
+                        if (f != null && isListType(f.type) && (o + '$' + f.name) != only) bad[0] = true
+                    }
+                    super.visitPropertyExpression(pe)
+                }
+            })
+        }
+        bad[0]
     }
 
     /**
@@ -1859,7 +1949,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * its fields and a comparison with null: one handed to a call or kept in a local may be written through, or have
      * its invariant assumed by a callee, unseen.
      */
-    private static Statement withoutReceiverListWrites(MethodNode m, Map<String, ClassNode> lists) {
+    private static Statement withoutReceiverListWrites(MethodNode m, Map<String, ClassNode> lists, Set<String> written) {
         Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
         if (body == null) return null
         Set<String> owners = new HashSet<String>()
@@ -1884,7 +1974,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (kept.isEmpty()) return body
         Closure<Statement> strip
         strip = { Statement st ->
-            if (receiverListWrite(st, kept) != null) return new EmptyStatement()   // a braceless if's branch, too
+            Object[] w = receiverListWriteParts(st, kept)
+            if (w != null) {   // a braceless if's branch, too
+                written.add((String) w[0])
+                BlockStatement left = new BlockStatement(new ArrayList<Statement>(), new VariableScope())   // Phase 504 — its operands stay
+                for (Expression a : (List<Expression>) w[1]) left.addStatement(new ExpressionStatement(a))
+                return left
+            }
             if (st instanceof BlockStatement) {
                 BlockStatement out = new BlockStatement(new ArrayList<Statement>(), ((BlockStatement) st).variableScope)
                 for (Statement c : ((BlockStatement) st).statements) out.addStatement(strip(c))
@@ -1908,7 +2004,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         lists.containsKey(n) ? n : null
     }
 
-    /** Phase 500 — {@code b.xs[i]} / {@code b.xs.get(i)} on a named receiver list: Encoder#indexedAccessTarget's. */
+    /** Phase 500 — {@code b.xs[i]} / {@code b.xs.get(i)} on a named receiver list: Encoder#indexedAccessTarget's; Phase 504 —
+     *  and a removal's ({@code b.xs.pop()}), Encoder#removedElementTarget's. */
     static Encoder.IndexedNullTarget receiverListAccess(Expression e, Map<String, ClassNode> lists) {
         String n = null
         Expression idx = null
@@ -1919,6 +2016,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                    !((MethodCallExpression) e).safe) {
             List<Expression> args = collectArgumentExpressions((MethodCallExpression) e)
             if (args != null && args.size() == 1) { n = receiverListName(((MethodCallExpression) e).objectExpression, lists); idx = args.get(0) }
+        } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in REMOVALS) {
+            // Phase 504 — a removal's value (`int r = b.xs.pop()`): the element it takes, read before the write
+            Object[] w = receiverListCallParts((MethodCallExpression) e, lists)
+            if (w != null) {
+                n = (String) w[0]
+                List<Expression> args = (List<Expression>) w[1]
+                idx = !args.isEmpty() ? args.get(0) : new ConstantExpression(((MethodCallExpression) e).methodAsString == 'pop' ? 0 : -1)
+            }
         }
         if (n == null) return null
         Encoder.IndexedNullTarget t = new Encoder.IndexedNullTarget()
@@ -6052,6 +6157,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     scanObligations(de.rightExpression, steps, out)
                     if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
                     if (de.rightExpression != null) steps.add(new Assign(name, de.rightExpression))
+                    // Phase 504 — a removal's value (`Integer r = xs.pop()`): the element it read, then the list's write
+                    // (it was the value alone, so `xs.get(1)` after it read the list as it was)
+                    MethodCallExpression removal = removalCall(de.rightExpression)
+                    if (removal != null) steps.add(new LemmaCall(removal))
                     continue
                 }
                 // Phase 404 — `=`, and `op=` / `++` / `--` as the `=` of their value (`x += 5` is `x = x + 5`): these
@@ -6077,12 +6186,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             ClassNode lt = (acc instanceof FieldNode) ? ((FieldNode) acc).type : ((Parameter) acc).type
                             if (isIntElement(lt)) {
                                 steps.add(new FieldAssign(name, value))
+                                MethodCallExpression removal = removalCall(value)   // Phase 504 — `p = xs.pop()`
+                                if (removal != null) steps.add(new LemmaCall(removal))
                                 continue
                             }
                             throw new UnsupportedConstructException("assignment to a non-Int field/parameter '${name}'")
                         }
                         if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
                         steps.add(new Assign(name, value))
+                        MethodCallExpression removal = removalCall(value)   // Phase 504 — `r = xs.pop()`
+                        if (removal != null) steps.add(new LemmaCall(removal))
                         continue
                     }
                     // Array-element store `a[i] = v`: the LHS index access and the value carry their own obligations,
@@ -6093,10 +6206,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         BinaryExpression sub = (BinaryExpression) lhs
                         scanObligations(vw[0], steps, out)   // as written: `m.x`'s own, not its rewrite's
                         scanObligations(value, steps, out)
-                        if (!(sub.leftExpression instanceof VariableExpression)) {
+                        String rl = receiverListName(sub.leftExpression, receiverListsOf(currentMethod))   // Phase 504 — `b.xs[i] = v`
+                        if (!(sub.leftExpression instanceof VariableExpression) && rl == null) {
                             throw new UnsupportedConstructException("an element store through '${clip(sub.leftExpression.text)}'")
                         }
-                        steps.add(new ArrayStore(((VariableExpression) sub.leftExpression).name, sub.rightExpression, value))
+                        steps.add(new ArrayStore(rl ?: ((VariableExpression) sub.leftExpression).name, sub.rightExpression, value))
                         continue
                     }
                     throw new UnsupportedConstructException("assignment to a non-variable target")
@@ -6163,10 +6277,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (st instanceof IfStatement && (armWritesThrough(((IfStatement) st).ifBlock) || armWritesThrough(((IfStatement) st).elseBlock))) return true
             if (!(st instanceof ExpressionStatement)) continue
             Expression e = ((ExpressionStatement) st).expression
-            if (e instanceof DeclarationExpression) continue
+            if (e instanceof DeclarationExpression) {
+                if (removalCall(((DeclarationExpression) e).rightExpression) != null) return true   // Phase 504
+                continue
+            }
             Expression[] vw = vfWrite(e)
             if (vw != null) {
-                if (!(vw[0] instanceof VariableExpression)) return true
+                if (!(vw[0] instanceof VariableExpression) || removalCall(vw[1]) != null) return true
                 Variable acc = ((VariableExpression) vw[0]).accessedVariable
                 if (acc instanceof FieldNode || acc instanceof Parameter) return true
                 continue
@@ -6302,7 +6419,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (a.rhs instanceof VariableExpression) {
                         enc.bindNullity(a.name, enc.nullityOf(((VariableExpression) a.rhs).name))
                     }
-                    Object rhs = enc.translate(a.rhs)
+                    Expression removedRead = removedElementRead(a.rhs, enc, s)   // Phase 504 — the element, before the write
+                    Object rhs = enc.translate(removedRead ?: a.rhs)
                     if (rhs != null) { s.assertDefinition(enc.varFor(a.name), rhs); continue }   // Phase 473
                     // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
                     // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
@@ -6345,7 +6463,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
                     // without the entry symbol picking up a self-contradictory `name == rhs` constraint.
                     FieldAssign a = (FieldAssign) step
-                    Object rhs = enc.translate(a.rhs)
+                    Expression removedRead = removedElementRead(a.rhs, enc, s)   // Phase 504 — the element, before the write
+                    Object rhs = enc.translate(removedRead ?: a.rhs)
                     if (rhs != null) {
                         Object fresh = s.intVar('ssa$' + a.name + '$' + (ssaCounter++))
                         s.assertExpr(s.eq(fresh, rhs))
@@ -15223,7 +15342,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // writes havocked, its @Ensures assumed), as a return expression's calls are
                     // Phase 494 — and a bare removal (`Integer r = xs.pop()`), whose nullity is then the hoisted local's
                     Expression nullSrc = a.rhs
-                    if (rhs == null && !isDecimal && (!isCallExpr(rhsE) || Encoder.removedElementTarget(rhsE) != null) &&
+                    if (rhs == null && !isDecimal && (!isCallExpr(rhsE) || Encoder.removedElementTarget(enc.asNamedLists(rhsE)) != null) &&
                             exprContainsCall(rhsE)) {
                         Expression hv = hoistValueCalls(rhsE, enc, session, node)
                         if (hv != null) { rhs = enc.translate(hv); nullSrc = hv }
@@ -15307,7 +15426,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             "field write '${ps.obj}.${ps.field} = ${ps.value.text}' is outside fragment${why}")
                     }
                 } else if (step instanceof ArrayStore) {
-                    ArrayStore st = (ArrayStore) step
+                    ArrayStore st = resolvedStore((ArrayStore) step, enc)   // Phase 504 — `b.xs[i] = v`
+                    if (st == null) {
+                        throw new UnsupportedConstructException("assignment to a non-variable target (line ${((ArrayStore) step).field.lineNumber})")
+                    }
                     // A Groovy Range is immutable: `(4..8)[2] = -1` throws UnsupportedOperationException at
                     // runtime, so the verifier refuses the store rather than modelling a successful mutation
                     // (the mutable copies `[*range]` / `range.toList()` are fine — they aren't ranges).
@@ -20853,12 +20975,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * loudly — when the receiver isn't a modelled Int list or the read doesn't translate.
      */
     private Expression hoistRemoval(Expression e, Encoder enc, SmtSession session) {
-        Encoder.IndexedNullTarget t = Encoder.removedElementTarget(e)
-        if (t == null || !enc.isListTyped(t.containerName) || currentSetElementTypes.containsKey(t.containerName) ||
-            currentMapTypes.containsKey(t.containerName) || enc.listElementSort(t.containerName) != session.intSort()) return null
-        Expression read = new BinaryExpression(new VariableExpression(t.containerName),
-            Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), t.indexExpr)
-        Object v = enc.translate(read)
+        Expression read = removedElementRead(e, enc, session)
+        Object v = read == null ? null : enc.translate(read)
         if (v == null) return null
         Object nul = enc.nullityOfExpr(e)   // before the write: `xs.pop()`'s is the first element's
         if (!applyListMutation(session, enc, e, currentCountVals)) return null
@@ -20867,6 +20985,37 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         enc.bindNullity(nm, nul ?: session.boolVar(nm + '?null'))
         new VariableExpression(nm)
     }
+    /** Phase 504 — a store through a receiver's list ({@code b.xs[i] = v}) as one on the list it names ({@code b$xs}),
+     *  the receiver then owing its class invariant at the exit, as after Phase 501's writes; null when that isn't a
+     *  modelled list. Any other store as it is. */
+    private ArrayStore resolvedStore(ArrayStore st, Encoder enc) {
+        if (st.field == null) return st
+        String n = enc.receiverFieldList(st.field)
+        if (n == null) return null
+        String obj = n.substring(0, n.indexOf('$'))
+        if (!classInvariantTexts(currentObjectParams.get(obj)).isEmpty()) enc.writtenObjectParams.add(obj)
+        new ArrayStore(n, st.index, st.value)
+    }
+
+    /** Phase 494 — the element a removal ({@code xs.pop()}; Phase 504 — a receiver's, {@code b.xs.pop()}) returns, as a
+     *  read of its modelled Int list before the write; null for anything else */
+    private Expression removedElementRead(Expression e, Encoder enc, SmtSession session) {
+        Encoder.IndexedNullTarget t = Encoder.removedElementTarget(enc.asNamedLists(stripCasts(e)))
+        if (t == null || !enc.isListTyped(t.containerName) || currentSetElementTypes.containsKey(t.containerName) ||
+            currentMapTypes.containsKey(t.containerName) || enc.listElementSort(t.containerName) != session.intSort()) return null
+        new BinaryExpression(new VariableExpression(t.containerName), Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), t.indexExpr)
+    }
+
+    /** Phase 504 — the call removing the element {@code e} is the value of ({@code xs.pop()}, {@code b.xs.removeAt(i)}),
+     *  as {@link Encoder#removedElementTarget} and {@link #receiverListWrite} take it; else null */
+    private MethodCallExpression removalCall(Expression e) {
+        Expression x = stripCasts(e)
+        if (!(x instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) x
+        if (Encoder.removedElementTarget(mce) != null) return mce
+        mce.methodAsString in REMOVALS && receiverListCallParts(mce, receiverListsOf(currentMethod)) != null ? mce : null
+    }
+
     /** Phase 494 — the values the postcondition counts ({@code countVals}), for a removal hoisted out of an expression */
     private List<Object> currentCountVals = Collections.<Object> emptyList()
 
@@ -21260,7 +21409,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Object rhs = enc.translate(a.rhs)
                     if (rhs != null) s.assertDefinition(enc.varFor(a.name), rhs)   // Phase 473
                 } else if (step instanceof ArrayStore) {
-                    ArrayStore st = (ArrayStore) step
+                    ArrayStore st = resolvedStore((ArrayStore) step, enc)   // Phase 504
+                    if (st == null) return   // as the path walk refused it before
                     // Phase 27 — same sort-routing as in checkPath's main step replay above.
                     boolean isMap = currentMapTypes.containsKey(st.arr)
                     Object idxSort = isMap ? enc.mapKeySort(st.arr) : s.intSort()
@@ -22355,6 +22505,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return assumeCalleeEnsures(s, enc, call, node, null, false)
             }
             @Override Object handleValue(Expression call, Encoder enc, SmtSession s) {
+                // Phase 504 — a removal (`r = xs.pop()`): the element it returns, then the list's write, as the straight-line
+                // hoist takes it (it was an opaque value, the list unwritten: `Integer r; r = xs.pop(); xs.get(1)` proved)
+                Expression removed = hoistRemoval(call, enc, s)
+                if (removed != null) {
+                    enc.lastCallResultNullity = enc.peekNullity(((VariableExpression) removed).name)
+                    return enc.translate(removed)
+                }
                 // Phase 347 — the result in the callee's return sort (a String-returning `glue(acc, x)` needs a String
                 // handle for its @Ensures to bind), as the straight-line hoist does (Phase 206)
                 MethodNode callee = (call instanceof MethodCall) ? resolveContractedCallee(node, ((MethodCall) call).methodAsString,
