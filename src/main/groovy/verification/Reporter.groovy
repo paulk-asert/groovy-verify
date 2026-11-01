@@ -879,7 +879,8 @@ class Reporter {
 
     // ---- Implicit safety obligations (array bounds, division, null deref) ----
 
-    static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result, boolean listSubscript = false) {
+    static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result, boolean listSubscript = false,
+                                    boolean insert = false) {
         // Refuted heads mirror the exception a developer would actually hit (Phase 9). The general
         // IndexOutOfBoundsException covers both arrays (AIOOBE) and lists without inferring which.
         // Phase 369 — but a LIST subscript `xs[i]` doesn't throw past the end: it reads null there (and a negative
@@ -888,7 +889,7 @@ class Reporter {
             "List index may be outside [0, size): there the subscript reads null (or, when negative, counts from the end) rather than throwing, which the verifier doesn't model" :
             "Possible IndexOutOfBoundsException: index may be out of bounds"
         implicit(head,
-            "0 <= ${indexText} && ${indexText} < ${sizeTerm}",
+            "0 <= ${indexText} && ${indexText} ${insert ? '<=' : '<'} ${sizeTerm}",   // Phase 499 — an insertion's may be the end
             "Could not decide array index bounds", result)
     }
 

@@ -1095,6 +1095,12 @@ class LoopEncoder {
             enc.clearFactoryRecord(name)
             return true
         }
+        if (m == 'add' && args.size() == 2) {   // Phase 499 — v at i, the tail from i shifts up
+            Object idx = enc.translate(args.get(0)), x = enc.insertedValue(name, args.get(1))
+            if (idx == null || x == null) return false
+            enc.insertAt(name, idx, x, args.get(1), null)
+            return true
+        }
         if (m == 'clear' && args.isEmpty()) {
             enc.bindSize(name, zero)
             enc.clearFactoryRecord(name)

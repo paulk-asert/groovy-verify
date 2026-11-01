@@ -5326,6 +5326,53 @@ class Encoder implements TheoryApi {
     }
 
     /**
+     * Phase 499 — {@code xs.add(i, v)}, {@link #removeAt}'s mirror: the elements before {@code i} stay, {@code v} is at
+     * {@code i} with its own nullity, those from {@code i} on shift up one, and the size grows by one (measured on
+     * Groovy 6: {@code [1, 2, 3].add(1, 9)} leaves {@code [1, 9, 2, 3]}). The bcount law per tracked value, as
+     * {@code add(v)}'s: the new count is the old plus {@code v}'s contribution. {@code i}'s bounds,
+     * {@code 0 <= i <= size}, are the call's obligation (an inserting IndexSite).
+     */
+    /** Phase 499 — the value an insertion stores: a literal null's is any element (its nullity says it's null), so an
+     *  inserted null keeps the list modelled; otherwise the value's term, or null outside the fragment. */
+    Object insertedValue(String name, Expression value) {
+        if (value instanceof ConstantExpression && ((ConstantExpression) value).value == null) {
+            Object sort = listElementSort(name)
+            String fresh = name + '$ins$null' + (havocCounter++)
+            return sort == session.intSort() ? session.intVar(fresh) : session.varOfSort(fresh, sort)
+        }
+        translate(value)
+    }
+
+    void insertAt(String name, Object idx, Object x, Expression value, List<Object> countVals) {
+        Object one = session.intLit(1L), zero = session.intLit(0L)
+        Object oldArr = arrayFor(name), oldNulls = elementNullityFor(name), oldSize = sizeOf(name)
+        Object newSize = session.plus(oldSize, one)
+        Object nul = value == null ? null : nullityOfExpr(value)
+        Object flag = nul != null ? session.ite(nul, one, zero) : session.intVar(name + '$nullElem$ins' + (havocCounter++))
+        Object arr = havocArray(name)
+        Object nulls = elementNullityFor(name)
+        int n = quantCounter++
+        Object k = session.boundIntVar('insertAt$k' + n)
+        Object ak = session.select(arr, k), nk = session.select(nulls, k)
+        Object before = session.and([session.le(zero, k), session.lt(k, idx)])
+        Object after = session.and([session.lt(idx, k), session.lt(k, newSize)])
+        Object km1 = session.minus(k, one)
+        session.assertExpr(session.forall([k], session.implies(before, session.eq(ak, session.select(oldArr, k))), [ak]))
+        session.assertExpr(session.forall([k], session.implies(after, session.eq(ak, session.select(oldArr, km1))), [ak]))
+        session.assertExpr(session.forall([k], session.implies(before, session.eq(nk, session.select(oldNulls, k))), [nk]))
+        session.assertExpr(session.forall([k], session.implies(after, session.eq(nk, session.select(oldNulls, km1))), [nk]))
+        session.assertExpr(session.eq(session.select(arr, idx), x))
+        session.assertExpr(session.eq(session.select(nulls, idx), flag))
+        bindSize(name, newSize)
+        clearFactoryRecord(name)
+        for (Object w : (countVals ?: Collections.emptyList())) {
+            Object added = session.ite(session.eq(x, w), one, zero)
+            session.assertExpr(session.eq(session.bcount(arr, w, zero, newSize),
+                session.plus(session.bcount(oldArr, w, zero, oldSize), added)))
+        }
+    }
+
+    /**
      * Translate a Groovy expression to an SMT handle. Returns null
      * if anything in the subtree is outside the fragment.
      */

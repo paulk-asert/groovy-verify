@@ -5558,7 +5558,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             IndexSite ix = (IndexSite) site
             if (!isEntryName(ix.receiver) || !referencesOnlyEntryState(ix.index)) return null
             String i = ix.index.text
-            return "0 <= ${i} && ${i} < ${ix.receiver}${sizeAccessor(ix.receiver)}".toString()
+            return "0 <= ${i} && ${i} ${ix.insert ? '<=' : '<'} ${ix.receiver}${sizeAccessor(ix.receiver)}".toString()
         }
         if (site instanceof DivideSite) {
             DivideSite dv = (DivideSite) site
@@ -7449,7 +7449,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             // Phase 414 — a null receiver throws before any index, and that is its DerefSite's to report
             if (ix.nullChecked) s.assertExpr(s.not(enc.nullityOf(ix.receiver)))
-            Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
+            Object inBounds = s.and([s.le(s.intLit(0L), idx), ix.insert ? s.le(idx, size) : s.lt(idx, size)])
             s.assertExpr(s.not(inBounds))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
@@ -7464,7 +7464,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String idxText = neg != null ? "${sizeText} - ${-neg}".toString() : asWritten(ix.index)
                 boolean listSubscript = neg == null && ix.node instanceof BinaryExpression && currentListNames.contains(ix.receiver)
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
-                    idxText, sizeText, r, listSubscript), r, listSubscript ? null : 'IndexOutOfBoundsException'), ix), ix.node)
+                    idxText, sizeText, r, listSubscript, ix.insert), r, listSubscript ? null : 'IndexOutOfBoundsException'), ix), ix.node)
             }
             explainIfVerified(s, r, "${ix.receiver}[${asWritten(ix.index)}] in bounds")
             return
@@ -12377,6 +12377,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     @CompileStatic private static class IndexSite  {
         ASTNode node; String receiver; Expression index
+        /** Phase 499 — an insertion's index ({@code xs.add(i, v)}): its end is in bounds too, {@code 0 <= i <= size} */
+        boolean insert
         /** Phase 414 — the receiver's nullity is its own obligation at the same node (a {@link DerefSite}): this
          *  one's is the bounds of a receiver that isn't null. */
         boolean nullChecked
@@ -12892,6 +12894,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         mName == 'remove' && Encoder.staticTypeOf(margs[0])?.name == 'int' && isListType(recvType))) {
                 // Phase 493 — List.removeAt(i) / remove(int i) throw IndexOutOfBoundsException outside [0, size), as get(i)
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
+            } else if (mName == 'add' && margs.size() == 2 && isListType(recvType)) {
+                // Phase 499 — List.add(i, v) throws IndexOutOfBoundsException outside [0, size] (measured, Groovy 6)
+                indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0), insert: true))
             } else if (mName == 'set' && margs.size() == 2 && isListType(recvType)) {
                 // Phase 340 — List.set(i, v) throws IndexOutOfBoundsException outside [0, size): the bounds obligation
                 // of a get(i) (a BitSet's set(int, boolean) has two arguments too, hence the receiver type)
@@ -15761,6 +15766,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (m == 'pop' && args.isEmpty()) {
             enc.popFront(name, countVals)   // Phase 493 — the first element, not the last
+            return true
+        }
+        // Phase 499 — `xs.add(i, v)`: v at i, the tail from i shifts up
+        if (m == 'add' && args.size() == 2) {
+            Object idx = enc.translate(args.get(0)), x = enc.insertedValue(name, args.get(1))
+            if (idx == null || x == null) return false
+            enc.insertAt(name, idx, x, args.get(1), countVals)
             return true
         }
         // Phase 494 — `xs.removeAt(i)` / `xs.remove(i)` with an int i: the tail from i shifts down

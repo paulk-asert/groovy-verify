@@ -20586,6 +20586,44 @@ Mutation-checked, all 7 killed:
   counterexample showed `this.locked = 1`;
 - the counterexample's `this$count` (1).
 
+## Phase 499 — insertions  *(shipped — capability)*
+
+`xs.add(i, v)` was the one shift-based list mutation left. Measured on Groovy 6.0.0:
+- `[1, 2, 3].add(1, 9)` leaves `[1, 9, 2, 3]`;
+- index 3 (the end) appends;
+- index 4, or -1, throws IndexOutOfBoundsException;
+- an inserted null is kept, and the call returns nothing.
+
+At the parent, a body with an insertion was skipped loudly (no usable `@Ensures` for the call; a loop's statement
+unsupported). Its index's bounds weren't checked at all: `xs.add(i, 5)` under only `xs != null` compiled cleanly.
+
+**The write.** `Encoder.insertAt` mirrors Phase 494's `removeAt`:
+- the elements before `i` stay;
+- `v` is at `i`, with its own nullity flag;
+- the elements from `i` on shift up one, with their nullity;
+- the size grows by one.
+
+It brings `add(v)`'s count law: the new count is the old plus `v`'s contribution. The method-body executor and
+the loop executor share it. An inserted literal null stores a fresh element (its nullity flag says it's null), so
+the list stays modelled instead of being havocked.
+
+**The index.** An inserting `IndexSite` needs `0 <= i <= xs.size()`, not `< xs.size()`: the end is in bounds. Its
+obligation, and its `VERIFY_SUGGEST` template, read so. As with every call since Phase 493, a negative index
+doesn't count from the end.
+
+**Shipped tests:** group `P499 insertions`, 16 cases. Fourteen failed at the parent commit. Three of them compiled
+cleanly where the call throws: an unchecked index, one past the end, a negative one. The rest were loud skips, or
+an index warning on a later read that the unmodelled size couldn't bound.
+
+Mutation-checked, all 13 killed:
+- no body write (9), no loop write (2);
+- no bounds site (3), the end out of bounds (4), the obligation's `<` (2);
+- no shift up (4), no shift of the nullity (4), no prefix kept (1);
+- no value at `i` (4), no nullity flag at `i` (4);
+- no count law (1);
+- an inserted null havocking the list (3);
+- the size unchanged (6).
+
 ## Definition of done, per increment
 
 An increment is done when:

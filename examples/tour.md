@@ -532,8 +532,7 @@ possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would). Si
 mutation — `xs.add(v)`, `xs.removeLast()`, `xs.pop()` (which takes the *first* element), `xs.clear()` — threads the size and
 contents oracles in **static-single-assignment** (SSA) form — each write mints a fresh name, so a
 mutator's pre- and post-states stay distinct — and pairs with a runtime-faithful `xs.count(v)` (see the
-"Lists — mutation" beat below); `xs.removeAt(i)` shifts the rest down; only the shift-based insert `xs.add(i, v)`
-still defers. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
+"Lists — mutation" beat below); `xs.removeAt(i)` shifts the rest down, and `xs.add(i, v)` shifts it up. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
 peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`, and the same
 folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 2`.
 
@@ -936,9 +935,9 @@ there's no compensating pop). Drop the `@Requires({ xs != null })` and the impli
 on the `xs.add(v)` receiver refutes with a concrete `roundTrip(0)` repro. The Java-style method
 idioms `xs.get(i)` / `xs.first()` / `xs.last()` / `xs.set(i, v)` ride the same machinery — the
 bounds check on `xs.first()`/`xs.last()`/`xs.removeLast()` is synthesised so pop-on-empty refutes
-the same way on an instance field as it does on a parameter. Only the shift-based variants
-(`xs.add(i, v)`, `xs.remove(i)`) still defer — their quantified shift modelling stays out of
-fragment.
+the same way on an instance field as it does on a parameter. The shift-based variants are in too:
+`xs.removeAt(i)` / `xs.remove(int i)` shift the rest down, `xs.add(i, v)` shifts it up, each with its index's
+bounds checked (an insertion's may be the end, `xs.size()`).
 
 ## Act 5 — All the way to a real algorithm
 
