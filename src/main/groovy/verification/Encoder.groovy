@@ -10340,7 +10340,7 @@ class Encoder implements TheoryApi {
         t
     }
 
-    private static boolean isNullLiteral(Expression e) {
+    static boolean isNullLiteral(Expression e) {
         e instanceof ConstantExpression && ((ConstantExpression) e).value == null
     }
 

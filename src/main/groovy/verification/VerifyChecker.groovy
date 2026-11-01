@@ -1822,7 +1822,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
         }
-        if (!out.isEmpty() && !writesNoArray(m)) out.clear()
+        // Phase 501 — but a statement that mutates one directly (`b.xs.add(v)`) is the list's own write, modelled on it
+        if (!out.isEmpty() && !writesNoArray(m, withoutReceiverListWrites(m, out))) out.clear()
         Map<String, ClassNode> r = out.isEmpty() ? Collections.<String, ClassNode> emptyMap() : out
         m.putNodeMetaData(RECEIVER_LISTS_KEY, r)
         r
@@ -1830,6 +1831,72 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static final String RECEIVER_LISTS_KEY = 'verify.p500.receiverLists'
     private static final Set<String> RECEIVER_LIST_ELEMENTS =
         ['java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte'] as Set<String>
+
+    /** Phase 501 — the list mutations modelled on a receiver's list, as on a list parameter's */
+    private static final Set<String> RECEIVER_LIST_WRITES = ['add', 'clear', 'pop', 'removeLast', 'removeAt', 'remove'] as Set<String>
+
+    /** Phase 501 — a statement that mutates a receiver's list directly, as a list parameter's mutation is modelled:
+     *  {@code b.xs.add(v)}, {@code add(i, v)}, {@code clear()}, {@code pop()}, {@code removeLast()}, {@code removeAt(i)},
+     *  {@code remove(int i)}. Its list's name, else null. */
+    static String receiverListWrite(Statement st, Map<String, ClassNode> lists) {
+        Expression x = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
+        if (!(x instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) x
+        String m = mce.methodAsString
+        if (mce.safe || !(m in RECEIVER_LIST_WRITES)) return null
+        List<Expression> args = collectArgumentExpressions(mce)
+        if (args == null) return null
+        boolean shape = m == 'add' ? args.size() in [1, 2] : m in ['removeAt', 'remove'] ?
+            args.size() == 1 && Encoder.staticTypeOf(args[0])?.name == 'int' : args.isEmpty()
+        shape ? receiverListName(mce.objectExpression, lists) : null
+    }
+
+    /**
+     * Phase 501 — {@code m}'s body without its direct writes to the receivers' lists ({@link #receiverListWrite}), for
+     * {@link #writesNoArray}: those are modelled, on the named list. Only in the body's blocks and an if's branches
+     * (one in a loop or a closure stays, and keeps the lists unmodelled), and only for a receiver used for nothing but
+     * its fields and a comparison with null: one handed to a call or kept in a local may be written through, or have
+     * its invariant assumed by a callee, unseen.
+     */
+    private static Statement withoutReceiverListWrites(MethodNode m, Map<String, ClassNode> lists) {
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body == null) return null
+        Set<String> owners = new HashSet<String>()
+        for (String n : lists.keySet()) owners.add(n.substring(0, n.indexOf('$')))
+        Set<String> escaped = new HashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression && owners.contains(((VariableExpression) pe.objectExpression).name)) return
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL] &&
+                        (Encoder.isNullLiteral(be.leftExpression) || Encoder.isNullLiteral(be.rightExpression))) {
+                    Expression o = Encoder.isNullLiteral(be.leftExpression) ? be.rightExpression : be.leftExpression
+                    if (o instanceof VariableExpression && owners.contains(((VariableExpression) o).name)) return
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) { if (owners.contains(ve.name)) escaped.add(ve.name) }
+        })
+        Map<String, ClassNode> kept = lists.findAll { String n, ClassNode t -> !escaped.contains(n.substring(0, n.indexOf('$'))) }
+        if (kept.isEmpty()) return body
+        Closure<Statement> strip
+        strip = { Statement st ->
+            if (receiverListWrite(st, kept) != null) return new EmptyStatement()   // a braceless if's branch, too
+            if (st instanceof BlockStatement) {
+                BlockStatement out = new BlockStatement(new ArrayList<Statement>(), ((BlockStatement) st).variableScope)
+                for (Statement c : ((BlockStatement) st).statements) out.addStatement(strip(c))
+                return out
+            }
+            if (st instanceof IfStatement) {
+                IfStatement i = (IfStatement) st
+                return new IfStatement(i.booleanExpression, strip(i.ifBlock), strip(i.elseBlock))
+            }
+            st
+        }
+        strip(body)
+    }
 
     /** Phase 500 — the named list ({@link #receiverListsOf}) {@code e} is, as {@code b.xs}; else null. */
     static String receiverListName(Expression e, Map<String, ClassNode> lists) {
@@ -1866,8 +1933,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * parameter or field of a primitive, boxed or String type (a local array, or one a call writes, may be the
      * receiver's array itself: {@code int[] t = h.arr; Arrays.fill(t, 0)}).
      */
-    private static boolean writesNoArray(MethodNode m) {
-        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+    private static boolean writesNoArray(MethodNode m, Statement only = null) {
+        Statement body = only ?: (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
         if (body == null) return true
         Set<String> objParams = new HashSet<String>()
         Map<String, ClassNode> types = new HashMap<String, ClassNode>()
@@ -3397,7 +3464,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Statement body = (Statement) node?.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: node?.code
         if (body == null || currentObjectParams.isEmpty()) return false
         boolean found = false
+        Map<String, ClassNode> lists = receiverListsOf(node)
         body.visit(new CodeVisitorSupport() {
+            @Override void visitExpressionStatement(ExpressionStatement st) {
+                String rl = receiverListWrite(st, lists)   // Phase 501 — a receiver's list written directly
+                if (!found && rl != null && !classInvariantTexts(currentObjectParams.get(rl.substring(0, rl.indexOf('$')))).isEmpty()) found = true
+                super.visitExpressionStatement(st)
+            }
             @Override void visitBinaryExpression(BinaryExpression be) {
                 if (!found && Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof PropertyExpression &&
                         ((PropertyExpression) be.leftExpression).objectExpression instanceof VariableExpression) {
@@ -15823,6 +15896,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * currentMapTypes} so their own dispatch handles those.
      */
     private boolean applyListMutation(SmtSession s, Encoder enc, Expression call, List<Object> countVals) {
+        Expression named = enc.asNamedLists(call)   // Phase 501 — `b.xs.add(v)` writes the list `b$xs`
+        if (!applyNamedListMutation(s, enc, named, countVals)) return false
+        if (!named.is(call)) {
+            // Phase 501 — and `b` owes its class invariant at the exit, as a field written through it does (Phase 433)
+            String n = ((VariableExpression) ((MethodCallExpression) named).objectExpression).name
+            String obj = n.substring(0, n.indexOf('$'))
+            if (!classInvariantTexts(currentObjectParams.get(obj)).isEmpty()) enc.writtenObjectParams.add(obj)
+        }
+        true
+    }
+
+    private boolean applyNamedListMutation(SmtSession s, Encoder enc, Expression call, List<Object> countVals) {
         if (!(call instanceof MethodCallExpression)) return false
         MethodCallExpression mce = (MethodCallExpression) call
         Expression recv = mce.objectExpression

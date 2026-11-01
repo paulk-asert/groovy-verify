@@ -84,7 +84,8 @@ class G541_p500_receiver_lists {
                         static Integer f(B b) { b.xs[0] }'''))],
 
         // ---------- what isn't modelled ----------
-        [group: "P500 receiver lists", name: "a method that writes the list", expect: ['Skipped verification of postcondition'],
+        // skipped until Phase 501 modelled a receiver list's write; refuted since, as the clear empties it
+        [group: "P500 receiver lists", name: "a method that writes the list", expect: ['Cannot prove postcondition', 'fails on: f(new B(xs: [0]))'],
          src: tc(client('xs != null && xs.size() > 0', '''@Requires({ b != null })
                         @Ensures({ result > 0 })
                         static int f(B b) { b.xs.clear(); b.xs.size() }'''))],

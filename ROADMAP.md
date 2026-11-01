@@ -20655,7 +20655,7 @@ obligations on receivers the verifier doesn't model.
 as Phase 413 does an array.
 
 **Open:**
-- a method that writes the list, through `b.xs.add(…)` or an alias, stays a loud skip;
+- a method that writes the list, through `b.xs.add(…)` or an alias, stays a loud skip (a direct write: Phase 501);
 - so does a method with two parameters of the class (they may share a list);
 - lists of other element types aren't modelled this way.
 
@@ -20680,6 +20680,55 @@ Three survive, and are kept as Phase 413's array conditions are:
   values stay outside the fragment. Its obligations are silent there, as at the parent.
 - The repro's precondition pins. The model's own values already meet the precondition, so they matter only to a
   repaired call.
+
+## Phase 501 — receiver list writes  *(shipped — soundness and capability)*
+
+Phase 500 modelled a receiver's list only in a method that writes no list, so `b.xs.add(v)` left it unmodelled.
+Worse, nothing re-proved `b`'s invariant after such a write. `b.xs.clear()` breaking
+`@Invariant({ xs.size() > 0 })` compiled cleanly: Phase 433 re-proves it after a field assignment through `b`, not
+after a call on the field. So did `b.xs.clear(); b.xs.get(0)`.
+
+**The write.** A statement that mutates a receiver's list directly is the list's own write, modelled on the named
+list `b$xs` as a list parameter's is: `b.xs.add(v)`, `add(i, v)`, `clear()`, `pop()`, `removeLast()`,
+`removeAt(i)`, `remove(int i)` (`VerifyChecker.receiverListWrite`). Phase 500's guard, that the method writes no
+array or list, now looks at the body without those statements (`withoutReceiverListWrites`). They're stripped only
+from blocks and an if's branches, a braceless one's too. A write in a loop or a closure stays, and keeps the lists
+unmodelled. The receiver must be used for nothing but its fields and a comparison with null. Once handed to a call
+or kept in a local, it could be written through, or have its invariant assumed by a callee, unseen.
+`applyListMutation` reads the call through `Encoder.asNamedLists`, so all three of its callers (the postcondition
+path, the obligations' replay, a removal's hoisting) write `b$xs`.
+
+**The invariant.** A receiver whose list is written owes its class invariant at the exit, as Phase 433's field
+writes do: `b` joins `writtenObjectParams`. `writesThroughInvariantParam` counts the write, so a method with no
+`@Ensures` is still held to it.
+
+**Open:**
+- a removal used as a value (`Integer r = b.xs.pop()`), a write in a loop, and an element store (`b.xs[i] = v`)
+  keep the lists unmodelled, loudly;
+- so does a receiver handed to a call. That covers a callee whose frame is empty (`@Modifies({ [] })`): it assumes
+  the invariant the write may have broken, so `b.xs.clear(); h(b); b.xs.add(1)` would prove what `h` promises of
+  a non-empty list. But when the receiver is handed on, a write that breaks its invariant is silent, as at the
+  parent: the lists aren't modelled, so nothing is owed;
+- an unmodelled receiver list's obligations are silent, as before Phase 500: `b.xs.get(1)` after
+  `Integer r = b.xs.pop()` reports nothing. Phase 408 made the array analogue loud.
+
+**Shipped tests:** group `P501 receiver list writes`, 14 cases. Eight failed at the parent commit: five proofs were
+skipped, and three compiled cleanly where the method is wrong (a `get` after a `clear`, and two writes that break
+the receiver's invariant). Phase 500's "a method that writes the list" is refuted now, not skipped: the clear
+empties it.
+
+Mutation-checked: 6 of 8 killed:
+- Phase 500's guard kept whole (9);
+- no named-list rewrite in `applyListMutation` (11);
+- the invariant not owed (2), nor counted for a method without `@Ensures` (2);
+- the escape check dropped (1): with it, the pure callee's case compiled cleanly, a false proof;
+- no stripping at all (9).
+
+Two survive, each declining a shape the replay doesn't write faithfully:
+- A value removal kept from the stripping. With it stripped, the list is modelled, and the obligations' replay
+  reads `Integer r = b.xs.pop()` without the write. Unmodelled, the same read has no obligation at all, so the two
+  can't be told apart until the open item above is closed.
+- A loop's write kept. A loop is outside the postcondition path anyway.
 
 ## Definition of done, per increment
 
