@@ -6911,6 +6911,20 @@ class Encoder implements TheoryApi {
             Object rangeMem = translateIntRangeContains(inRecv, be.leftExpression)
             if (rangeMem == null) rangeMem = translateStringRangeContains(inRecv, be.leftExpression)
             if (rangeMem != null) return sym == 'in' ? rangeMem : session.not(rangeMem)
+            // Phase 513 — `v in xs` for a list or an array is `xs.isCase(v)`: its `contains(v)` (Phases 492, 511), and on a
+            // null one whether `v` is null (measured, Groovy 6.0.0: `null in xs` holds for a null list, `1 in xs` doesn't)
+            if (inRecv instanceof VariableExpression) {
+                String ln = ((VariableExpression) inRecv).name
+                if (isListTyped(ln) || declaredTypeOf(ln)?.isArray()) {
+                    Token eq = Token.newSymbol(Types.COMPARE_EQUAL, -1, -1)
+                    MethodCallExpression contains = new MethodCallExpression(inRecv, 'contains', new ArgumentListExpression(be.leftExpression))
+                    contains.implicitThis = false
+                    Object mem = translate(new TernaryExpression(new BooleanExpression(new BinaryExpression(inRecv, eq, ConstantExpression.NULL)),
+                        new BinaryExpression(be.leftExpression, eq, ConstantExpression.NULL), contains))
+                    if (mem == null) return null
+                    return sym == 'in' ? mem : session.not(mem)
+                }
+            }
         }
 
         // Phase 486 — a number map's read compares as Groovy compares a null: below every number, equal only to null

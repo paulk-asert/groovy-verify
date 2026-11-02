@@ -21232,7 +21232,7 @@ A `while` loop's body isn't checked through that path (its `s.length()` was refu
 - `splitConjuncts` keeps a negation whole.
 
 **Open:**
-- `null in xs` (and `v in xs` for any value) isn't modelled for a list: it's outside the fragment, said so;
+- `null in xs` (and `v in xs` for any value) isn't modelled for a list: it's outside the fragment, said so *(fixed in Phase 513)*;
 - a null written (`xs[0] = null`, `xs.add(null)`) isn't modelled in a postcondition (skipped loudly), and `add(null)`
   makes the list unknown to later checks.
 
@@ -21293,6 +21293,42 @@ case), its `||` (1) and `&&` (3), the lower bound (1), the element bound (1), th
 note's negated clause (1) and negated body (1). `falseDerefs` unwrapping a plain `BooleanExpression` survived (it
 never gets one: an if's wrapper is unwrapped by `trueDerefs`, and an else branch uses what's evaluated), so it was
 dropped.
+
+## Phase 513 — `v in xs` for a list or an array  *(shipped — precision)*
+
+Phase 511's open item: `v in xs` was modelled for a set, a map's keys, a list literal (Phase 38) and a range, but
+not for a list or an array by name, so it was outside the fragment wherever it appeared. Measured at the parent:
+`@Requires({ xs != null && 5 in xs })`, `5 !in xs` and `!(null in xs)` were dropped (a skipped postcondition, or a
+false alarm on `xs[1] + 1` with no failing call shown); `@Ensures({ 5 in xs })` skipped the method, whether an
+`xs.add(5)` met it or an `xs.add(4)` didn't; and a body returning `7 in xs` was outside the fragment.
+
+Groovy's `v in xs` is `xs.isCase(v)`, measured on Groovy 6.0.0:
+- for a list or an array (an `int[]` too), `xs.contains(v)`, with Java's equality (`1L in [1]` is false, as
+  `contains` is);
+- for a null `xs`, no exception: whether `v` is null (`null in xs` holds, `1 in xs` doesn't);
+- for a `String` `s`, a substring test (`'ab' in 'xaby'` holds), so a `String` name is not a list here.
+
+**Fix.** For a list-typed name (a parameter, a field, a local declared `List`) or an array's, `v in xs` translates as
+`xs == null ? v == null : xs.contains(v)`, so it inherits `contains`'s model: membership by the elements' values,
+null-aware (Phase 492), and `null in xs` by the element null flags (Phase 511). `v !in xs` is its negation.
+
+**Open:**
+- a receiver's list (`5 in b.xs`) and a call's result (`v in g()`) stay outside the fragment, said so;
+- `s in ['ab']` for a `String s` that's null gives a false alarm (Phase 38's literal disjunction compares
+  `s`'s value without its null flag: `@Ensures({ result == (s == 'ab') })` is refuted on `f(null)`, where both sides
+  are false);
+- the outside-fragment message for `'ab' in s` shows `(ab in s)`, without the quotes.
+
+**Shipped tests:** group `P513 list membership`, 15 cases. 13 fail at the parent commit, all outside the fragment
+(a member by `contains`, as Groovy runs it on a null list, a null list's that `contains` alone gets wrong, `!in`,
+`!(null in xs)` and `null !in xs`, an array's member, after an add, another value added, in a body, on a null list,
+a local list's, a `String` list's). Two pass at the parent, as guards: a literal list's `v in [1, 2]` (Phase 38), and
+`'ab' in s` for a `String`, still outside the fragment.
+
+Mutation-checked: 5 of 6 killed: the encoding dropped (13), the null list's case dropped (3), an array's not taken
+(1), any name taken as a list (1, the `String`), `!in` not negated (2). The `mem == null` check survived: for `in`
+the null passes through anyway. It's kept so `!in` of a value that doesn't translate doesn't negate a null, as the
+branch's other paths check.
 
 ## Definition of done, per increment
 
