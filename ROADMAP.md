@@ -21088,7 +21088,7 @@ was left as it was.
 **Open:**
 - a call on an element of a literal list (`['ab', null][1].length()`) has no obligation still, and says nothing
   *(fixed in Phase 509)*;
-- `!xs.contains(null)` in a precondition isn't modelled, for a parameter's list or a receiver's;
+- `!xs.contains(null)` in a precondition isn't modelled, for a parameter's list or a receiver's *(fixed in Phase 511)*;
 - a receiver's `List<String>` (any non-integral element type) isn't modelled (Phase 504).
 
 **Shipped tests:** group `P508 receiver element nullity`, 16 cases. 10 fail at the parent commit:
@@ -21203,6 +21203,53 @@ Mutation-checked (with `P422 safe navigation`, `P509` and `P508`), 8 of 8 killed
   (1, and 1 in P508);
 - Phase 422's message off for a list's element (6), a map's (1), a literal's (1); the read spelt cutting at `.m(`, not
   `?.m(` (8).
+
+## Phase 511 — `!xs.contains(null)`, and a loop's negated precondition  *(shipped — soundness and precision)*
+
+Phase 508's open item: `xs.contains(null)` was outside the fragment, since the `contains` oracle translates its
+argument and a null doesn't translate. Measured at the parent:
+- **False alarms.** `@Requires({ … && !xs.contains(null) })` was dropped as outside the fragment, so `xs[1] + 1`,
+  `xs[1].intValue()`, `xs[i] + 1`, a `List<String>`'s `xs[1].length()`, a receiver's `b.xs[1] + 1`, an array's
+  `a[1].length()`, `Integer v = xs[0]; v.intValue()` and a for-in's `x.intValue()` each reported a null element.
+- **Postconditions skipped.** `@Ensures({ !xs.contains(null) })` skipped the method ("precondition … is outside
+  fragment"), whether it held (`xs.add(5)`, `xs[0] = 7` under the same precondition) or not.
+
+The for-in case, once the encoding was in, still reported `x` null. The SMT dump showed why: **a loop's stable
+precondition dropped every conjunct's negation.** `splitConjuncts` unwrapped a `BooleanExpression`, and a
+`NotExpression` is one, so `@Requires({ xs != null && !(s != null) })` was assumed in a for-in body as `s != null`. A
+soundness bug that predates this phase, measured at the parent:
+- `!(s != null)` and a for-in body's `s.length()`, and `!(xs[0] != null)` and its `x.intValue()`: each compiled
+  cleanly, and the run throws (`f([null], null)`);
+- `!(s == null)`: a false alarm.
+
+A `while` loop's body isn't checked through that path (its `s.length()` was refuted at the parent too).
+
+**Fix.**
+- `xs.contains(null)` is `¬∀i ∈ [0, size)· ¬null(xs[i])`, by the element flags (Phase 37/445): the negation of
+  `xs.every { it != null }`'s quantifier, triggered as it is, by the element. For a parameter's, a local's, a
+  field's, a receiver's list (Phase 500) or an array; false for a primitive array's or a `@NonNull`-element
+  container's; outside the fragment (null) for an `old` snapshot's.
+- `splitConjuncts` keeps a negation whole.
+
+**Open:**
+- `null in xs` (and `v in xs` for any value) isn't modelled for a list: it's outside the fragment, said so;
+- a null written (`xs[0] = null`, `xs.add(null)`) isn't modelled in a postcondition (skipped loudly), and `add(null)`
+  makes the list unknown to later checks.
+
+**Shipped tests:** group `P511 contains null`, 20 cases. 18 fail at the parent commit:
+- ten false alarms under `!xs.contains(null)` (an element unboxed, a call on one, a `String`'s, by an index, a
+  receiver's, an array's, a local read from one, a for-in's element called and unboxed);
+- four postconditions skipped (kept after an add, after a write, not from the precondition, an `int` array's);
+- `contains(null)` and another list's element, whose failing call wasn't shown (the precondition was outside);
+- two compiled cleanly where the run throws (a for-in body under `!(s != null)`, `!(xs[0] != null)`), one false
+  alarm (`!(s == null)`).
+
+Two pass at the parent, as guards: `xs.every { it != null }` for a for-in, and a `while` body under `!(s != null)`.
+
+Mutation-checked: 3 of 3 killed, with `P505` and `P506` (which use `!xs.contains(null)`) run too: `contains(null)`
+not modelled (15), a primitive array's taken as containing a null (1), the negation dropped again (4). The trigger
+isn't pinned: with only the element's or only the flag's, every case still proves (the two were alternatives, and
+the flag's was dropped).
 
 ## Definition of done, per increment
 

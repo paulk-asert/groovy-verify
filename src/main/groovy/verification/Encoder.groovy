@@ -8740,6 +8740,21 @@ class Encoder implements TheoryApi {
             if (m == 'isEmpty' && args.isEmpty()) {
                 return session.eq(sizeOf(rn), session.intLit(0L))
             }
+            // Phase 511 — `xs.contains(null)`: some element is null, by its flags (so `!xs.contains(null)` states each
+            // isn't); a primitive array's never is
+            Expression a0 = args.size() == 1 ? args.get(0) : null
+            if (m == 'contains' && (a0 instanceof ConstantExpression && ((ConstantExpression) a0).value == null ||
+                    a0 instanceof VariableExpression && ((VariableExpression) a0).name == 'null')) {
+                if (rn.startsWith('old$') || !hasElementNullity(rn)) return null
+                ClassNode dt = declaredTypeOf(rn)
+                if (dt != null && dt.isArray() && ClassHelper.isPrimitiveType(dt.componentType) ||
+                    nonNullElementContainers.contains(rn)) return session.boolLit(false)
+                Object iv = session.boundIntVar('containsNull$q' + (quantCounter++))
+                // the negation of `xs.every { it != null }`'s quantifier, triggered as it is, by the element
+                return session.not(session.forall([iv], session.implies(session.and([session.le(session.intLit(0L), iv),
+                    session.lt(iv, sizeOf(rn))]), session.not(session.eq(session.select(elementNullityFor(rn), iv),
+                    session.intLit(1L)))), [session.select(arrayFor(rn), iv)]))
+            }
             if (m == 'contains' && args.size() == 1) {
                 // Precise membership: ∃ i. 0 <= i < rn.size ∧ rn[i] == y, over the modelled contents
                 // (an upgrade from the old opaque uninterpreted predicate — `contains` now relates to

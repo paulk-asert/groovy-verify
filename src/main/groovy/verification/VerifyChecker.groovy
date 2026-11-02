@@ -18205,7 +18205,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
             splitConjuncts(((BinaryExpression) e).leftExpression, out)
             splitConjuncts(((BinaryExpression) e).rightExpression, out)
-        } else if (e instanceof BooleanExpression) {
+        } else if (e instanceof BooleanExpression && !(e instanceof NotExpression)) {
+            // Phase 511 — a NotExpression IS-A BooleanExpression: unwrapping it dropped the negation, so a loop's stable
+            // precondition `!(s != null)` was assumed as `s != null`
             splitConjuncts(((BooleanExpression) e).expression, out)
         } else {
             out.add(e)
