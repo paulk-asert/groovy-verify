@@ -2169,7 +2169,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  own, as Phase 502 found) */
     private String elementReadSpelled(MethodCallExpression mce) {
         String call = asSpelled(mce)
-        int dot = call.lastIndexOf('.' + mce.methodAsString + '(')
+        int dot = call.lastIndexOf((mce.safe ? '?.' : '.') + mce.methodAsString + '(')   // Phase 510 — a safe call's
         dot > 0 ? call.substring(0, dot) : asWritten(mce.objectExpression)
     }
 
@@ -8018,7 +8018,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 s.assertExpr(nul)
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(withRepro(Reporter.formatNullDereference(read, df.method, r), r, 'NullPointerException'), df.node)
+                    addStaticTypeError(withRepro(df.safeUse ? Reporter.formatNullSafeUse(read, asSpelled((Expression) df.node), r) :
+                        Reporter.formatNullDereference(read, df.method, r), r, 'NullPointerException'), df.node)
                 }
                 explainIfVerified(s, r, "${read} != null")
                 return
@@ -8056,7 +8057,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     s.assertExpr(nul)
                     CheckResult r = shown(s.check())
                     if (r.status != CheckResult.Status.VERIFIED) {
-                        addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
+                        addStaticTypeError(withSuggestion(withRepro(df.safeUse ? Reporter.formatNullSafeUse(asWritten(read),
+                            asSpelled((Expression) df.node), r) : Reporter.formatNullDereference(
                             asWritten(read), df.method, r), r, 'NullPointerException'), df), df.node)
                     }
                     explainIfVerified(s, r, "${asWritten(read)} != null")
@@ -8081,7 +8083,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 508 — a receiver list as the source spells it, `b.xs`
                 String listShown = receiverListsOf(currentMethod).containsKey(df.receiver) ? shownLocation(df.receiver) : df.receiver
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
+                    String elem = df.node instanceof MethodCallExpression ? elementReadSpelled((MethodCallExpression) df.node) :
+                        "${listShown}[${asWritten(df.indexExpr)}]".toString()
+                    addStaticTypeError(withSuggestion(withRepro(df.safeUse ? Reporter.formatNullSafeUse(elem,   // Phase 510
+                        asSpelled((Expression) df.node), r) : Reporter.formatNullDereference(
                         "${listShown}[${asWritten(df.indexExpr)}]", df.method, r), r, 'NullPointerException'), df), df.node)
                 }
                 explainIfVerified(s, r, "${listShown}[${asWritten(df.indexExpr)}] != null")
@@ -13292,8 +13297,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // a site whose node isn't known stays unguarded: one fact fewer, never a false one
                     ASTNode n = site.hasProperty('node') ? (ASTNode) site['node'] : null
                     if (n == null || inRecv.contains(n)) continue
-                    // its own receiver's, where its null value then throws (`xs?.size() + 1`, `int n = xs?.size()`): kept
-                    if (!harmless && site instanceof DerefSite && n.is(mce) && ((DerefSite) site).indexExpr == null) {
+                    // its own receiver's, where its null value then throws (`xs?.size() + 1`, `int n = xs?.size()`): kept.
+                    // Phase 510 — an element's too (`xs[0]?.length() + 1`): it was guarded by its own non-null, silently
+                    if (!harmless && site instanceof DerefSite && n.is(mce) && ((DerefSite) site).unboxed == null) {
                         ((DerefSite) site).safeUse = true
                         continue
                     }
@@ -13387,10 +13393,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     derefSites.add(new DerefSite(
                         node: mce, receiver: ind.containerName,
                         method: mce.methodAsString, indexExpr: ind.indexExpr))
-                } else if (!mce.safe && !mce.spreadSafe && Encoder.literalElementRead(recv) != null) {
+                } else if (!mce.spreadSafe && Encoder.literalElementRead(recv) != null) {
                     // Phase 509 — a literal list's (`['ab', null][1].length()`): it had no obligation, silently
                     derefSites.add(new DerefSite(node: mce, method: mce.methodAsString, literalRead: recv))
-                } else if (unmodelledElementCall != null && !mce.safe && !mce.spreadSafe && unmodelledElementOf(recv) != null) {
+                } else if (unmodelledElementCall != null && !mce.spreadSafe && unmodelledElementOf(recv) != null &&
+                           !(mce.safe && harmlessSafeCalls?.contains(safeCallKey(mce)))) {   // Phase 510 — a safe call's, used
                     unmodelledElementCall.call(mce)
                 }
                 // Phase 502 — any other list (`b.xs` unmodelled, `f()`, `xss[0]`): a throwing index call on it had no

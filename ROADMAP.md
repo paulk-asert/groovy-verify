@@ -21142,7 +21142,7 @@ reaches.
 **Open:**
 - a safe call on an element whose null value is then used (`['ab', null][1]?.length() + 1`, and a list parameter's
   `xs[0]?.length() + 1`, `int f() { xs[0]?.length() }`) has no obligation, silently: Phase 422's safe use is a
-  name's only. Pre-existing; measured here;
+  name's only. Pre-existing; measured here *(fixed in Phase 510)*;
 - `List.of(…)`'s element (never null: `List.of` refuses one) is skipped loudly still (Phase 508).
 
 **Shipped tests:** group `P509 literal list element nullity`, 21 cases. 12 fail at the parent commit:
@@ -21164,6 +21164,45 @@ Mutation-checked, 6 of 7 killed:
 The survivor makes a safe call on a literal's element a dereference site too: no case's outcome changes (its
 receiver's non-null guard proves it), but where its null is used (the open item above) it misreports the call
 ("Cannot invoke method length()", spelt `['ab', null][1]?`), so the exclusion is kept.
+
+## Phase 510 — a safe call on an element, used  *(shipped — soundness)*
+
+Phase 509's open item. Phase 422 keeps a safe call's receiver obligated where the call's null value is used where a
+null throws (`s?.length() + 1`: "Cannot execute null+1"; `int f() { s?.length() }`; an argument), but only for a
+name's safe call: an element's dereference site (Phase 37's, `indexExpr` set) was guarded by its own non-null like
+any other site under the call, and discharged trivially. Measured at the parent, each compiled cleanly where the run
+throws:
+- a list parameter's element, `xs[0]?.length() + 1` and `xs.get(0)?.length() + 1` for `f([null])`, returned as an
+  `int`, passed as an `int` argument;
+- an array's element, `a[0]?.length() + 1` for `f(new String[1])`;
+- a receiver's element, `b.xs[0]?.intValue() + 1` (Phase 508);
+- a map's value, `m['k']?.length() + 1` for `f([:])` (Phase 483);
+- a literal's element, `['ab', null][1]?.length() + 1` (Phase 509, which left safe calls out);
+- an unmodelled list's element, `s.ns[0]?.length() + 1`, unsaid (Phase 508 left safe calls out of its loud skip).
+
+**Fix.**
+- The safe call's own dereference site keeps its obligation (`safeUse`) wherever its value isn't harmless (Phase
+  422's `harmlessSafeCalls`: a comparison, an elvis's left, a statement, a reference-typed value, …), an element's
+  as a name's.
+- A literal's element under a safe call is a site too, and an unmodelled list's is skipped loudly unless its value
+  is harmless.
+- The message is Phase 422's, spelt as written: "xs[0]?.length() is null when xs[0] is, and a null throws where it's
+  used", `obligation: xs[0] != null` (`b.xs[0]`, `m['k']`, `['ab', null][1]`).
+
+**Shipped tests:** group `P510 safe call on an element, used`, 19 cases. 9 fail at the parent commit, each compiled
+cleanly where the run throws (or, the unmodelled list's, said nothing): a parameter's element in arithmetic, by `get`,
+as an `int`'s value, as an argument; an array's, a receiver's, a map's, a literal's; an unmodelled list's.
+
+Ten pass at the parent, as guards: three elements stated non-null (a parameter's, a receiver's, a literal's), five
+harmless uses (compared, under an elvis, as an `Integer`'s value, a statement, an unmodelled list's as an `Integer`'s
+value), a name's safe call used, and a call after a safe one on a non-null element.
+
+Mutation-checked (with `P422 safe navigation`, `P509` and `P508`), 8 of 8 killed:
+- an element's site not kept where its value is used (7);
+- a literal's safe call not a site (1); the unmodelled list's loud skip off for a safe call (1), on for a harmless one
+  (1, and 1 in P508);
+- Phase 422's message off for a list's element (6), a map's (1), a literal's (1); the read spelt cutting at `.m(`, not
+  `?.m(` (8).
 
 ## Definition of done, per increment
 
