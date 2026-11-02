@@ -37,8 +37,9 @@ class G158_p38c_symbolic_i {
                     }''')],
         // Soundness anchor: without the @Requires constraint on i, the ite-chain's default branch
         // (an unconstrained int) makes the @Ensures refute.
+        // Phase 509 — past either end the subscript is null, and returning it as an int throws first
         [group: 'P38c symbolic i', name: 'List.of(...)[i] without bound refutes',
-         expect: 'Cannot prove postcondition',
+         expect: ['Possible GroovyCastException', '[10, 20, 30][i] is null for a null element', 'fails on: f('],
          src: tc('''class C {
                         @Ensures({ result == 10 || result == 20 || result == 30 })
                         static int f(int i) { [10, 20, 30][i] }

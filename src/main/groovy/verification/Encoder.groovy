@@ -5119,6 +5119,7 @@ class Encoder implements TheoryApi {
             Object kH = translateInSort(mt.indexExpr, mapKeySort(mt.containerName))
             return kH == null ? null : mapValueNullity(mt.containerName, kH)
         }
+        if (literalElementRead(e) != null) return literalElementNullity(e)   // Phase 509
         IndexedNullTarget ind = indexedAccessTarget(e)
         if (ind != null && hasElementNullity(ind.containerName)) {
             if (nonNullElementContainers.contains(ind.containerName)) return session.boolLit(false)
@@ -5195,6 +5196,47 @@ class Encoder implements TheoryApi {
         null
     }
     private int nullUnfoldDepth = 3
+
+    /** Phase 509 — the literal list {@code e} reads an element of ({@code ['ab', null][1]}, {@code [a, b].get(i)}, not a
+     *  safe call's); else null */
+    static ListExpression literalElementRead(Expression e) {
+        Expression list = e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET ?
+            ((BinaryExpression) e).leftExpression :
+            e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'get' &&
+                !((MethodCallExpression) e).safe && !((MethodCallExpression) e).spreadSafe &&
+                argList((MethodCallExpression) e).size() == 1 ? ((MethodCallExpression) e).objectExpression : null
+        list instanceof ListExpression ? (ListExpression) list : null
+    }
+
+    /**
+     * Phase 509 — a literal list's element is null when the element it picks is: {@code ['ab', s][i]} is {@code s}'s
+     * nullity at {@code i == 1}. A subscript counts from the end too ({@code [a, b][-1]} is {@code b}) and is null past
+     * either end (Groovy's {@code getAt}, measured); a {@code get} past them throws instead (Phase 502 says so), so its
+     * value there is taken as non-null. Null (not modelled) for a spread element, an index that isn't a primitive
+     * integer, or an element whose nullity isn't.
+     */
+    private Object literalElementNullity(Expression e) {
+        ListExpression list = literalElementRead(e)
+        boolean sub = e instanceof BinaryExpression
+        Expression ix = sub ? ((BinaryExpression) e).rightExpression : argList((MethodCallExpression) e).get(0)
+        ClassNode t = staticTypeOf(ix)
+        if (!(ix instanceof ConstantExpression && ((ConstantExpression) ix).value instanceof Integer) &&
+            !(t != null && ClassHelper.isPrimitiveType(t) && isIntLikeType(t) && t.name != 'char')) return null
+        List<Expression> elems = list.expressions
+        if (elems.any { it instanceof SpreadExpression }) return null
+        Object i = translate(ix)
+        if (i == null) return null
+        int n = elems.size()
+        Object out = session.boolLit(sub)
+        for (int k = n - 1; k >= 0; k--) {
+            Object nk = nullityOfExpr(elems.get(k))
+            if (nk == null) return null
+            Object at = sub ? session.or([session.eq(i, session.intLit((long) k)), session.eq(i, session.intLit((long) (k - n)))]) :
+                session.eq(i, session.intLit((long) k))
+            out = session.ite(at, nk, out)
+        }
+        out
+    }
 
     /**
      * Phase 37 — get-or-mint the per-element nullity array for a list/array container. The handle

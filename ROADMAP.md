@@ -21086,7 +21086,8 @@ field's list only: naming a receiver's there too changed nothing measured (each 
 was left as it was.
 
 **Open:**
-- a call on an element of a literal list (`['ab', null][1].length()`) has no obligation still, and says nothing;
+- a call on an element of a literal list (`['ab', null][1].length()`) has no obligation still, and says nothing
+  *(fixed in Phase 509)*;
 - `!xs.contains(null)` in a precondition isn't modelled, for a parameter's list or a receiver's;
 - a receiver's `List<String>` (any non-integral element type) isn't modelled (Phase 504).
 
@@ -21104,6 +21105,65 @@ Mutation-checked, 5 of 5 killed:
 - the comparison's operand not named as a receiver's list (7);
 - a receiver's element call without its obligation (2), its obligation spelt `b$xs[0]` (1);
 - the loud skip off (3), and made for a safe call too (1).
+
+## Phase 509 — a literal list's element nullity  *(shipped — soundness and precision)*
+
+Phase 508's open item: a literal list's element was taken as neither null nor non-null where it's used. Measured at
+the parent:
+- **A call on a null element, silent.** `['ab', null][1].length()`, `['ab', null].get(1).length()`,
+  `['ab', null][-1].length()`, `[1, null][1].intValue()` and `['ab', s][1].length()` (for `f(null)`) compiled
+  cleanly; so did `['ab', null][i].length()` under `0 <= i < 2`, and `['ab', 'cd'][i].length()` for `i >= 0`
+  (a subscript past the end is null: Groovy's `getAt`).
+- **Unboxed, silent.** `int v = [1, null][1]` (a GroovyCastException) and `[1, n][1] + 1` (for `f(null)`) compiled
+  cleanly.
+- **A false alarm.** `String s = ['ab', null][0]; s.length()` reported `s` possibly null: a local read from a
+  literal's element got a free null flag.
+- **A misspelt skip.** Phase 502's loud skip for `['ab', null].get(i)` named the read `'(i)'`: the call's own columns
+  on a literal receiver aren't its own.
+
+**Fix.**
+- `Encoder.literalElementNullity`: a literal list's element (`[a, b][i]`, `[a, b].get(i)`) is null when the element
+  it picks is, by the index: `ite(i == 0 || i == -2, null(a), ite(i == 1 || i == -1, null(b), …))`. A subscript
+  counts from the end too and is null past either end; a `get` past them throws instead (Phase 502 says so), so its
+  value there is taken as non-null. `nullityOfExpr` reads it, so a local assigned one, a comparison and an unboxing
+  carry it. Not modelled (null): a spread element, an index that isn't a primitive integer, or an element whose own
+  nullity isn't.
+- A call on a literal's element is a dereference site of its own (`DerefSite.literalRead`), its obligation spelt as
+  written (`['ab', null][1] != null`); one not modelled (`[*xs, 'a'][0].length()`) is skipped loudly ("Skipped
+  element dereference … the nullity of '[*xs, 'a'][0]' isn't modelled"). A safe call isn't one.
+- An unboxed one (`int v = [1, null][1]`, `[1, n][1] + 1`) is Phase 486's unboxed read: "[1, null][1] is null for a
+  null element, and a null can't be cast to int".
+- Phase 502's skip spells the call from the whole expression when the call's own text doesn't hold `.get(`.
+
+`P38c symbolic i`'s "List.of(...)[i] without bound refutes" (`static int f(int i) { [10, 20, 30][i] }`) now reports
+the GroovyCastException its unbounded index throws first (`fails on: f(-524792)`), not the postcondition it never
+reaches.
+
+**Open:**
+- a safe call on an element whose null value is then used (`['ab', null][1]?.length() + 1`, and a list parameter's
+  `xs[0]?.length() + 1`, `int f() { xs[0]?.length() }`) has no obligation, silently: Phase 422's safe use is a
+  name's only. Pre-existing; measured here;
+- `List.of(…)`'s element (never null: `List.of` refuses one) is skipped loudly still (Phase 508).
+
+**Shipped tests:** group `P509 literal list element nullity`, 21 cases. 12 fail at the parent commit:
+- nine compiled cleanly where the run throws: a call on a null element (by subscript, by `get`, a parameter's, by an
+  index, past the end, from the end, an `Integer`'s), and a null element unboxed (assigned, in arithmetic);
+- one false alarm: a local read from a non-null element;
+- the spread literal's element, unsaid; the literal's `get(i)` skip, misspelt.
+
+Nine pass at the parent, as guards: six non-null shapes (an element, a parameter's under `s != null`, an index kept
+within, from the end, unboxed, arithmetic under `n != null`), a local read from a null element, a safe call on one,
+and a nested literal's element.
+
+Mutation-checked, 6 of 7 killed:
+- the literal's nullity not modelled (18, and 2 in `P38c symbolic i`);
+- a subscript past the end taken as non-null (1, and 1), an index from the end not counted (2);
+- the call's dereference site off (9); the unboxed read off (2, and 1);
+- Phase 502's spelling fix off (1).
+
+The survivor makes a safe call on a literal's element a dereference site too: no case's outcome changes (its
+receiver's non-null guard proves it), but where its null is used (the open item above) it misreports the call
+("Cannot invoke method length()", spelt `['ab', null][1]?`), so the exclusion is kept.
 
 ## Definition of done, per increment
 

@@ -2147,10 +2147,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void reportUnmodelledElementCall(MethodCallExpression mce) {
         if (reportedIndexSkips.contains(mce)) return
         if (heldErrors == null) reportedIndexSkips.add(mce)
-        // as spelled: the whole call's text, cut (a part's own columns aren't its own, as Phase 502 found)
-        String call = asSpelled(mce)
-        int dot = call.lastIndexOf('.' + mce.methodAsString + '(')
-        String read = dot > 0 ? call.substring(0, dot) : asWritten(mce.objectExpression)
+        String read = elementReadSpelled(mce)
         int open = -1
         if (read.endsWith(']')) {
             int depth = 0
@@ -2168,11 +2165,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             "'${clip(list)}', which isn't a variable or field the verifier models"), mce)
     }
 
+    /** Phase 508 — the element a call is on, as spelled: the whole call's text, cut (a part's own columns aren't its
+     *  own, as Phase 502 found) */
+    private String elementReadSpelled(MethodCallExpression mce) {
+        String call = asSpelled(mce)
+        int dot = call.lastIndexOf('.' + mce.methodAsString + '(')
+        dot > 0 ? call.substring(0, dot) : asWritten(mce.objectExpression)
+    }
+
     private void reportUnmodelledListIndex(MethodCallExpression mce) {
         if (reportedIndexSkips.contains(mce)) return
         if (heldErrors == null) reportedIndexSkips.add(mce)
         String call = asSpelled(mce)
         int dot = call.lastIndexOf('.' + mce.methodAsString + '(')   // the receiver's own columns aren't its own
+        // Phase 509 — nor, on a literal list's (`['ab', null].get(i)`), the call's: it spelt `(i)`
+        if (dot <= 0) { call = asWritten(mce); dot = call.lastIndexOf('.' + mce.methodAsString + '(') }
         String list = dot > 0 ? call.substring(0, dot) : asWritten(mce.objectExpression)
         addStaticTypeError(Reporter.formatImplicitSkipped('list index',
             "'${clip(call)}' indexes the list '${clip(list)}', which isn't a variable or field the " +
@@ -6001,6 +6008,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (site instanceof DerefSite) {
             DerefSite df = (DerefSite) site
+            if (df.literalRead != null) return null   // Phase 509 — no precondition names a literal's element
             if (df.unboxed != null) return isEntryName(df.receiver) && referencesOnlyEntryState(df.indexExpr) ?   // Phase 486
                 "${asWritten(df.unboxed)} != null".toString() : null
             if (df.indexExpr == null) return isEntryName(df.receiver) ? "${df.receiver} != null".toString() : null
@@ -6917,6 +6925,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Encoder.elementCallTarget(e) != null ||   // Phase 489 — `xs.first()`, `xs.max()`
                 Encoder.removedElementTarget(e) != null ||   // Phase 493 — `xs.pop()`, `xs.removeAt(i)`
                 receiverListAccess(e, receiverListsOf(m)) != null ||   // Phase 500 — `b.xs[i]`
+                Encoder.literalElementRead(e) != null ||   // Phase 509 — `[1, null][1]`
                 e instanceof PropertyExpression && !((PropertyExpression) e).safe && !((PropertyExpression) e).spreadSafe &&
                 ((PropertyExpression) e).objectExpression instanceof VariableExpression && ((PropertyExpression) e).propertyAsString != null
             if (boxedNumber && read) out.putIfAbsent(safeCallKey(e), [exc, how] as String[])
@@ -7973,15 +7982,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // key or a null put, and throws; Phase 488 — so is a list's or an array's null element (`xs[0] + 1`). An
             // object's property isn't checked here
             if (df.unboxed != null) {
-                boolean map = enc.isMapName(df.receiver)
+                boolean map = df.receiver != null && enc.isMapName(df.receiver)
                 Encoder.IndexedNullTarget ec = Encoder.elementCallTarget(df.unboxed) ?: Encoder.removedElementTarget(df.unboxed)   // Phase 489, 493
                 boolean indexed = Encoder.indexedAccessTarget(df.unboxed) != null ||
                     receiverListAccess(df.unboxed, receiverListsOf(currentMethod)) != null   // Phase 500 — `b.xs[0]`
-                if (!map && !(enc.hasElementNullity(df.receiver) && (indexed || ec != null)) ||   // not `xs.x`
-                    currentNonNullElementContainers.contains(df.receiver)) return
+                if (df.literalRead == null && (!map && !(enc.hasElementNullity(df.receiver) && (indexed || ec != null)) ||   // not `xs.x`
+                    currentNonNullElementContainers.contains(df.receiver))) return
                 Object nul = enc.nullityOfExpr(df.unboxed)
                 if (nul == null) {
-                    addStaticTypeError(Reporter.formatImplicitSkipped("unboxed value",
+                    addStaticTypeError(Reporter.formatImplicitSkipped("unboxed value", df.literalRead != null ?   // Phase 509
+                        "the nullity of '${clip(asWritten(df.unboxed))}' isn't modelled: its index or one of the list's elements is outside fragment" :
                         "${map ? 'key' : 'index'} '${asWritten(df.indexExpr)}' is outside fragment"), df.node)
                     return
                 }
@@ -7994,6 +8004,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         UNBOX_REPRO_EXCEPTIONS.get(df.unboxThrows)), df), df.node)
                 }
                 explainIfVerified(s, r, "${asWritten(df.unboxed)} != null")
+                return
+            }
+            // Phase 509 — a literal list's element is null when the element it picks is (Encoder.literalElementNullity)
+            if (df.literalRead != null) {
+                String read = elementReadSpelled((MethodCallExpression) df.node)
+                Object nul = enc.nullityOfExpr(df.literalRead)
+                if (nul == null) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
+                        "the nullity of '${clip(read)}' isn't modelled: its index or one of the list's elements is outside fragment"), df.node)
+                    return
+                }
+                s.assertExpr(nul)
+                CheckResult r = shown(s.check())
+                if (r.status != CheckResult.Status.VERIFIED) {
+                    addStaticTypeError(withRepro(Reporter.formatNullDereference(read, df.method, r), r, 'NullPointerException'), df.node)
+                }
+                explainIfVerified(s, r, "${read} != null")
                 return
             }
             // Phase 245 — a locally-CONSTRUCTED channel (create()/subscribe()/a pipeline op) is a
@@ -12908,6 +12935,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression unboxed
         String unboxThrows
         String unboxHow
+        /** Phase 509 — the call is on a literal list's element ({@code ['ab', null][1].length()}), this read */
+        Expression literalRead
     }
 
     /**
@@ -12972,6 +13001,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         private void unboxedSite(Expression e) {
             String[] at = unboxedReads?.get(safeCallKey(e))
             if (at == null) return
+            if (Encoder.literalElementRead(e) != null) {   // Phase 509 — a literal list's (`int v = [1, null][1]`)
+                derefSites.add(new DerefSite(node: e, unboxed: e, literalRead: e, unboxThrows: at[0], unboxHow: at[1]))
+                return
+            }
             Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(e) ?: Encoder.elementCallTarget(e) ?:
                 Encoder.removedElementTarget(e) ?: receiverListAccess(e, receiverLists)   // Phase 489, 493, 500
             String recv = ind != null ? ind.containerName : ((VariableExpression) ((PropertyExpression) e).objectExpression).name
@@ -13354,6 +13387,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     derefSites.add(new DerefSite(
                         node: mce, receiver: ind.containerName,
                         method: mce.methodAsString, indexExpr: ind.indexExpr))
+                } else if (!mce.safe && !mce.spreadSafe && Encoder.literalElementRead(recv) != null) {
+                    // Phase 509 — a literal list's (`['ab', null][1].length()`): it had no obligation, silently
+                    derefSites.add(new DerefSite(node: mce, method: mce.methodAsString, literalRead: recv))
                 } else if (unmodelledElementCall != null && !mce.safe && !mce.spreadSafe && unmodelledElementOf(recv) != null) {
                     unmodelledElementCall.call(mce)
                 }
