@@ -21314,7 +21314,7 @@ null-aware (Phase 492), and `null in xs` by the element null flags (Phase 511). 
 
 **Open:**
 - a receiver's list (`5 in b.xs`) and a call's result (`v in g()`) stay outside the fragment, said so;
-- `s in ['ab']` for a `String s` that's null gives a false alarm (Phase 38's literal disjunction compares
+- `s in ['ab']` for a `String s` that's null gives a false alarm *(fixed in Phase 514)* (Phase 38's literal disjunction compares
   `s`'s value without its null flag: `@Ensures({ result == (s == 'ab') })` is refuted on `f(null)`, where both sides
   are false);
 - the outside-fragment message for `'ab' in s` shows `(ab in s)`, without the quotes.
@@ -21329,6 +21329,34 @@ Mutation-checked: 5 of 6 killed: the encoding dropped (13), the null list's case
 (1), any name taken as a list (1, the `String`), `!in` not negated (2). The `mem == null` check survived: for `in`
 the null passes through anyway. It's kept so `!in` of a value that doesn't translate doesn't negate a null, as the
 branch's other paths check.
+
+## Phase 514 — a null in a literal list's membership  *(shipped — precision)*
+
+Phase 513's open item. Phase 38 folds `x in [a, b]`, `[a, b].contains(x)` and a map literal's `containsKey` and
+`containsValue` to `x == a ∨ x == b`, on the values alone. A null's value is free, so a null `x` could equal any
+element. Measured at the parent:
+- false alarms: `s in ['ab']` for a null `String s`, refuted by `@Ensures({ result == (s == 'ab') })` on `f(null)`
+  where both sides are false; the same by `contains`, against a map literal's keys, a null `Integer`'s
+  `n in [1, 2]`, and `s in ['ab', t]` for a non-null `t`;
+- outside the fragment: a null literal on either side (`null in ['ab', s]`, `s in ['ab', null]`), since a null
+  doesn't translate, nor `s in ['ab', t]` for a null `t`.
+
+**Fix.** A null equals only a null (Groovy's `==` and Java's `equals` agree on it): each disjunct is
+`(null(x) ∨ null(a)) ? (null(x) ∧ null(a)) : x == a` where both sides' null flags are known, and a null literal's
+disjunct is the other side's flag. A side whose flag isn't known compares by value, as before.
+
+**Open:** a contract's `s == t` for two `String`s compares their values alone: `@Requires({ s == null && t == null })`
+with `@Ensures({ s == t })` is refuted on `f(null, null)`, where Groovy's `null == null` holds. The same shape as this
+phase's, in the general `==`.
+
+**Shipped tests:** group `P514 literal membership null`, 11 cases. 8 fail at the parent commit (a null `String` in a
+literal list, by `contains`, against a null element, a null `Integer`, a null literal on the left, a null element on
+the right, a null not matched by a value, a map literal's keys). Three pass at the parent, as guards: a null
+`String`'s membership isn't its non-nullity (refuted on `f("")`), a null `Integer` not a member (refuted on
+`f(null)`), and an `int`'s `v in [1, 2]`.
+
+Mutation-checked: 4 of 4 killed: the null-aware equality dropped (6), the null literal not handled (1), only on the
+left (1, the null element), only on the right (1, the null literal on the left).
 
 ## Definition of done, per increment
 

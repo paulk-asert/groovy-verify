@@ -4080,14 +4080,29 @@ class Encoder implements TheoryApi {
         localFactories.remove(name)
     }
 
-    /** Disjunction of equalities — {@code x == a_0 ∨ x == a_1 ∨ …}; null if any element fails to translate. */
-    private Object foldContainsDisjunction(Object xH, List<Expression> elems) {
+    /** Disjunction of equalities — {@code x == a_0 ∨ x == a_1 ∨ …}; null if {@code x} or any element fails to translate.
+     *  Phase 514 — a null equals only a null (`null in ['ab']` is false, `null in ['ab', null]` true), by the two sides'
+     *  null flags where both are known: a null's value is free, so `s in ['ab']` was true for some null `s` */
+    private Object foldContainsDisjunction(Expression x, List<Expression> elems) {
+        boolean xIsNull = isNullLiteral(x)
+        Object xH = xIsNull ? null : translate(x)
+        if (xH == null && !xIsNull) return null
         if (elems.isEmpty()) return session.boolLit(false)
+        Object xNull = nullityOfExpr(x)
         List<Object> disjuncts = new ArrayList<Object>()
         for (Expression el : elems) {
+            if (xIsNull || isNullLiteral(el)) {   // no value to compare: whether the other side's null
+                Object other = xIsNull ? nullityOfExpr(el) : xNull
+                if (other == null) return null
+                disjuncts.add(other)
+                continue
+            }
             Object elH = translate(el)
             if (elH == null) return null
-            disjuncts.add(session.eq(xH, elH))
+            Object eq = session.eq(xH, elH)
+            Object elNull = nullityOfExpr(el)
+            if (xNull != null && elNull != null) eq = session.ite(session.or([xNull, elNull]), session.and([xNull, elNull]), eq)
+            disjuncts.add(eq)
         }
         disjuncts.size() == 1 ? disjuncts.get(0) : session.or(disjuncts)
     }
@@ -4100,19 +4115,13 @@ class Encoder implements TheoryApi {
         if (m == 'size' && args.isEmpty()) return session.intLit(f.entryCount().longValue())
         if (m == 'isEmpty' && args.isEmpty()) return session.boolLit(f.entryCount() == 0)
         if (m == 'contains' && args.size() == 1 && (f.kind == 'list' || f.kind == 'set')) {
-            Object xH = translate(args.get(0))
-            if (xH == null) return null
-            return foldContainsDisjunction(xH, f.args)
+            return foldContainsDisjunction(args.get(0), f.args)
         }
         if (m == 'containsKey' && args.size() == 1 && f.kind == 'map') {
-            Object xH = translate(args.get(0))
-            if (xH == null) return null
-            return foldContainsDisjunction(xH, f.keys)
+            return foldContainsDisjunction(args.get(0), f.keys)
         }
         if (m == 'containsValue' && args.size() == 1 && f.kind == 'map') {
-            Object xH = translate(args.get(0))
-            if (xH == null) return null
-            return foldContainsDisjunction(xH, f.values)
+            return foldContainsDisjunction(args.get(0), f.values)
         }
         if (m == 'get' && args.size() == 1) {
             if (f.kind == 'list') return foldFactoryListIndex(f.args, args.get(0))
@@ -6900,10 +6909,8 @@ class Encoder implements TheoryApi {
             // Groovy `in` semantics: `k in m` tests key membership, mirror of containsKey).
             FactoryContainer factoryR = factoryContainerFor(inRecv)
             if (factoryR != null) {
-                Object xH = translate(be.leftExpression)
-                if (xH == null) return null
                 List<Expression> probe = (factoryR.kind == 'map') ? factoryR.keys : factoryR.args
-                Object disj = foldContainsDisjunction(xH, probe)
+                Object disj = foldContainsDisjunction(be.leftExpression, probe)
                 if (disj == null) return null
                 return sym == 'in' ? disj : session.not(disj)
             }
