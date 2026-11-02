@@ -21251,6 +21251,49 @@ not modelled (15), a primitive array's taken as containing a null (1), the negat
 isn't pinned: with only the element's or only the flag's, every case still proves (the two were alternatives, and
 the flag's was dropped).
 
+## Phase 512 — a negated condition unwrapped elsewhere  *(shipped — soundness)*
+
+Phase 511 found `splitConjuncts` reading `!(c)` as `c`: a `NotExpression` IS-A `BooleanExpression`, and the walk
+unwrapped it as a plain wrapper. An audit of every `instanceof BooleanExpression` unwrap in `src/main` found five
+more walks with the same bug (the rest match the negation first, or don't depend on polarity: what's evaluated, an
+information-flow level, the writes, a position). Measured at the parent:
+- **Dereference facts (Phases 414/415).** `trueDerefs`, the names a condition dereferences whenever it's true, read
+  `!(a.size() > 0 && b.size() > 0)` as dereferencing both `a` and `b`; it's true for an empty `a` with `b` never
+  evaluated. Under `@Requires({ a != null && !(a.size() > 0 && b.size() > 0) })`, under an `if` with that condition,
+  and in a for-in's body (a loop's stable precondition), `b.size()` compiled cleanly, and the run throws on
+  `f([], null)`. And `!(a.isEmpty() || b.isEmpty())`, which dereferences both, gave a false alarm on `b`.
+- **A range's direction (Phase 380).** `collectLowerBounds` read `!(1 <= i) && (1..i).every { it > 5 }` as `1 <= i`,
+  taking `1..i` as ascending (so empty) where it's descending: `@Ensures({ result == (!(1 <= i) && (1..i).every {
+  it > 5 }) })` proved with `result` being `i < 1`, and the run's `f(0)` breaks it (`1..0` is `[1, 0]`).
+- **An element bound (Phase 379).** `elementBound` read `a.every { !(it > 5) }` as `it > 5`, so the sum's bound
+  lemma gave `a.sum() > 10` for two elements each at most 5: proved, broken by `f([-33, -7714] as int[])`.
+- **A channel loop's total (Phase 261).** `staticTotalText` read a guard `while (!(m > j))` as `m > j`, taking the
+  loop's element count as `m` where its guard is `j >= m`. It's now not static, skipped loudly.
+- **An invariant's element note (Phase 126).** A refuted invariant's `!(0..i).every { int k -> a[k] == 5 }` or
+  `(0..i).every { int k -> !(a[k] == 7) }` was read as stating the elements, and the diagnostic said
+  `a[2] = 0 — the spec requires 5`: diagnostic only, but misleading.
+
+**Fix.** Each walk matches a negation first. For dereference facts, `!e` is true where `e` is false, so
+`trueDerefs(!e)` is a new `falseDerefs(e)`, the dual: both sides of an `||`; for an `&&`, what its left dereferences
+when false and also when true with the right false; a negation flips back to `trueDerefs`. The other walks stop at a
+negation (no lower bound, no element bound, no static total, no element clause).
+
+**Shipped tests:** group `P512 negation unwrap`, 14 cases. 9 fail at the parent commit:
+- three compiled cleanly where the run throws (a precondition's, an if's, a for-in body's `b.size()`);
+- one false alarm (`!(a.isEmpty() || b.isEmpty())`);
+- two postconditions proved that a run breaks (a range's direction, an element bound);
+- a channel loop's total read from a negated guard;
+- two misleading element notes.
+
+Five pass at the parent, as guards and pins: a doubly negated `||` (whose two negations cancelled), `!a.isEmpty()`,
+an else branch's dereference, a range under `1 <= i`, an element bound `it > 5`.
+
+Mutation-checked: 9 of 10 killed: `trueDerefs`'s negation (4), `falseDerefs`'s negation (1, the doubly negated
+case), its `||` (1) and `&&` (3), the lower bound (1), the element bound (1), the channel total (1), the element
+note's negated clause (1) and negated body (1). `falseDerefs` unwrapping a plain `BooleanExpression` survived (it
+never gets one: an if's wrapper is unwrapped by `trueDerefs`, and an else branch uses what's evaluated), so it was
+dropped.
+
 ## Definition of done, per increment
 
 An increment is done when:

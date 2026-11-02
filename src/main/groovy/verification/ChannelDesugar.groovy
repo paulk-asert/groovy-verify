@@ -2273,7 +2273,8 @@ class ChannelDesugar {
         if (info.infinite) return null
         LoopSpec spec = (LoopSpec) ((Statement) info.loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
         Expression g = spec == null ? null : spec.guard
-        while (g instanceof BooleanExpression) g = ((BooleanExpression) g).expression
+        // Phase 512 — a NotExpression IS-A BooleanExpression: `!(m > j)` isn't `m > j`
+        while (g instanceof BooleanExpression && !(g instanceof NotExpression)) g = ((BooleanExpression) g).expression
         g = stripCasts(g)
         if (!(g instanceof BinaryExpression)) return null
         BinaryExpression b = (BinaryExpression) g

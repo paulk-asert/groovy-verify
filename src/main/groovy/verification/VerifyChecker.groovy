@@ -6767,6 +6767,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 414 — the names {@code e} dereferences whenever it's evaluated and true: both sides of an {@code &&};
      *  for an {@code ||}, what its left does when true and also does when false and the right true. */
     private static Set<String> trueDerefs(Expression e) {
+        // Phase 512 — a NotExpression IS-A BooleanExpression: `!(p && q)` is true where `q` was never evaluated
+        if (e instanceof NotExpression) return falseDerefs(((NotExpression) e).expression)
         if (e instanceof BooleanExpression) return trueDerefs(((BooleanExpression) e).expression)   // Phase 415 — an if's
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
             BinaryExpression be = (BinaryExpression) e
@@ -6774,6 +6776,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (be.operation.type == Types.LOGICAL_AND) { l.addAll(r); return l }
             Set<String> other = new LinkedHashSet<String>()
             evaluatedDerefs(be.leftExpression, other)
+            other.addAll(r)
+            l.retainAll(other)
+            return l
+        }
+        Set<String> out = new LinkedHashSet<String>()
+        evaluatedDerefs(e, out)
+        out
+    }
+
+    /** Phase 512 — the names {@code e} dereferences whenever it's evaluated and false: an {@code ||}'s sides both;
+     *  for an {@code &&}, what its left does when false and also does when true and the right false. */
+    private static Set<String> falseDerefs(Expression e) {
+        if (e instanceof NotExpression) return trueDerefs(((NotExpression) e).expression)
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
+            BinaryExpression be = (BinaryExpression) e
+            Set<String> l = falseDerefs(be.leftExpression), r = falseDerefs(be.rightExpression)
+            if (be.operation.type == Types.LOGICAL_OR) { l.addAll(r); return l }
+            Set<String> other = trueDerefs(be.leftExpression)
             other.addAll(r)
             l.retainAll(other)
             return l
@@ -19843,6 +19863,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Split a contract's top-level {@code &&} conjuncts, collecting each {@code .every}-element clause. */
     private static void collectEveryElementClauses(Expression e, List<Object[]> out) {
+        if (e instanceof NotExpression) return   // Phase 512 — IS-A BooleanExpression: a negated every states no element
         if (e instanceof BooleanExpression) { collectEveryElementClauses(((BooleanExpression) e).expression, out); return }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
             collectEveryElementClauses(((BinaryExpression) e).leftExpression, out)
@@ -19863,7 +19884,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ClosureExpression cl = (ClosureExpression) args.get(0)
         String param = (cl.parameters != null && cl.parameters.length > 0) ? cl.parameters[0].name : 'it'
         Expression body = closureSoleExpr(cl)
-        if (body instanceof BooleanExpression) body = ((BooleanExpression) body).expression
+        if (body instanceof BooleanExpression && !(body instanceof NotExpression)) body = ((BooleanExpression) body).expression
         if (!(body instanceof BinaryExpression) || ((BinaryExpression) body).operation.type != Types.COMPARE_EQUAL) return null
         BinaryExpression cmp = (BinaryExpression) body
         String arr = subscriptArrayName(cmp.leftExpression, param)

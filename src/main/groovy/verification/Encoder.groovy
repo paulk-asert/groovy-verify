@@ -8172,6 +8172,7 @@ class Encoder implements TheoryApi {
     private final Set<String> guardOrdered = new HashSet<String>()
 
     private static void collectLowerBounds(Expression e, Map<String, Long> out, Set<String> ordered) {
+        if (e instanceof NotExpression) return   // Phase 512 — IS-A BooleanExpression: `!(1 <= i)` bounds i above
         if (e instanceof BooleanExpression) { collectLowerBounds(((BooleanExpression) e).expression, out, ordered); return }
         if (!(e instanceof BinaryExpression)) return
         BinaryExpression be = (BinaryExpression) e
@@ -8290,6 +8291,7 @@ class Encoder implements TheoryApi {
 
     /** Constant [lb, ub] (either null) the condition puts on the element {@code isElem} recognises; null if none. */
     private static Long[] elementBound(Expression e, Closure<Boolean> isElem) {
+        if (e instanceof NotExpression) return null   // Phase 512 — IS-A BooleanExpression: `!(it > 5)` bounds it above
         if (e instanceof BooleanExpression) return elementBound(((BooleanExpression) e).expression, isElem)
         if (!(e instanceof BinaryExpression)) return null
         BinaryExpression be = (BinaryExpression) e
