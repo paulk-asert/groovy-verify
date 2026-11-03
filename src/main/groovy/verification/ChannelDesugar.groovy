@@ -723,6 +723,9 @@ class ChannelDesugar {
      *  `for (v in ch)`) unrolls over the whole known sequence. FIFO delivery (the i-th value received
      *  is the i-th sent) is exact when one process owns each end and every op is unconditional —
      *  precisely what the guard admits. Pipeline-derived vars resolve lazily at the receive site. */
+    /** Phase 517 — on the method: the local channels whose {@code create()} declaration the rewrite dropped */
+    static final String DROPPED_CREATES_KEY = 'verification.droppedChannelCreates'
+
     static Statement desugarChannels(Statement body, Map<String, List<long[]>> bounds,
                                              Map<String, ClassNode> scalarTypes, Set<String> params, MethodNode method, List<Object[]> ghostSink = null) {
         if (!(body instanceof BlockStatement)) return body
@@ -1469,6 +1472,12 @@ class ChannelDesugar {
                         // the sends declare the elements (above). A channel that is never sent to has no
                         // binding at all — a read of it stays unconstrained (a never-sent channel BLOCKS
                         // at runtime; the old `def src = 0` placeholder modelled it as the value 0).
+                        // Phase 517 — but its name is a factory's, never null: recorded for the Encoder's null flag
+                        if (rw.method != null) {
+                            Set<String> dropped = (Set<String>) rw.method.getNodeMetaData(DROPPED_CREATES_KEY)
+                            if (dropped == null) { dropped = new HashSet<String>(); rw.method.putNodeMetaData(DROPPED_CREATES_KEY, dropped) }
+                            dropped.add(name)
+                        }
                         continue
                     }
                     if (isChannelExpr(de.rightExpression, ch)) {           // def out = src.map{..} → record pipeline, defer

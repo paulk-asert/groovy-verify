@@ -5065,6 +5065,10 @@ class Encoder implements TheoryApi {
         recv = scoped(recv)   // Phase 496
         Object cached = nullEnv.get(recv)
         if (cached != null) return cached
+        // Phase 517 — a local channel the channel rewrite dropped the declaration of (`c = AsyncChannel.create(n)`): a
+        // factory's, never null, so an offer of it (`ChannelSelect.send(c, v)`) owes nothing for its channel. A later
+        // write of the name binds its own flag
+        if (droppedChannelCreate(recv)) { Object f = session.boolLit(false); nullEnv.put(recv, f); return f }
         Object v = session.boolVar(symFor(recv) + '?null')
         nullEnv.put(recv, v)
         v
@@ -5290,6 +5294,12 @@ class Encoder implements TheoryApi {
         if (t != null) name = t.containerName
         if (name == null || isMapName(name) || !hasElementNullity(name) || !boxedElements(name)) return null
         t != null ? nullityOfExpr(e) : nullEnv.get(((VariableExpression) e).name)
+    }
+
+    /** Phase 517 — {@code n} is a local channel whose factory declaration the channel rewrite dropped */
+    private boolean droppedChannelCreate(String n) {
+        Object names = vcMethod?.getNodeMetaData(ChannelDesugar.DROPPED_CREATES_KEY)
+        names instanceof Set && ((Set) names).contains(n)
     }
 
     /** Phase 515 — a parameter, by name, of a {@code String} or a boxed primitive: the types whose comparisons with a

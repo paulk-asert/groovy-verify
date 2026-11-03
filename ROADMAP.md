@@ -21452,6 +21452,48 @@ Mutation-checked: 4 of 4 killed: the constant rule dropped (8, and both `PL0 lat
 disagreement), enums kept out of Phase 515's rule (4), the constant taken on the right only (1), the enum guard on
 the constant rule dropped (8).
 
+## Phase 517 — a null channel offered  *(shipped — soundness)*
+
+JUnit `test` (CI's `check`) had failed since Phase 495, unseen: those slices were gated on `verify` alone, and the
+spec audit (Phase 367) runs only under `test`. Its report: `ChannelSelect.send`'s registry spec said `@ThrowsIf({
+value == null })`, exhaustively, and `send(null, v)` throws too. Measured on Groovy 6.0.0:
+- `ChannelSelect.send(null, v)` throws `NullPointerException` "channel must not be null", whatever `v` is (a null `v`
+  too: the channel is checked first); `send(c, null)` "channel does not support null values";
+- a non-channel argument is a `MissingMethodException`: the method is `send(AsyncChannel<V>, V)`, so STC's, not the
+  spec's.
+
+So at the parent a channel parameter that may be null, offered in a select, compiled cleanly where the run throws.
+
+The audit's same report, once the arm was right, showed two more: `AsyncChannel#send` and `BroadcastChannel#send`
+had **no receiver generator**, so those two specs were never run against the runtime at all.
+
+**Fix.**
+- The spec's arm is `channel == null || value == null`.
+- The audit has channel receivers: an `AsyncChannel` unbuffered, buffered and closed, a `BroadcastChannel` open and
+  closed. A send never blocks (it returns an `Awaitable`, on a full buffer or a rendezvous too), so one channel takes
+  every run. 58 methods, 14,785 runs, no failures.
+- The wider arm gave a false alarm on a local channel: the channel rewrite (Phase 119) drops a `c =
+  AsyncChannel.create(n)` declaration (the sends declare its elements), so the obligation's replay saw `c` as a free
+  name, maybe null. The rewrite now records the names it drops on the method (`DROPPED_CREATES_KEY`), and the
+  Encoder's null flag for one is false: a factory's result is never null.
+
+**Open:**
+- a closed `BroadcastChannel`'s `send(v)` throws `ChannelClosedException` at the call (measured), where a closed
+  `AsyncChannel`'s returns an `Awaitable`. No spec says so, and the audit doesn't flag an exception no arm names. It
+  belongs with the deferred `close(Throwable)` slice (GROOVY-12459);
+- the audit's gate is `test`, not `verify`: a slice that touches a spec, or the encoder's reading of one, must run
+  `test` before it's committed (Phases 495–516 didn't).
+
+**Shipped tests:** group `P517 null channel offer`, 5 cases. 2 compile cleanly at the parent where the run throws (a
+channel parameter maybe null, and with a null value too). Three pass at the parent, as guards that the channel arm
+doesn't report a channel known non-null: a `@Requires({ c != null })`, a local channel in a select, and its offer
+alone. `P495`'s select offer case now names both arms (`(c == null) || (v == null)`).
+
+Mutation-checked: 2 of 2 killed: the channel arm dropped (the two parameter cases, and `P495`'s message), the
+dropped names ignored (the two local-channel cases: Phase 517's own false alarm). The audit's teeth, by a wrong arm in
+each spec: the `ChannelSelect` arm without its channel, and an `AsyncChannel` or a `BroadcastChannel` arm of
+`value == 0`, each fail the audit.
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -16,12 +16,14 @@
 
 // External-specification skeleton (Phase 495): a send offer's value can't be null. ChannelSelect.send(c, null)
 // throws as the offer is made (measured on Groovy 6.0.0: NullPointerException "channel does not support null values").
+// Phase 517 — nor its channel: send(null, v) throws first, whatever v is (NullPointerException "channel must not be
+// null"). A non-channel argument is STC's (the method is send(AsyncChannel<V>, V)), not this spec's.
 package groovy.concurrent
 
 import groovy.contracts.ThrowsIf
 
 class ChannelSelect {
 
-    @ThrowsIf(value = { value == null }, exception = NullPointerException, woven = false, direct = false)
+    @ThrowsIf(value = { channel == null || value == null }, exception = NullPointerException, woven = false, direct = false)
     static Object send(Object channel, Object value) {}
 }

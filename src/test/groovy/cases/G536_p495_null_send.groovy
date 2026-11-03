@@ -133,7 +133,7 @@ class G536_p495_null_send {
                         @Requires({ b != null })
                         static void f(BroadcastChannel<Integer> b, Integer v) { b.send(v) }
                     }''')],
-        [group: "P495 null sends", name: "a select's send offer", expect: ['Possible NullPointerException: ChannelSelect.send(c, v) throws when v == null'],
+        [group: "P495 null sends", name: "a select's send offer", expect: ['Possible NullPointerException: ChannelSelect.send(c, v) throws when (c == null) || (v == null)'],   // Phase 517 — its channel arm too
          src: tc('''class C {
                         static void f(Integer v) {
                             AsyncChannel<Integer> c = AsyncChannel.create(1)

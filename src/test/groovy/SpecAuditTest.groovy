@@ -115,6 +115,14 @@ class SpecAuditTest {
                 def units = Class.forName('tech.units.indriya.unit.Units')
                 def qs = Class.forName('tech.units.indriya.quantity.Quantities')
                 return [qs.getQuantity(1, units.METRE), qs.getQuantity(0.5G, units.SECOND), qs.getQuantity(-3, units.KILOGRAM)]
+            // Phase 517 — a send never blocks (it returns an Awaitable, on a full buffer or a rendezvous too: measured on
+            // Groovy 6.0.0), so one channel takes every run. A closed one too: its null check comes first
+            case 'groovy.concurrent.AsyncChannel':
+                def closed = groovy.concurrent.AsyncChannel.create(4); closed.close()
+                return [groovy.concurrent.AsyncChannel.create(), groovy.concurrent.AsyncChannel.create(4), closed]
+            case 'groovy.concurrent.BroadcastChannel':
+                def closedB = groovy.concurrent.BroadcastChannel.create(); closedB.close()
+                return [groovy.concurrent.BroadcastChannel.create(), closedB]
             default: return null
         }
     }
