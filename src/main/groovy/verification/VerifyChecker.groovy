@@ -1828,6 +1828,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> written = new HashSet<String>()
         if (!out.isEmpty() && !writesNoArray(m, withoutReceiverListWrites(m, out, written))) out.clear()
         if (!out.isEmpty() && listAliasHazard(m, out, written)) out.clear()   // Phase 504
+        if (!out.isEmpty() && !receiverListsHandedToWriters(m, out).isEmpty()) out.clear()   // Phase 519
         Map<String, ClassNode> r = out.isEmpty() ? Collections.<String, ClassNode> emptyMap() : out
         m.putNodeMetaData(RECEIVER_LISTS_KEY, r)
         r
@@ -3648,7 +3649,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (body == null || currentObjectParams.isEmpty()) return
         Map<String, ClassNode> modelled = receiverListsOf(node)
         Set<String> reported = new HashSet<String>()
-        Closure check = { Expression target, Expression at ->
+        Closure check = { Expression target, Expression at, String handedTo = null ->
             if (!(target instanceof PropertyExpression) || !(((PropertyExpression) target).objectExpression instanceof VariableExpression)) return
             String v = ((VariableExpression) ((PropertyExpression) target).objectExpression).name
             String f = ((PropertyExpression) target).propertyAsString
@@ -3658,14 +3659,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!classInvariantTexts(t).any { Expression inv -> contractNames(inv).contains(f) }) return
             if (!reported.add(owner + '$' + f)) return
             String handed = callHandedParam(node, owner)
-            String why = handed != null ? "'${owner}' is also handed to '${handed}'".toString() :
+            String why = handedTo != null ? "'${v}.${f}' is handed to '${handedTo}'".toString() :   // Phase 519
+                handed != null ? "'${owner}' is also handed to '${handed}'".toString() :
                 "the verifier doesn't model '${v}.${f}' in ${node.name}".toString()
             addStaticTypeError(Reporter.formatInvariantUnchecked(t.nameWithoutPackage, owner, asSpelled(at), why), at)
         }
         body.visit(new CodeVisitorSupport() {
+            // Phase 519 — any call on the field but a known read is a write (`b.sb.append(…)`, `b.xs.removeIf { … }`,
+            // `b.xs.with { add(1) }`): a list of mutators' names is never complete. A view's (`b.m.keySet().clear()`)
+            // is its field's. And a mutable field handed to a call that may write its argument
             @Override void visitMethodCallExpression(MethodCallExpression mce) {
-                if (mce.methodAsString in LOOP_MUTATORS) check(mce.objectExpression, mce)
+                String n = mce.methodAsString
+                if (n == null || !(n in RECEIVER_FIELD_READS)) {
+                    Expression r = mce.objectExpression
+                    while (r instanceof MethodCallExpression && ((MethodCallExpression) r).methodAsString in RECEIVER_FIELD_VIEWS) {
+                        r = ((MethodCallExpression) r).objectExpression
+                    }
+                    check(r, mce)
+                }
+                checkHandedFields(mce, mce.arguments, node.declaringClass, check)
                 super.visitMethodCallExpression(mce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
+                checkHandedFields(sce, sce.arguments, node.declaringClass, check)
+                super.visitStaticMethodCallExpression(sce)
             }
             @Override void visitBinaryExpression(BinaryExpression be) {
                 if (be.operation.type == Types.LEFT_SHIFT) check(be.leftExpression, be)
@@ -3677,6 +3694,110 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 super.visitBinaryExpression(be)
             }
         })
+    }
+
+    /** Phase 519 — the calls on a receiver's field that only read it: anything else may write it */
+    private static final Set<String> RECEIVER_FIELD_READS = [
+        'size', 'isEmpty', 'length', 'get', 'getAt', 'getOrDefault', 'contains', 'containsKey', 'containsValue', 'containsAll',
+        'indexOf', 'lastIndexOf', 'first', 'last', 'head', 'charAt', 'codePointAt', 'substring', 'subSequence', 'toString',
+        'equals', 'hashCode', 'compareTo', 'isCase', 'asBoolean', 'toList', 'toSet', 'toArray', 'asList', 'stream',
+        'each', 'eachWithIndex', 'every', 'any', 'find', 'findAll', 'findIndexOf', 'collect', 'collectEntries', 'sum',
+        'count', 'max', 'min', 'inject', 'join', 'grep', 'groupBy', 'countBy', 'plus', 'minus',
+        'intersect', 'disjoint', 'isSorted', 'getClass', 'clone', 'name', 'ordinal', 'intValue', 'longValue', 'doubleValue'] as Set
+    // not `sort` or `unique` (a list's sorts and dedups in place) nor `reverse` (a StringBuilder's reverses itself)
+
+    /** Phase 519 — the calls that return a view of a receiver's field: a write through one writes the field */
+    private static final Set<String> RECEIVER_FIELD_VIEWS = [
+        'iterator', 'listIterator', 'descendingIterator', 'keySet', 'values', 'entrySet', 'subList', 'headSet', 'tailSet',
+        'subSet', 'headMap', 'tailMap', 'subMap', 'descendingSet', 'descendingMap', 'navigableKeySet'] as Set
+
+    /** Phase 519 — the JDK statics that write an argument: its position (`System.arraycopy`'s destination is the third) */
+    private static final Map<String, Integer> MUTATING_STATICS = [
+        'java.util.Collections.sort': 0, 'java.util.Collections.shuffle': 0, 'java.util.Collections.reverse': 0,
+        'java.util.Collections.fill': 0, 'java.util.Collections.swap': 0, 'java.util.Collections.rotate': 0,
+        'java.util.Collections.addAll': 0, 'java.util.Collections.copy': 0, 'java.util.Collections.replaceAll': 0,
+        'java.util.Arrays.sort': 0, 'java.util.Arrays.fill': 0, 'java.util.Arrays.setAll': 0, 'java.util.Arrays.parallelSort': 0,
+        'java.util.Arrays.parallelSetAll': 0, 'java.util.Arrays.parallelPrefix': 0, 'java.lang.System.arraycopy': 2]
+
+    /** Phase 519 — whether {@code call} may write its argument at {@code i}: one of this compile unit's methods that isn't
+     *  {@code @Pure} (any argument), or a JDK static that writes its argument ({@link #MUTATING_STATICS}). A JDK instance
+     *  method doesn't write its arguments; an argument of an immutable type ({@code String}, a box, an enum) can't be */
+    static boolean mayWriteArgument(Expression call, List<Expression> args, int i, ClassNode enclosing) {
+        Expression a = args.get(i)
+        ClassNode at = (a.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) as ClassNode) ?: declaredFieldType(a)
+        if (at != null && (ClassHelper.isPrimitiveType(at) || at == ClassHelper.STRING_TYPE || at.isEnum() ||
+            ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(at)))) return false
+        Object tgt = call.getNodeMetaData(StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+        MethodNode mn = tgt instanceof MethodNode ? (MethodNode) tgt : null
+        if (mn != null && mn.declaringClass?.isPrimaryClassNode()) return !SpecRegistry.isPure(mn)
+        // the pre-STC body copy carries no target: this unit's methods of that name and arity, on the enclosing class
+        // (an implicit-this call) or the named one; any not @Pure may write it
+        if (mn == null) {
+            ClassNode on = null
+            String mname = null
+            if (call instanceof StaticMethodCallExpression) {
+                on = ((StaticMethodCallExpression) call).ownerType; mname = ((StaticMethodCallExpression) call).method
+            } else if (call instanceof MethodCallExpression) {
+                MethodCallExpression mce = (MethodCallExpression) call
+                Expression r = mce.objectExpression
+                on = mce.implicitThis || (r instanceof VariableExpression && ((VariableExpression) r).isThisExpression()) ? enclosing :
+                    r instanceof ClassExpression ? r.type : null
+                mname = mce.methodAsString
+            }
+            if (on != null && mname != null && on.isPrimaryClassNode()) {
+                List<MethodNode> cands = on.getMethods(mname).findAll { it.parameters.length == args.size() }
+                if (!cands.isEmpty()) return cands.any { !SpecRegistry.isPure(it) }
+            }
+        }
+        String owner = mn?.declaringClass?.name ?: (call instanceof StaticMethodCallExpression ?
+            ((StaticMethodCallExpression) call).ownerType?.name :
+            ((MethodCallExpression) call).objectExpression instanceof ClassExpression ?   // a generic static, unresolved
+                ((MethodCallExpression) call).objectExpression.type.name : null)
+        String name = call instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) call).method :
+            ((MethodCallExpression) call).methodAsString
+        Integer pos = owner != null ? MUTATING_STATICS.get(owner + '.' + name) : null
+        pos != null && pos == i
+    }
+
+    /** Phase 519 — a field read's declared type, {@code b.xs} for a parameter {@code b}: the pre-STC copy has no inferred one */
+    private static ClassNode declaredFieldType(Expression e) {
+        if (!(e instanceof PropertyExpression) || !(((PropertyExpression) e).objectExpression instanceof VariableExpression)) return null
+        org.codehaus.groovy.ast.Variable v = ((VariableExpression) ((PropertyExpression) e).objectExpression).accessedVariable
+        ClassNode owner = v?.originType ?: v?.type
+        String f = ((PropertyExpression) e).propertyAsString
+        for (ClassNode c = owner; c != null && f != null; c = c.superClass) {
+            FieldNode fn = c.getDeclaredField(f)
+            if (fn != null) return fn.type
+        }
+        null
+    }
+
+    /** Phase 519 — each receiver's field handed to a call that may write it ({@link #mayWriteArgument}) */
+    private void checkHandedFields(Expression call, Expression args, ClassNode enclosing, Closure check) {
+        if (!(args instanceof TupleExpression)) return
+        List<Expression> as = ((TupleExpression) args).expressions
+        for (int i = 0; i < as.size(); i++) if (mayWriteArgument(call, as, i, enclosing)) check(as.get(i), call, clip(asSpelled(call)))
+    }
+
+    /** Phase 519 — the receiver lists in {@code lists} that {@code m} hands to a call that may write them
+     *  ({@code Collections.sort(b.xs)}): a write the model doesn't take */
+    private static Set<String> receiverListsHandedToWriters(MethodNode m, Map<String, ClassNode> lists) {
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        Set<String> out = new HashSet<String>()
+        if (body == null) return out
+        Closure scan = { Expression call, Expression args ->
+            if (!(args instanceof TupleExpression)) return
+            List<Expression> as = ((TupleExpression) args).expressions
+            for (int i = 0; i < as.size(); i++) {
+                String n = receiverListName(as.get(i), lists)
+                if (n != null && mayWriteArgument(call, as, i, m.declaringClass)) out.add(n)
+            }
+        }
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) { scan(mce, mce.arguments); super.visitMethodCallExpression(mce) }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) { scan(sce, sce.arguments); super.visitStaticMethodCallExpression(sce) }
+        })
+        out
     }
 
     /** Phase 433 — the names that are object parameter {@code obj}: itself and its local aliases. */

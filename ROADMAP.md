@@ -20798,7 +20798,7 @@ updated).
 **Open:**
 - a write through a call that's handed the receiver (`g(b)` adding to `b.xs`) is the callee's own write. Its
   invariant is owed there, when the callee writes it directly; otherwise this report is the callee's;
-- an unknown mutator on a field (`b.sb.append(…)`) isn't recognised.
+- an unknown mutator on a field (`b.sb.append(…)`) isn't recognised *(fixed in Phase 519)*.
 
 **Shipped tests:** group `P503 unchecked receiver invariant`, 12 cases. All nine of the reporting cases compiled
 cleanly at the parent. The three that report nothing passed there too: a write the model takes, a read with the
@@ -21538,6 +21538,56 @@ is a constant, a put at the constants writes a non-null key, a null level is no 
 
 Mutation-checked: 3 of 3 killed: the null branch dropped (5), a null's value free rather than the shared literal (2:
 two null keys, and the repro's `(null)` key), the enum key's spelling dropped (1, the repro).
+
+## Phase 519 — unknown mutators  *(shipped — soundness: loud)*
+
+Phase 503's open item, measured first: a probe of 20 writes that break a class invariant, through a receiver's field
+or the class's own. The class's own were all loud or decided. Of the receiver's, seven compiled cleanly where the
+write breaks the invariant:
+- a mutator not on Phase 503's list (the loop mutators' names): `b.sb.append('xxxx')`, `b.sb.setLength(9)`,
+  `b.xs.removeIf { true }`, `b.xs.sort()` (Groovy sorts a list in place);
+- the field handed to a call that writes it: `Collections.sort(b.xs)`, `Arrays.fill(b.a, 7)`;
+- a closure's delegate: `b.xs.with { add(1) }`.
+
+A list of mutators' names is never complete, so the rule is inverted.
+
+**Fix.**
+- **Calls on the field.** Any call on a receiver's field the invariant reads is a write, but a known read (`size`,
+  `get`, `contains`, `toString`, `each`, `collect`, … in `RECEIVER_FIELD_READS`: not `sort` or `unique`, which a
+  list does in place, nor `reverse`, which a `StringBuilder` does). A call on a view of the field (`keySet()`,
+  `values()`, `iterator()`, `subList(…)`, …) is the field's: `b.m.keySet().clear()`.
+- **The field handed on.** A field handed to a call that may write its argument is a write too
+  (`mayWriteArgument`): one of this compile unit's methods that isn't `@Pure` (any argument), or a JDK static that
+  writes one (`Collections.sort`, `shuffle`, `fill`, …, `Arrays.sort`, `fill`, `setAll`, …, `System.arraycopy`'s
+  destination). A JDK instance method doesn't write its arguments (`ys.addAll(b.xs)` reads `b.xs`), and a field of
+  an immutable type (`String`, a box, an enum) can't be written. The report says so: "('b.xs' is handed to
+  'Collections.sort(b.xs)')".
+- **Not modelled.** Phase 501's receiver lists are modelled only where the method's writes are the model's: a list
+  handed to such a call is dropped from them (`receiverListsOf`), so its invariant isn't re-proved as though the
+  call didn't write it.
+
+The check walks the pre-STC body copy, which has no call targets or inferred types: an unresolved call is resolved
+by name and arity on the enclosing class or the named one (`h(b.xs)` is `Client.h(b.xs)`, a static call there), and
+an argument's type is its field's declaration.
+
+The full suite at the first gate: nothing else moved (only the probe's own cases failed, as written).
+
+**Open:**
+- a third-party library's static that writes its argument isn't recognised (only the JDK's listed);
+- a field handed to a constructor (`new Wrapper(b.xs)`, which may keep and write it) isn't reported;
+- a local alias of a receiver's list (`List<Integer> ys = b.xs; ys.add(1)`) reports `ys` maybe null, where the
+  invariant says `xs != null`: loud, but for the wrong reason.
+
+**Shipped tests:** group `P519 unknown mutators`, 16 cases. All ten of the reporting cases compile cleanly at the
+parent: six calls on the field (an append, a length set, `removeIf`, a sort in place, a closure's delegate, through a
+view) and four handed on (`Collections.sort`, `Arrays.fill`, `System.arraycopy`'s destination, a method of this
+unit). Six pass at the parent, as guards that a read reports nothing: reads with a closure, a `StringBuilder`'s
+`toString()`, a `@Pure` method's argument and its list still modelled, an argument a JDK method reads, an immutable
+field handed on.
+
+Mutation-checked: 7 of 7 killed: the mutators' list again (5), no views (1), nothing handed (4), immutable types not
+exempt (1), `@Pure` ignored by name (1, the list still modelled), a handed list still modelled (2), no by-name
+resolution (1).
 
 ## Definition of done, per increment
 
