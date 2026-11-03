@@ -21526,7 +21526,7 @@ null meets", now shows `bump(null)` where it showed `bump(State.DONE)`: both thr
 
 **Open:**
 - an enum field, local or receiver's field keeps the plain closure (a null is a constant's value): a field's null flag
-  isn't minted with its value, so the tie isn't sound to state there;
+  isn't minted with its value, so the tie isn't sound to state there *(a field of the class's own: fixed in Phase 521)*;
 - a map's key-set over an enum isn't closed to the constants and the null literal: a model's map may hold a key that's
   neither, and then its repro is withheld ("a null key's entry is free" shows none);
 - `P170`'s Request and Enter lemmas hold for a null `p` and keep their preconditions as they were.
@@ -21631,6 +21631,40 @@ the field stored first is still reported.
 
 Mutation-checked: 3 of 4 killed: constructors exempt (1), no aliases (3), the alias's flag not the field's (1). The
 store check survives, unreachable as above; kept as insurance for when a reference field's store is modelled.
+
+## Phase 521 — a null enum field  *(shipped — soundness)*
+
+Phase 518's open item. An enum field's value was pinned to one of its constants by the domain closure, a null's too,
+so a null field equalled a constant by value and a map read keyed by it read a constant's entry. Measured at the
+parent, for a field `L level` of the method's class:
+- **compiled cleanly where a run breaks:** `@Ensures({ level == L.A || level == L.B })` on an empty body (a new
+  `C()` has a null `level`), and `@Requires({ m != null && m[L.A] == 0 && m[L.B] == 0 })` with
+  `@Ensures({ m[level] == 0 })` (a map with a null key);
+- **a false alarm:** under `@Requires({ level == null })`, a body's `level == L.A || level == L.B` wasn't shown false.
+
+**Fix.** Phase 518's closure for a parameter, `null(x) ? x == L$null : x ∈ {c1, …, cN}`, now covers an instance field
+of the method's class. A parameter's flag is minted with its value; a field's may be read first (a precondition's
+`level == null`) and is then the same entry flag, which `nullityOf` mints by name. So the tie is made when the bound
+flag is the entry one (none bound, or that one). Otherwise a write rebound it, and the value minted isn't that flag's:
+the closure is then `x == L$null ∨ x ∈ {…}`, a null allowed but untied, which is sound and weaker.
+
+The full suite at the first gate: nothing else moved.
+
+**Open:**
+- a receiver's enum field (`b.level`) isn't modelled: a contract on it is outside the fragment, and the implicit
+  checks skip with an internal sort error ("Sorts Int and L are incompatible"), loudly, as at the parent. Its closure
+  waits on that model;
+- an enum local takes its source's value (`L x = p` is `p`'s, tied), so it's covered where it's assigned from a
+  parameter or a field; a local minted fresh (a loop's havoc) keeps the plain closure.
+
+**Shipped tests:** group `P521 null enum field`, 8 cases. 3 fail at the parent commit: two compiled cleanly where a
+run breaks (every constant on an empty body, a null field's map key), one false alarm (a null field equal to no
+constant). Five pass at the parent: a non-null field is a constant, a field written then read, a null local copied
+from a parameter (guards), and two pins of the receiver's field's loud skips.
+
+Mutation-checked: 2 of 3 killed: the field branch dropped (3), always the weak closure (2: a null field equal to no
+constant, a non-null one a constant). Always the tie survives: no case found reaches a field minted after its flag was
+rebound (a write takes its source's value, and a loop's write is skipped loudly), so the weak branch is insurance.
 
 ## Definition of done, per increment
 

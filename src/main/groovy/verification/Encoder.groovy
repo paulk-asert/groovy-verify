@@ -1899,7 +1899,36 @@ class Encoder implements TheoryApi {
             session.assertExpr(session.ite(nullityOf(name), session.eq(v, session.litOfSort(sort, 'null')), closed))
             return
         }
+        // Phase 521 — a field's too (the class's own): tied to its flag when that's still the entry
+        // one, the flag nullityOf mints (a precondition's `level == null` reads it first); a later one (a write rebound
+        // it) isn't this value's, so then a null is allowed, untied: sound, weaker
+        if (isEnumFieldName(name)) {
+            Object nl = session.eq(v, session.litOfSort(sort, 'null'))
+            String key = scoped(name)
+            Object entry = session.boolVar(symFor(key) + '?null')
+            Object bound = nullEnv.get(key)
+            session.assertExpr(bound == null || bound.equals(entry) ? session.ite(nullityOf(name), nl, closed) : session.or([nl, closed]))
+            return
+        }
         session.assertExpr(closed)
+    }
+
+    /** Phase 521 — {@code name} is an instance field of the method's class (not a parameter's shadowing name). A
+     *  receiver's enum field isn't modelled (outside the fragment, said so), so there's no {@code b$f} to tie */
+    private boolean isEnumFieldName(String name) {
+        MethodNode m = vcMethod
+        if (m == null || name == null || name.contains('$')) return false
+        if (m.parameters.any { it.name == name }) return false
+        FieldNode f = fieldOf(m.declaringClass, name)
+        f != null && !f.isStatic()
+    }
+
+    private static FieldNode fieldOf(ClassNode t, String n) {
+        for (ClassNode c = t; c != null && c.name != 'java.lang.Object'; c = c.superClass) {
+            FieldNode f = c.getDeclaredField(n)
+            if (f != null) return f
+        }
+        null
     }
 
     private boolean isKnownEnumName(String name) {
