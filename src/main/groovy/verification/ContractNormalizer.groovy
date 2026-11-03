@@ -61,6 +61,9 @@ import org.codehaus.groovy.ast.stmt.Statement
  *   constant count. (<i>Body</i> expressions keep the encoder's translate-time fold — both receiver
  *   shapes, since the clean-body snapshot is captured at CONVERSION and can carry the unresolved
  *   spelling too; bodies are not contracts, so they are outside this pass's charter.)</li>
+ *   <li><b>A nested enum through its outer class</b> (Phase 523): {@code C.L.A} parses as a property of a property;
+ *   {@code C.L} is rewritten to {@code L}, the spelling the encoder reads as the enum, when the module has one enum of
+ *   that simple name and the outer name isn't a parameter's.</li>
  * </ul>
  *
  * <p>Safe to rewrite in place / by copy: the input is a per-call fresh parse (never the shared clean-body
@@ -74,19 +77,58 @@ class ContractNormalizer {
      *  rebuilt). Null-safe on both arguments. */
     static Expression normalize(Expression e, MethodNode m) {
         if (e == null || m == null) return e
-        normalize(e, functionFormalNames(m), biFunctionFormalNames(m), enumDomainSizes(m.declaringClass))
+        Set<String> params = new HashSet<String>()
+        if (m.parameters != null) for (Parameter p : m.parameters) params.add(p.name)
+        normalize(e, functionFormalNames(m), biFunctionFormalNames(m), enumDomainSizes(m.declaringClass),
+                  nestedEnumSpellings(m.declaringClass, params))
     }
 
     /** Normalise a freshly re-parsed <b>class-level</b> contract (a class {@code @Invariant}) of
      *  {@code context}: no method scope, so only the class-scope rewrites (the enum-count fold) apply. */
     static Expression normalize(Expression e, ClassNode context) {
         if (e == null || context == null) return e
-        normalize(e, Collections.<String> emptySet(), Collections.<String> emptySet(), enumDomainSizes(context))
+        normalize(e, Collections.<String> emptySet(), Collections.<String> emptySet(), enumDomainSizes(context),
+                  nestedEnumSpellings(context, Collections.<String> emptySet()))
     }
 
-    private static Expression normalize(Expression e, Set<String> fns, Set<String> biFns, Map<String, Integer> enums) {
-        if (fns.isEmpty() && biFns.isEmpty() && enums.isEmpty()) return e
-        new SamRewriter(fns, biFns, enums).transform(e)
+    private static Expression normalize(Expression e, Set<String> fns, Set<String> biFns, Map<String, Integer> enums,
+                                        Map<String, String> nested) {
+        if (fns.isEmpty() && biFns.isEmpty() && enums.isEmpty() && nested.isEmpty()) return e
+        new SamRewriter(fns, biFns, enums, nested).transform(e)
+    }
+
+    /** Phase 523 — a nested enum spelled through its outer classes ({@code C.L}, {@code A.B.L}) → its simple name
+     *  ({@code L}), the spelling the encoder reads as the enum (its sort is named by the simple name). Only for an
+     *  enum of {@code context}'s module whose simple name no other enum of the module shares (two would meet in one
+     *  sort), and whose outermost name isn't a parameter's ({@code b.L} is a value's property, not a class's). */
+    static Map<String, String> nestedEnumSpellings(ClassNode context, Set<String> params) {
+        Map<String, String> out = new HashMap<String, String>()
+        if (context == null || context.module == null) return out
+        Map<String, Integer> simpleCount = new HashMap<String, Integer>()
+        for (ClassNode cn : context.module.classes) {
+            if (cn.isEnum()) simpleCount.put(simpleEnumName(cn), (simpleCount.get(simpleEnumName(cn)) ?: 0) + 1)
+        }
+        for (ClassNode cn : context.module.classes) {
+            String n = cn.nameWithoutPackage
+            if (!cn.isEnum() || !n.contains('$')) continue
+            String simple = simpleEnumName(cn)
+            if (simpleCount.get(simple) != 1) continue
+            if (params.contains(n.substring(0, n.indexOf('$')))) continue
+            out.put(n.replace('$', '.'), simple)
+        }
+        out
+    }
+
+    /** The dotted spelling of a chain of plain names ({@code C.L}), or null when it's anything else. */
+    static String dottedName(Expression e) {
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name
+        if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            if (pe.isSafe() || pe.isSpreadSafe() || pe.propertyAsString == null) return null
+            String head = dottedName(pe.objectExpression)
+            return head != null ? head + '.' + pe.propertyAsString : null
+        }
+        null
     }
 
     /** Enum classes visible from {@code context}'s module, mapped from simple name (and
@@ -188,15 +230,26 @@ class ContractNormalizer {
         private final Set<String> fnNames
         private final Set<String> biFnNames
         private final Map<String, Integer> enumSizes
-        SamRewriter(Set<String> fnNames, Set<String> biFnNames, Map<String, Integer> enumSizes) {
+        private final Map<String, String> nestedEnums
+        SamRewriter(Set<String> fnNames, Set<String> biFnNames, Map<String, Integer> enumSizes, Map<String, String> nestedEnums) {
             this.fnNames = fnNames
             this.biFnNames = biFnNames
             this.enumSizes = enumSizes
+            this.nestedEnums = nestedEnums
         }
 
         @Override
         Expression transform(Expression expr) {
             if (expr == null) return null
+            // Phase 523 — `C.L` (a nested enum through its outer class) → `L`, before the folds below look at it
+            if (expr instanceof PropertyExpression && !nestedEnums.isEmpty()) {
+                String simple = nestedEnums.get(dottedName(expr))
+                if (simple != null) {
+                    VariableExpression v = new VariableExpression(simple)
+                    v.setSourcePosition(expr)
+                    return v
+                }
+            }
             // <EnumClass>.values().length — the property form of the enum-count fold
             if (expr instanceof PropertyExpression) {
                 PropertyExpression pe = (PropertyExpression) expr

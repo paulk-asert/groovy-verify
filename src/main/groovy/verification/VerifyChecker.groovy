@@ -4289,6 +4289,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String quoted = written(c) ?: groovyStringLiteral((String) c.value)
                 return new ConstantExpression(c.value) { @Override String getText() { quoted } }
             }
+            // Phase 523 — a nested class as Groovy spells it (`C.L.A`), not as the JVM names it (`C$L.A`)
+            if (x instanceof ClassExpression && x.type?.name?.contains('$')) {
+                String dotted = x.type.name.replace('$', '.')
+                return new ClassExpression(x.type) { @Override String getText() { dotted } }
+            }
             if (x instanceof MethodCallExpression) {
                 MethodCallExpression m = (MethodCallExpression) x
                 MethodCallExpression c = new MethodCallExpression(transform(m.objectExpression), m.method, transform(m.arguments))

@@ -21709,6 +21709,49 @@ can't be cast to `int`.
 Mutation-checked: 5 of 5 killed: an Int again (7), the closure untied (3), no null comparison (2), the key read as
 a constant (1), the enum's name unknown to a contract (3).
 
+## Phase 523 — a nested enum's constant through its outer class  *(shipped — capability)*
+
+Phase 522's open item. A contract is re-parsed before resolution, so a nested enum's constant spelled through its
+outer class (`C.L.A`, `B.L.A`) arrives as a property of a property, `(C.L).A`. The encoder reads `X.A` as an enum
+constant only when `X` is a plain name it knows as an enum, so the constant wasn't read. Measured at the parent:
+every use was loud, none silent, but none was checked:
+- the contract was outside the fragment (a parameter's `a == C.L.A`, a map's `m[C.L.A]`, a set's `C.L.A in s`, a
+  receiver field's `b.level == B.L.A`, `C.L.values().length`);
+- an implicit check couldn't use the precondition, and said so ("the precondition's 'a == C.L.A' is outside what the
+  verifier models");
+- a receiver class's invariant `level == B.L.A` was refuted with `fails on: f(new B())`, a false alarm the invariant
+  rules out.
+
+A body's `C.L.A` is resolved already (a `ClassExpression` of `C$L`), so it was read, but a diagnostic echoed it as
+the JVM names it: `m[C$L.A] is null for a missing key`.
+
+**Fix.**
+- **The spelling.** `ContractNormalizer`, the one home for re-parsed contract rewrites, rewrites a dotted reference to
+  a module's nested enum (`C.L`, `A.B.L`) to its simple name `L`. The encoder names an enum's sort by its simple name
+  (`enumSortName`), so `C.L.A` and `L.A` are one constant, and the `values().length` fold and set and map paths
+  follow.
+- **Only when unambiguous.** Two enums of one simple name in a module (`C.L` and `C.D.L`) would meet in one sort, so
+  neither is rewritten, and the contract stays outside the fragment, as before. Nor when the outer name is a
+  parameter's (`b.L` is a value's property).
+- **The echo.** A nested class in a diagnostic is shown as Groovy spells it: `m[C.L.A]`.
+
+The full suite at the first gate: nothing else moved.
+
+**Open:**
+- a module's two enums of one simple name (`C.L`, `D.L`) already share one sort, each spelled `L` in its own
+  class: a question for the encoder that predates this slice;
+- a package-qualified spelling (`pkg.C.L.A`) isn't rewritten.
+
+**Shipped tests:** group `P523 nested enum constant`, 12 cases. 10 fail at the parent commit: nine loud skips where
+the method now verifies or is refuted for its own reason (equal to the constant, every constant refuted on a null
+with `f(null)`, mixed spellings, a different constant refuted, a map's key, a set's member, a receiver's field, its
+class invariant, the constants counted), and the echo. Two pass at the parent, as guards: a body's resolved
+`a == C.L.A` meets the contract's short `L.A`, and a simple name two enums share stays loud.
+
+Mutation-checked: 4 of 5 killed: no rewrite (9), the uniqueness check dropped (1), the JVM's name echoed (1), and
+an earlier dotted `values()` path, found redundant and removed (the fold follows the rewrite). The parameter-name
+check survives: no case writes an outer class's name as a parameter's; it's insurance.
+
 ## Definition of done, per increment
 
 An increment is done when:
