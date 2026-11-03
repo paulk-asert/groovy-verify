@@ -2063,7 +2063,7 @@ class Z3Session implements SmtSession {
             else if (k.isString()) {
                 String ks = cleanZ3String(k.getString())
                 kt = ks ==~ /[A-Za-z_][A-Za-z0-9_]*/ ? ks : VerifyChecker.groovyStringLiteral(ks)
-            } else return null
+            } else if ((kt = enumKeyText(m, k)) == null) return null   // Phase 518 — an enum's key, a null one too
             String vt
             Expr nul = vnull == null ? null : m.evaluate((Expr) select(vnull, k), true)
             if (nul instanceof IntNum && ((IntNum) nul).getInt64() == 1L) vt = 'null'
@@ -2077,6 +2077,22 @@ class Z3Session implements SmtSession {
             out.add(kt + ': ' + vt)
         }
         out.isEmpty() ? '[:]' : '[' + out.join(', ') + ']'
+    }
+
+    /** Phase 518 — an enum-sorted key as a map literal spells it, {@code (L.A)}, by the minted literal the model equates it
+     *  with; the sort's null literal (Encoder's, for a null enum) is {@code (null)}. Null when it equals none */
+    private String enumKeyText(Model m, Expr k) {
+        com.microsoft.z3.Sort ks = k.getSort()
+        if (!(ks instanceof com.microsoft.z3.UninterpretedSort)) return null
+        String sortName = ks.getName().toString()
+        for (Map.Entry<String, Expr> entry : sortedLits.entrySet()) {
+            Expr lit = entry.value
+            if (lit.getSort() != ks) continue
+            if (!m.evaluate(ctx.mkEq(k, lit), true).isTrue()) continue
+            String key = entry.key.substring(entry.key.indexOf(':') + 1)
+            return key == 'null' ? '(null)' : "(${sortName}.${key})".toString()
+        }
+        null
     }
 
     /** Phase 485 — an array value's explicit entries into {@code out} (index, value), outermost first; its default, or

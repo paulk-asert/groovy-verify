@@ -44,7 +44,7 @@ class G260_p171_ticket_liveness {
                             (cs[Phil.A] == CS.Eating ==> t[Phil.A] == serving) &&
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
-                        @Requires({ valid(ticket, serving, cs, t) && cs[p] != CS.Thinking })
+                        @Requires({ valid(ticket, serving, cs, t) && p != null && cs[p] != CS.Thinking })
                         @Ensures({ t[p] - serving >= 0 })
                         static void measureNonNegative(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
                     }''')],
@@ -64,7 +64,7 @@ class G260_p171_ticket_liveness {
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[q] == CS.Eating && cs[p] == CS.Hungry && p != q &&
+                            valid(ticket, serving, cs, t) && p != null && q != null && cs[q] == CS.Eating && cs[p] == CS.Hungry && p != q &&
                             serving2 == serving + 1 && t2[p] == t[p]
                         })
                         @Ensures({ (t2[p] - serving2) < (t[p] - serving) && (t2[p] - serving2) >= 0 })
@@ -85,7 +85,7 @@ class G260_p171_ticket_liveness {
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[q] == CS.Eating && cs[p] == CS.Hungry && p != q &&
+                            valid(ticket, serving, cs, t) && p != null && q != null && cs[q] == CS.Eating && cs[p] == CS.Hungry && p != q &&
                             serving2 == serving + 1 && t2[p] == t[p]
                         })
                         @Ensures({ (t2[p] - serving2) < (t[p] - serving) && (t2[p] - serving2) >= 0 })
@@ -107,7 +107,7 @@ class G260_p171_ticket_liveness {
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[p] != CS.Thinking &&
+                            valid(ticket, serving, cs, t) && p != null && cs[p] != CS.Thinking &&
                             serving2 == serving && t2[p] == t[p]
                         })
                         @Ensures({ (t2[p] - serving2) == (t[p] - serving) })
@@ -131,7 +131,7 @@ class G260_p171_ticket_liveness {
                             (serving < ticket ==> ((cs[Phil.A] != CS.Thinking && t[Phil.A] == serving) ||
                                                    (cs[Phil.B] != CS.Thinking && t[Phil.B] == serving)))
                         }
-                        @Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Hungry })
+                        @Requires({ valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Hungry })
                         @Ensures({ (cs[Phil.A] != CS.Thinking && t[Phil.A] == serving) ||
                                    (cs[Phil.B] != CS.Thinking && t[Phil.B] == serving) })
                         static void servedProcessExists(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
@@ -150,7 +150,7 @@ class G260_p171_ticket_liveness {
                             (cs[Phil.A] == CS.Eating ==> t[Phil.A] == serving) &&
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
-                        @Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Hungry })
+                        @Requires({ valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Hungry })
                         @Ensures({ (cs[Phil.A] != CS.Thinking && t[Phil.A] == serving) ||
                                    (cs[Phil.B] != CS.Thinking && t[Phil.B] == serving) })
                         static void servedProcessExists(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
@@ -169,7 +169,7 @@ class G260_p171_ticket_liveness {
                             (cs[Phil.A] == CS.Eating ==> t[Phil.A] == serving) &&
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
-                        @Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Hungry && (t[p] - serving) == 0 })
+                        @Requires({ valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Hungry && (t[p] - serving) == 0 })
                         @Ensures({ t[p] == serving })
                         static void zeroEnablesEntry(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
                     }''')],

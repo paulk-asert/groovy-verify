@@ -140,7 +140,7 @@ class G527_p486_map_value_unboxed {
                         @Requires({ m != null })
                         static int f(Map<String, Integer> m) { m.get('x') != null ? m.get('x') + 1 : 0 }
                     }''')],
-        [group: "P486 a map's value unboxed", name: "a comparison a null meets", expect: ["Possible NullPointerException: m[k] is null", 'fails on: bump(State.DONE)'],
+        [group: "P486 a map's value unboxed", name: "a comparison a null meets", expect: ["Possible NullPointerException: m[k] is null", 'fails on: bump('],   // Phase 518 — bump(null) too (a null key, missing)
          src: tc('''@Invariant({ m[State.IDLE] >= 0 && m[State.RUNNING] >= 0 })
                     class Counters {
                         enum State { IDLE, RUNNING, DONE }

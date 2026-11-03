@@ -50,7 +50,7 @@ class G261_p172_ticket_bypass {
                             (ticket - serving == (cs[Phil.A] != CS.Thinking ? 1 : 0) + (cs[Phil.B] != CS.Thinking ? 1 : 0))
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[p] == CS.Thinking &&
+                            valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Thinking &&
                             ticket2 == ticket + 1 && serving2 == serving && cs2[p] == CS.Hungry && t2[p] == ticket &&
                             (Phil.A != p ==> (cs2[Phil.A] == cs[Phil.A] && t2[Phil.A] == t[Phil.A])) &&
                             (Phil.B != p ==> (cs2[Phil.B] == cs[Phil.B] && t2[Phil.B] == t[Phil.B]))
@@ -73,7 +73,7 @@ class G261_p172_ticket_bypass {
                             (ticket - serving == (cs[Phil.A] != CS.Thinking ? 1 : 0) + (cs[Phil.B] != CS.Thinking ? 1 : 0))
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[p] == CS.Hungry &&
+                            valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Hungry &&
                             ticket2 == ticket && serving2 == serving && t2[p] == t[p] &&
                             ((t[p] == serving && cs2[p] == CS.Eating) || (t[p] != serving && cs2[p] == cs[p])) &&
                             (Phil.A != p ==> (cs2[Phil.A] == cs[Phil.A] && t2[Phil.A] == t[Phil.A])) &&
@@ -97,7 +97,7 @@ class G261_p172_ticket_bypass {
                             (ticket - serving == (cs[Phil.A] != CS.Thinking ? 1 : 0) + (cs[Phil.B] != CS.Thinking ? 1 : 0))
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[p] == CS.Eating &&
+                            valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Eating &&
                             ticket2 == ticket && serving2 == serving + 1 && cs2[p] == CS.Thinking && t2[p] == t[p] &&
                             (Phil.A != p ==> (cs2[Phil.A] == cs[Phil.A] && t2[Phil.A] == t[Phil.A])) &&
                             (Phil.B != p ==> (cs2[Phil.B] == cs[Phil.B] && t2[Phil.B] == t[Phil.B]))
@@ -120,7 +120,7 @@ class G261_p172_ticket_bypass {
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving) &&
                             (ticket - serving == (cs[Phil.A] != CS.Thinking ? 1 : 0) + (cs[Phil.B] != CS.Thinking ? 1 : 0))
                         }
-                        @Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Hungry })
+                        @Requires({ valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Hungry })
                         @Ensures({ t[p] - serving <= 1 })
                         static void boundedBypass(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
                     }''')],
@@ -138,7 +138,7 @@ class G261_p172_ticket_bypass {
                             (cs[Phil.A] == CS.Eating ==> t[Phil.A] == serving) &&
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
-                        @Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Hungry })
+                        @Requires({ valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Hungry })
                         @Ensures({ t[p] - serving <= 1 })
                         static void boundedBypass(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
                     }''')],

@@ -21434,7 +21434,8 @@ The full suite at the first gate: 4348 passed, 2 failed (those two); nothing els
 
 **Open:**
 - a map read keyed by a null enum (`cs[p]` for a null `p`) reads the entry of `p`'s value, one of the constants;
-  Groovy reads the null key's. Two nulls read one entry (Phase 515's domain fact), but a null and a constant can too;
+  Groovy reads the null key's. Two nulls read one entry (Phase 515's domain fact), but a null and a constant can too
+  *(fixed in Phase 518, for a parameter)*;
 - an enum local, field or receiver's field compared with a constant still compares by value, as does `switch`;
 - two `Object` parameters, as Phase 515.
 
@@ -21493,6 +21494,50 @@ Mutation-checked: 2 of 2 killed: the channel arm dropped (the two parameter case
 dropped names ignored (the two local-channel cases: Phase 517's own false alarm). The audit's teeth, by a wrong arm in
 each spec: the `ChannelSelect` arm without its channel, and an `AsyncChannel` or a `BroadcastChannel` arm of
 `value == 0`, each fail the audit.
+
+## Phase 518 — a null enum key  *(shipped — soundness)*
+
+Phase 516's open item. The domain closure (Phase 28) pins an enum's value to one of its constants, a null's too, so a
+map read keyed by a null enum parameter read a constant's entry. Groovy reads the null key's: a map may hold one
+(`[(null): 1]`, an `EnumMap` aside). Measured at the parent:
+- **Compiled cleanly where a run breaks:** `@Requires({ m != null && m[L.A] == 0 && m[L.B] == 0 })` with
+  `@Ensures({ m[p] == 0 })` (`f([(null): 1, (L.A): 0, (L.B): 0], null)`), and two puts at the constants taken to
+  write `m[p]`;
+- **wrongly vacuous:** `m[p] == 1 && m[L.A] == 0 && m[L.B] == 0` was called a precondition no call meets; the map
+  above meets it;
+- **a false alarm:** two null keys not shown to read one entry (`m[p] == m[q]`), as Phase 515's domain fact is per
+  pair compared.
+
+**Fix.** A parameter's closure is `null(p) ? p == L$null : p ∈ {c1, …, cN}`, where `L$null` is the sort's own literal
+(keyed `null`, which can't name a constant, so it's distinct from each). Two nulls are that one value, so read one
+entry; a null is no constant, so `p == L.A` is false by value too. Only a parameter: its null flag is minted with its
+value, so the closure ties the right two. And the repro's map literal (Phase 485) now spells an enum-sorted key, by
+the literal the model equates it with: `(L.A)`, or `(null)` for the null literal. Before, an enum-keyed map was
+never shown.
+
+**Corpus cases repaired.** The full suite at the first gate: 4368 passed, 10 failed, nine of them Leino's ticket lock
+(Phases 170–172, 186), whose lemmas over a symbolic process `p` are false for a null `p` with null-keyed maps. E.g.
+`measureNonNegative`: `cs[null] != Thinking` and `t[null] < serving`, which `valid` (over `A` and `B`) doesn't rule
+out. As in Phase 516, Leino's `p in P` is restored as `p != null` (and `q != null`) in each precondition: `P170`'s
+Leave and its twin, every `P171` (7) and `P172` (5) lemma's (their teeth twins too, so they still refute for their
+own reason), and the Model-1 events' `@Requires` in `P186` and `examples/dafny.md`. The tenth, `P486`'s "a comparison a
+null meets", now shows `bump(null)` where it showed `bump(State.DONE)`: both throw (the invariant covers `IDLE` and
+`RUNNING` alone), so the case expects `bump(` now.
+
+**Open:**
+- an enum field, local or receiver's field keeps the plain closure (a null is a constant's value): a field's null flag
+  isn't minted with its value, so the tie isn't sound to state there;
+- a map's key-set over an enum isn't closed to the constants and the null literal: a model's map may hold a key that's
+  neither, and then its repro is withheld ("a null key's entry is free" shows none);
+- `P170`'s Request and Enter lemmas hold for a null `p` and keep their preconditions as they were.
+
+**Shipped tests:** group `P518 null enum key`, 9 cases. 5 fail at the parent commit: two compiled cleanly where a run
+breaks (a null key's entry is free, a put at the constants), two wrongly vacuous preconditions (a null key's entry,
+so the key is null), one false alarm (two null keys, one entry). Four pass at the parent, as guards: a non-null key
+is a constant, a put at the constants writes a non-null key, a null level is no constant, every non-null level is one.
+
+Mutation-checked: 3 of 3 killed: the null branch dropped (5), a null's value free rather than the shared literal (2:
+two null keys, and the repro's `(null)` key), the enum key's spelling dropped (1, the repro).
 
 ## Definition of done, per increment
 

@@ -132,7 +132,7 @@ class G259_p170_ticket_lock {
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[p] == CS.Eating &&
+                            valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Eating &&   // Phase 518 — Leino's `p in P`
                             ticket2 == ticket && serving2 == serving + 1 &&
                             cs2[p] == CS.Thinking && t2[p] == t[p] &&
                             (Phil.A != p ==> (cs2[Phil.A] == cs[Phil.A] && t2[Phil.A] == t[Phil.A])) &&
@@ -156,7 +156,7 @@ class G259_p170_ticket_lock {
                             (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
                         }
                         @Requires({
-                            valid(ticket, serving, cs, t) && cs[p] == CS.Eating &&
+                            valid(ticket, serving, cs, t) && p != null && cs[p] == CS.Eating &&   // Phase 518 — Leino's `p in P`
                             ticket2 == ticket && serving2 == serving + 1 &&
                             cs2[p] == CS.Thinking && t2[p] == t[p] &&
                             (Phil.A != p ==> (cs2[Phil.A] == cs[Phil.A] && t2[Phil.A] == t[Phil.A])) &&

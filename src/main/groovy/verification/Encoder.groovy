@@ -1891,7 +1891,15 @@ class Encoder implements TheoryApi {
         if (consts.isEmpty()) return
         List<Object> disj = new ArrayList<Object>()
         for (String cn : consts) disj.add(session.eq(v, session.litOfSort(sort, cn)))
-        session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
+        Object closed = disj.size() == 1 ? disj.get(0) : session.or(disj)
+        // Phase 518 — a parameter's null is no constant: its value is the sort's own null literal (`null` can't name a
+        // constant, so it's distinct from each), and a map read keyed by it (`m[p]`) is the null key's entry, as Groovy
+        // reads it; two nulls are that one value. A parameter's flag here is its entry flag (minted with its value)
+        if (vcMethod?.parameters?.any { it.name == name }) {
+            session.assertExpr(session.ite(nullityOf(name), session.eq(v, session.litOfSort(sort, 'null')), closed))
+            return
+        }
+        session.assertExpr(closed)
     }
 
     private boolean isKnownEnumName(String name) {

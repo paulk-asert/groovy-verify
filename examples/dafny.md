@@ -475,11 +475,11 @@ class Ticket {
     int serving
     Map<Phil,CS> cs
     Map<Phil,Integer> t
-    @Requires({ cs[p] == CS.Thinking })
+    @Requires({ p != null && cs[p] == CS.Thinking })
     void request(Phil p) { t[p] = ticket; ticket = ticket + 1; cs[p] = CS.Hungry }
-    @Requires({ cs[p] == CS.Hungry })
+    @Requires({ p != null && cs[p] == CS.Hungry })
     void enter(Phil p) { if (t[p] == serving) cs[p] = CS.Eating }
-    @Requires({ cs[p] == CS.Eating })
+    @Requires({ p != null && cs[p] == CS.Eating })
     void leave(Phil p) { serving = serving + 1; cs[p] = CS.Thinking }
 }
 ```
