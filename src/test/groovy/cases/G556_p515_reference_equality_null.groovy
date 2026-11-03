@@ -22,7 +22,7 @@ import static cases.CaseDsl.*
  * {@code n == m} for two {@code Integer}s) compared their values alone, and a null's value is free: two nulls could
  * differ, and a null equal a non-null. Now a null equals only a null, by the two parameters' null flags. A literal's
  * side is Phase 445's, an element's Phase 492's. Two nulls are one value too (a map keyed by either reads the same
- * entry). Only a {@code String} or a boxed primitive: an enum's or an {@code Object}'s compare by value, as before.
+ * entry). Only a {@code String}, a boxed primitive or (since Phase 516) an enum: an {@code Object}'s compare by value, as before.
  */
 class G556_p515_reference_equality_null {
 
@@ -110,7 +110,7 @@ class G556_p515_reference_equality_null {
                         @Ensures({ result == 0 })
                         static int f(int a, int b) { a - b }
                     }''')],
-        [group: "P515 reference equality null", name: "two enums, by value beside a constant", ok: true,
+        [group: "P515 reference equality null", name: "two enums, beside a constant", ok: true,
          src: tc('''class C {
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }

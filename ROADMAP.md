@@ -21386,19 +21386,71 @@ the `P170 ticket-lock` mutual exclusion were refuted on a null enum. `Object` wa
 its own slice. A primitive parameter is left out, so an `int`'s comparison is as before.
 
 **Open:** a local, a field or a receiver's field compared with a parameter, or two of them, still compare by value; so
-do two enum parameters (until an enum's comparison with its constant is null-aware) and two `Object`s.
+do two enum parameters (until an enum's comparison with its constant is null-aware) *(fixed in Phase 516)* and two `Object`s.
 
 **Shipped tests:** group `P515 reference equality null`, 17 cases. 9 fail at the parent commit (two null `String`s
 equal in a contract and in a body, a null and a non-null not equal by `==` and by `!=`, two null `Integer`s, equal to a
 non-null so non-null, a literal list's against a null element, a reassigned parameter, the both-null repro). Five pass
 at the parent, as guards: `!=` on non-nulls, two `String`s not always equal, a null `Integer` and a number, a computed
-`result` by its value, `int`s, and three added after the first gate: two enums by value beside a constant, two
+`result` by its value, `int`s, and three added after the first gate: two enums beside a constant (null-aware since Phase 516), two
 `Object`s as a function's arguments, and two `String`s as a map's keys.
 
 Mutation-checked: 6 of 6 killed: the encoding dropped (9), `!=`'s core taken un-negated (1, `!=` on non-nulls), `!=`
 not negated (1), one side a parameter enough (1, the computed `result`). A check that a quantifier's element of a
 parameter's name isn't one survived (a closure parameter can't shadow a method's), so it was dropped. Also killed:
 the domain fact dropped (1, the map's keys), and the type narrowing dropped (1, the enums).
+
+## Phase 516 — an enum compared, with a null  *(shipped — soundness and precision)*
+
+Phase 515's open item. An enum's value is always one of its constants: the domain closure (Phase 28) pins each
+enum-sorted name to `c1 ∨ … ∨ cN`. So a null enum parameter's value equalled some constant, and `a == L.Low` compared
+that value alone, where Groovy's `null == L.Low` is false. Phase 515 left enums out of its null-aware `a == b` for this
+reason: beside a value-only `a == L.Low`, the `PL0 lattice` and `P170 ticket-lock` lemmas were refuted on a null.
+Measured at the parent:
+- **Compiled cleanly where a run breaks.** `@Ensures({ a == L.Low || a == L.High })` on an empty body (`f(null)`), and
+  the lattice's `@Ensures({ leq(l1, l1) })` for `leq(l1, l2) { l1 == L.Low || l2 == L.High }` (`reflexive(null)`:
+  `leq(null, null)` is false). Both measured on Groovy 6.0.0;
+- **false alarms:** `@Requires({ a == L.Low })` (or `L.High == a`) didn't make `a` non-null for `a.name()`; a body's
+  `a == L.Low || a == L.High` for a null `a`, refuted; `result == (a == L.Low || a == L.High)` against `a != null`;
+  two null enums not shown equal, a null and a constant not shown unequal, `a == b && a == L.Low` not making `b`
+  non-null;
+- **a wrong repro:** under `@Requires({ a == b })`, `b.name()` was reported, but not on `f(null, null)`, the run that throws.
+
+**Fix.** An enum parameter compared with one of its constants, in either AST shape (a body's `ClassExpression`, a
+re-parsed contract's class name), is Phase 445's literal rule: `==` is `¬null(a) ∧ a == L.Low`, `!=` its negation.
+And an enum parameter is one of Phase 515's reference parameters, so `a == b` is null-aware, with its domain fact.
+
+**Two corpus cases repaired.** Both proved claims a run with a null breaks, measured on Groovy 6.0.0:
+- `PL0 lattice`'s boolean lattice: `reflexive`, `joinUpperBound` and `meetLowerBound` are false for a null level
+  (`leq(null, null)`, `leq(Low, join(Low, null))`'s `leq(null, null)`). Each gained `@Requires` of its levels'
+  non-nullity. The other four laws hold with a null and are unchanged, as is the diamond lattice (its `leq` has
+  `l1 == l2`, true for two nulls);
+- `P170 ticket-lock`'s mutual exclusion: with `p` null, `q = A` and a map with a null key, `cs[p]` and `cs[q]` are
+  both `Eating` and `p != q`. Leino's Dafny lemma says `requires … && p in P && q in P`, which the transcription
+  dropped; `p != null && q != null` restores it (in `examples/dafny.md` too). Its teeth twin (uniqueness dropped)
+  gets the same conjuncts, so it's still refuted for its own reason.
+
+The full suite at the first gate: 4348 passed, 2 failed (those two); nothing else moved.
+
+**Open:**
+- a map read keyed by a null enum (`cs[p]` for a null `p`) reads the entry of `p`'s value, one of the constants;
+  Groovy reads the null key's. Two nulls read one entry (Phase 515's domain fact), but a null and a constant can too;
+- an enum local, field or receiver's field compared with a constant still compares by value, as does `switch`;
+- two `Object` parameters, as Phase 515.
+
+**Shipped tests:** group `P516 enum equality null`, 14 cases. 10 fail at the parent commit:
+- two compiled cleanly where the run throws or breaks the postcondition (every constant on an empty body, the
+  lattice's reflexivity);
+- seven false alarms (equal to a constant, the constant on the left, a null equal to no constant in a body, a
+  constant or not null, two null enums equal, a null and a constant unequal, equal to a non-null);
+- one wrong repro (equal, maybe both null: now `f(null, null)`).
+
+Four pass at the parent, as guards: not equal to a constant (still maybe null), the lattice's reflexivity for a
+non-null level, two enums maybe unequal, two constants by value.
+
+Mutation-checked: 4 of 4 killed: the constant rule dropped (8, and both `PL0 lattice` proofs: Phase 515's
+disagreement), enums kept out of Phase 515's rule (4), the constant taken on the right only (1), the enum guard on
+the constant rule dropped (8).
 
 ## Definition of done, per increment
 

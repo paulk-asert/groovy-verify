@@ -433,7 +433,7 @@ static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer>
     (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
 }
 
-@Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Eating && cs[q] == CS.Eating })
+@Requires({ valid(ticket, serving, cs, t) && p != null && q != null && cs[p] == CS.Eating && cs[q] == CS.Eating })
 @Ensures({ p == q })                        // both eating ⟹ the same process — mutual exclusion
 static void mutualExclusion(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p, Phil q) {}
 ```

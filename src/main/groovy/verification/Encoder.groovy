@@ -5293,15 +5293,32 @@ class Encoder implements TheoryApi {
     }
 
     /** Phase 515 — a parameter, by name, of a {@code String} or a boxed primitive: the types whose comparisons with a
-     *  literal are null-aware (Phase 445). An enum's comparison with its constant, and an {@code Object}'s use as a
-     *  value (a function's argument, a map's key), still read its value alone, and a null-aware {@code ==} beside them
-     *  would disagree: two null enums equal here, their values not equal there */
+     *  literal are null-aware (Phase 445). Phase 516 — an enum's too, now that its comparison with its constant is. An
+     *  {@code Object}'s use as a value (a function's argument, a map's key) still reads its value alone, and a null-aware
+     *  {@code ==} beside it would disagree */
     private boolean isReferenceParam(Expression e) {
         if (!(e instanceof VariableExpression)) return false
         String n = ((VariableExpression) e).name
         ClassNode t = vcMethod?.parameters?.find { it.name == n }?.type
-        t != null && (t == ClassHelper.STRING_TYPE ||
+        t != null && (t == ClassHelper.STRING_TYPE || t.isEnum() || isEnumLikeType(t) ||   // Phase 516 — an enum's too
             !ClassHelper.isPrimitiveType(t) && ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(t)))
+    }
+
+    /** Phase 516 — a parameter, by name, of an enum type */
+    private boolean isEnumParam(Expression e) {
+        if (!(e instanceof VariableExpression)) return false
+        String n = ((VariableExpression) e).name
+        ClassNode t = vcMethod?.parameters?.find { it.name == n }?.type
+        t != null && (t.isEnum() || isEnumLikeType(t))
+    }
+
+    /** Phase 516 — an enum constant, {@code L.Low}: a property of an enum class, in either AST shape (a body's
+     *  {@code ClassExpression}, a re-parsed contract's {@code VariableExpression} naming the class) */
+    private boolean isEnumConstant(Expression e) {
+        if (!(e instanceof PropertyExpression)) return false
+        Expression obj = ((PropertyExpression) e).objectExpression
+        if (obj instanceof ClassExpression) return obj.type.isEnum() || isEnumLikeType(obj.type)
+        obj instanceof VariableExpression && isKnownEnumName(((VariableExpression) obj).name)
     }
 
     /** Phase 492 — a compared value's nullity, when the other side is an element's or a map's read: its own, or a fresh
@@ -7003,7 +7020,14 @@ class Encoder implements TheoryApi {
                 other = num
                 stated = true
             }
-            if (other != null && stated && (other.is(num) || isStringReceiver(other))) {
+            // Phase 516 — an enum parameter equal to its constant isn't null (`null == L.Low` is false): beside a null-aware
+            // `a == b` (Phase 515), a null enum's value would otherwise equal a constant there and not here
+            if (other == null) {
+                Expression en = isEnumConstant(be.rightExpression) ? be.leftExpression :
+                                isEnumConstant(be.leftExpression) ? be.rightExpression : null
+                if (isEnumParam(en)) { other = en; stated = true }
+            }
+            if (other != null && stated && (other.is(num) || isStringReceiver(other) || isEnumParam(other))) {
                 Object nul = nullityOfExpr(other)
                 if (nul != null) {
                     Object core

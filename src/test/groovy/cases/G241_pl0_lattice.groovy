@@ -48,16 +48,19 @@ class G241_pl0_lattice {
                         static boolean leq(L l1, L l2) { l1 == L.Low || l2 == L.High }
                         static L join(L l1, L l2) { leq(l1, l2) ? l2 : l1 }
                         static L meet(L l1, L l2) { leq(l1, l2) ? l1 : l2 }
+                        @Requires({ l1 != null })           // Phase 516 — leq(null, null) is false: a null level is no level
                         @Ensures({ leq(l1, l1) })
                         static void reflexive(L l1) { }
                         @Ensures({ (leq(l1, l2) && leq(l2, l1)) ==> (l1 == l2) })
                         static void antisymmetric(L l1, L l2) { }
                         @Ensures({ (leq(l1, l2) && leq(l2, l3)) ==> leq(l1, l3) })
                         static void transitive(L l1, L l2, L l3) { }
+                        @Requires({ l1 != null && l2 != null })
                         @Ensures({ leq(l1, join(l1, l2)) && leq(l2, join(l1, l2)) })
                         static void joinUpperBound(L l1, L l2) { }
                         @Ensures({ (leq(l1, l3) && leq(l2, l3)) ==> leq(join(l1, l2), l3) })
                         static void joinLeast(L l1, L l2, L l3) { }
+                        @Requires({ l1 != null && l2 != null })
                         @Ensures({ leq(meet(l1, l2), l1) && leq(meet(l1, l2), l2) })
                         static void meetLowerBound(L l1, L l2) { }
                         @Ensures({ (leq(l3, l1) && leq(l3, l2)) ==> leq(l3, meet(l1, l2)) })
