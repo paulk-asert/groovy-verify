@@ -3649,7 +3649,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (body == null || currentObjectParams.isEmpty()) return
         Map<String, ClassNode> modelled = receiverListsOf(node)
         Set<String> reported = new HashSet<String>()
+        // Phase 520 — a local declared from a receiver's field (`List<Integer> ys = b.xs`) is that field: a write through
+        // it, or handing it on, is the field's
+        Map<String, Expression> fieldAliases = new HashMap<String, Expression>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                Expression r = stripCasts(de.rightExpression)
+                if (de.leftExpression instanceof VariableExpression && r instanceof PropertyExpression &&
+                        ((PropertyExpression) r).objectExpression instanceof VariableExpression) {
+                    fieldAliases.put(((VariableExpression) de.leftExpression).name, r)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
         Closure check = { Expression target, Expression at, String handedTo = null ->
+            String alias = null
+            if (target instanceof VariableExpression && fieldAliases.containsKey(((VariableExpression) target).name)) {
+                alias = ((VariableExpression) target).name
+                target = fieldAliases.get(alias)
+            }
             if (!(target instanceof PropertyExpression) || !(((PropertyExpression) target).objectExpression instanceof VariableExpression)) return
             String v = ((VariableExpression) ((PropertyExpression) target).objectExpression).name
             String f = ((PropertyExpression) target).propertyAsString
@@ -3659,7 +3677,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!classInvariantTexts(t).any { Expression inv -> contractNames(inv).contains(f) }) return
             if (!reported.add(owner + '$' + f)) return
             String handed = callHandedParam(node, owner)
-            String why = handedTo != null ? "'${v}.${f}' is handed to '${handedTo}'".toString() :   // Phase 519
+            String why = handedTo != null ? "'${alias ?: v + '.' + f}' is handed to '${handedTo}'".toString() :   // Phase 519
+                alias != null ? "'${alias}' is '${v}.${f}', which the verifier doesn't model as one".toString() :   // Phase 520
                 handed != null ? "'${owner}' is also handed to '${handed}'".toString() :
                 "the verifier doesn't model '${v}.${f}' in ${node.name}".toString()
             addStaticTypeError(Reporter.formatInvariantUnchecked(t.nameWithoutPackage, owner, asSpelled(at), why), at)
@@ -3683,6 +3702,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) {
                 checkHandedFields(sce, sce.arguments, node.declaringClass, check)
                 super.visitStaticMethodCallExpression(sce)
+            }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {   // Phase 520
+                checkHandedFields(cce, cce.arguments, node.declaringClass, check)
+                super.visitConstructorCallExpression(cce)
             }
             @Override void visitBinaryExpression(BinaryExpression be) {
                 if (be.operation.type == Types.LEFT_SHIFT) check(be.leftExpression, be)
@@ -3727,6 +3750,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ClassNode at = (a.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) as ClassNode) ?: declaredFieldType(a)
         if (at != null && (ClassHelper.isPrimitiveType(at) || at == ClassHelper.STRING_TYPE || at.isEnum() ||
             ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(at)))) return false
+        // Phase 520 — a constructor of this unit's may keep it, and write it later; a JDK one copies (`new ArrayList(xs)`)
+        if (call instanceof ConstructorCallExpression) return ((ConstructorCallExpression) call).type?.isPrimaryClassNode()
         Object tgt = call.getNodeMetaData(StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
         MethodNode mn = tgt instanceof MethodNode ? (MethodNode) tgt : null
         if (mn != null && mn.declaringClass?.isPrimaryClassNode()) return !SpecRegistry.isPure(mn)
@@ -3757,6 +3782,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ((MethodCallExpression) call).methodAsString
         Integer pos = owner != null ? MUTATING_STATICS.get(owner + '.' + name) : null
         pos != null && pos == i
+    }
+
+    /** Phase 520 — {@code b.f}'s null flag, for a local declared from it ({@code StringBuilder t = b.sb}): the receiver's
+     *  {@code b$f}, which its class invariant states (Phase 496). Only when the method never assigns the field, through
+     *  {@code b} or an alias of it: a store doesn't rebind that flag, so it would be stale. (Today a reference field's
+     *  store takes the method off this route anyway — storeParamField refuses it — so the check is insurance.) */
+    private Object receiverFieldNullity(Encoder enc, MethodNode node, Expression rhs) {
+        Expression r = stripCasts(rhs)
+        if (!(r instanceof PropertyExpression) || !(((PropertyExpression) r).objectExpression instanceof VariableExpression)) return null
+        String v = ((VariableExpression) ((PropertyExpression) r).objectExpression).name
+        String f = ((PropertyExpression) r).propertyAsString
+        String owner = currentObjectParams.containsKey(v) ? v : currentObjectAliases.get(v)
+        if (f == null || owner == null || currentObjectParams.get(owner)?.getField(f) == null) return null
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: node.code
+        Set<String> names = namesOfParam(owner)
+        boolean stored = false
+        body?.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                Expression l = be.leftExpression
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && !(be instanceof DeclarationExpression) &&
+                        l instanceof PropertyExpression && ((PropertyExpression) l).propertyAsString == f &&
+                        ((PropertyExpression) l).objectExpression instanceof VariableExpression &&
+                        names.contains(((VariableExpression) ((PropertyExpression) l).objectExpression).name)) stored = true
+                super.visitBinaryExpression(be)
+            }
+        })
+        stored ? null : enc.nullityOf(owner + '$' + f)
     }
 
     /** Phase 519 — a field read's declared type, {@code b.xs} for a parameter {@code b}: the pre-STC copy has no inferred one */
@@ -3796,6 +3848,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         body.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression mce) { scan(mce, mce.arguments); super.visitMethodCallExpression(mce) }
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) { scan(sce, sce.arguments); super.visitStaticMethodCallExpression(sce) }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression cce) { scan(cce, cce.arguments); super.visitConstructorCallExpression(cce) }   // Phase 520
         })
         out
     }
@@ -6562,7 +6615,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.havoc(a.name)
                         continue
                     }
-                    Object knownNull = enc.nullityOfExpr(a.rhs)
+                    Object knownNull = receiverFieldNullity(enc, node, a.rhs) ?: enc.nullityOfExpr(a.rhs)   // Phase 520 — a receiver field's first
                     enc.noteNullableValue(a.name, a.rhs)   // Phase 423
                     enc.bindNullity(a.name, knownNull != null ? knownNull : s.boolVar(a.name + '?null$unmodelled$' + (ssaCounter++)))
                     // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await

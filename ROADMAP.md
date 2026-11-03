@@ -21574,9 +21574,9 @@ The full suite at the first gate: nothing else moved (only the probe's own cases
 
 **Open:**
 - a third-party library's static that writes its argument isn't recognised (only the JDK's listed);
-- a field handed to a constructor (`new Wrapper(b.xs)`, which may keep and write it) isn't reported;
+- a field handed to a constructor (`new Wrapper(b.xs)`, which may keep and write it) isn't reported *(fixed in Phase 520)*;
 - a local alias of a receiver's list (`List<Integer> ys = b.xs; ys.add(1)`) reports `ys` maybe null, where the
-  invariant says `xs != null`: loud, but for the wrong reason.
+  invariant says `xs != null`: loud, but for the wrong reason *(fixed in Phase 520)*.
 
 **Shipped tests:** group `P519 unknown mutators`, 16 cases. All ten of the reporting cases compile cleanly at the
 parent: six calls on the field (an append, a length set, `removeIf`, a sort in place, a closure's delegate, through a
@@ -21588,6 +21588,49 @@ field handed on.
 Mutation-checked: 7 of 7 killed: the mutators' list again (5), no views (1), nothing handed (4), immutable types not
 exempt (1), `@Pure` ignored by name (1, the list still modelled), a handed list still modelled (2), no by-name
 resolution (1).
+
+## Phase 520 — a field handed on  *(shipped — soundness: loud, and precision)*
+
+Phase 519's open items. Measured at the parent:
+- **Compiled cleanly where the write breaks the invariant:** a receiver's field handed to a constructor of this
+  unit's, `new Holder(b.xs)` (one that keeps and writes it), and a local alias handed to a writer,
+  `List<Integer> ys = b.xs; Collections.sort(ys)`;
+- **loud for the wrong reason:** `ys.add(1)` and `StringBuilder t = b.sb; t.append('xxxx')` reported the alias
+  maybe null, where the invariant says the field isn't, and not the invariant they break;
+- **a false alarm:** `StringBuilder t = b.sb; t.toString()` under `@Invariant({ sb != null })`, the same null.
+
+**Fix.**
+- **Constructors.** `mayWriteArgument` takes a constructor of this unit's as one that may keep its argument and
+  write it later. A JDK constructor copies (`new ArrayList<Integer>(b.xs)`), so it isn't one. `receiverListsOf`
+  drops a list handed to one from the model, as for a call.
+- **Local aliases.** A local declared from a receiver's field is that field to Phase 503's check: a write through
+  it, or handing it on, is the field's. The report names it: "('ys' is 'b.xs', which the verifier doesn't model as
+  one)", "('ys' is handed to 'Collections.sort(ys)')".
+- **The alias's nullity.** In the value-flow replay, a local declared from `b.f` takes `b$f`'s null flag, which
+  the receiver's invariant states (Phase 496), rather than a fresh one. Not when the method assigns the field
+  (through `b` or an alias of it), as a store doesn't rebind that flag. Today a reference field's store takes the
+  method off that route anyway (`storeParamField` refuses it), so the check is insurance: its mutant survives (below).
+
+**Found on the way (not fixed: a policy for the project to set).** A receiver field's dereference carries no
+null-receiver obligation unless Phase 500 models the field: `static String f(B b) { b.sb.toString() }` compiles
+cleanly where `B`'s `sb` may be null (`new B()`), while the same value through a local is checked. Phase 238 noted a
+bare field dereference's in passing (a class's own field's wasn't measured here). Giving every field dereference an obligation would report
+throughout the corpus wherever a field's non-nullity isn't stated, so it's left for a decision.
+
+**Open:**
+- the field dereference above;
+- with the field stored first (`b.name = s; String t = b.name; t.length()`), the path-facts route reports `t` with
+  the repro `f(new B(), "")`, a call that doesn't throw (pre-existing: that route has no steps, so `t` is free);
+- a library constructor that keeps its argument (a JDK wrapper view such as `Collections.unmodifiableList` is a
+  static, and only reads) isn't recognised beyond this unit's classes.
+
+**Shipped tests:** group `P520 a field handed on`, 7 cases. 5 fail at the parent commit: two compiled cleanly (the
+constructor, the alias handed on), two reported the alias's nullity for the invariant (a list's, a
+`StringBuilder`'s), one false alarm (an alias read). Two pass at the parent, as guards: a JDK constructor copies, and
+the field stored first is still reported.
+
+Mutation-checked: 3 of 4 killed: constructors exempt (1), no aliases (3), the alias's flag not the field's (1). The
+store check survives, unreachable as above; kept as insurance for when a reference field's store is modelled.
 
 ## Definition of done, per increment
 
