@@ -21653,18 +21653,61 @@ The full suite at the first gate: nothing else moved.
 **Open:**
 - a receiver's enum field (`b.level`) isn't modelled: a contract on it is outside the fragment, and the implicit
   checks skip with an internal sort error ("Sorts Int and L are incompatible"), loudly, as at the parent. Its closure
-  waits on that model;
+  waits on that model *(fixed in Phase 522)*;
 - an enum local takes its source's value (`L x = p` is `p`'s, tied), so it's covered where it's assigned from a
   parameter or a field; a local minted fresh (a loop's havoc) keeps the plain closure.
 
-**Shipped tests:** group `P521 null enum field`, 8 cases. 3 fail at the parent commit: two compiled cleanly where a
-run breaks (every constant on an empty body, a null field's map key), one false alarm (a null field equal to no
-constant). Five pass at the parent: a non-null field is a constant, a field written then read, a null local copied
-from a parameter (guards), and two pins of the receiver's field's loud skips.
+**Shipped tests:** group `P521 null enum field`, 6 cases (8 as shipped: its two pins of a receiver's field's loud
+skips moved to `P522`, which models it). 3 fail at the parent commit: two compiled cleanly where a run breaks (every
+constant on an empty body, a null field's map key), one false alarm (a null field equal to no constant). Three pass
+at the parent, as guards: a non-null field is a constant, a field written then read, a null local copied from a
+parameter.
 
 Mutation-checked: 2 of 3 killed: the field branch dropped (3), always the weak closure (2: a null field equal to no
 constant, a non-null one a constant). Always the tie survives: no case found reaches a field minted after its flag was
 rebound (a write takes its source's value, and a loop's write is skipped loudly), so the weak branch is insurance.
+
+## Phase 522 — a receiver's enum field  *(shipped — capability)*
+
+Phase 521's open item. A receiver's field `b.level` of an enum type translated as an Int (`fieldVar`, Phase 45's
+Int-only receiver field), so it wasn't modelled. Measured at the parent, with `enum L { A, B }` and `final class B {
+L level }`: every use was loud, none silent, but none was checked:
+- `b.level == L.A` in a contract was outside the fragment, and `b.level == null` too;
+- in a body, and as a map's key (`m[b.level]`), the implicit checks crashed on the sorts ("an internal error: Sorts
+  Int and L are incompatible") and skipped;
+- an invariant `level == L.A` assumed for `b` crashed the same way.
+
+**Fix.**
+- **Its sort.** `b$level` is a value of `L`'s sort (`receiverEnumField`, from `fieldVar`), registered as an enum
+  scalar, so the domain closure applies and Phase 521's tie takes a receiver's field too: a null `b.level` is the
+  sort's null literal, no constant.
+- **Its null.** `b.level == null` reads `b$level`'s flag, the one the receiver's invariant states (`level != null`,
+  under Phase 496's receiver scope) and the closure ties to its value. Only for an enum field: a general receiver
+  field's null comparison is its own slice (Phase 520's field dereference question is related).
+- **As a key.** `translateInSort` read `X.Y` with a variable `X` as an enum constant (a re-parsed contract's
+  `Color.RED`), so `m[b.level]` would have been the constant `level`. An object parameter's property is its field.
+- **Its constants in a contract.** A contract's `L.A` is a constant when `L` is a known enum name, and the names came
+  from the method's own containers and scalars. An object parameter's class's enum fields count now.
+
+The repro builds the receiver: `@Ensures({ b.level == L.A || b.level == L.B })` on an empty body fails on
+`f(new B())`, whose `level` is null.
+
+The full suite at the first gate: nothing else moved.
+
+**Open:**
+- a nested enum spelled through its outer class in a contract (`B.L.A`, a property of a property) isn't read as a
+  constant: outside the fragment, said so;
+- `b.f == null` for a receiver's field of another reference type (`String`, a list Phase 500 doesn't model) isn't
+  translated.
+
+**Shipped tests:** group `P522 receiver enum field`, 7 cases. 6 fail at the parent commit, each a loud skip where
+the method now verifies or is refuted for its own reason: a null field equal to no constant, every constant refuted
+on a null (`f(new B())`), every constant for a non-null one, by the class invariant's `level != null`, a constant by
+its invariant, as a map's key. One passes at the parent, as a guard: a null field's map read is reported, a null that
+can't be cast to `int`.
+
+Mutation-checked: 5 of 5 killed: an Int again (7), the closure untied (3), no null comparison (2), the key read as
+a constant (1), the enum's name unknown to a contract (3).
 
 ## Definition of done, per increment
 

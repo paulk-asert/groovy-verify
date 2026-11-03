@@ -70,23 +70,6 @@ class G562_p521_null_enum_field {
                         @Ensures({ level == L.A })
                         void f() { level = L.A }
                     }''')],
-        // a receiver's enum field isn't modelled: loud, as before (an open item)
-        [group: G, name: "a receiver's null field, unmodelled, said so", expect: ['Skipped the implicit safety checks of f'],
-         src: tc('''final class B { enum L { A, B }; L level }
-                    @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
-                        @Requires({ b != null && b.level == null })
-                        @Ensures({ !result })
-                        static boolean f(B b) { b.level == B.L.A || b.level == B.L.B }
-                    }''')],
-        [group: G, name: "a receiver's field's postcondition, said so", expect: ["postcondition '((b.level == B.L.A) || (b.level == B.L.B))' is outside fragment"],
-         src: tc('''final class B { enum L { A, B }; L level }
-                    @TypeChecked(extensions = 'verification.VerifyChecker')
-                    class Client {
-                        @Requires({ b != null })
-                        @Ensures({ b.level == B.L.A || b.level == B.L.B })
-                        static void f(B b) { }
-                    }''')],
         [group: G, name: "a null local, no constant", ok: true,
          src: tc('''class C {
                         enum L { A, B }

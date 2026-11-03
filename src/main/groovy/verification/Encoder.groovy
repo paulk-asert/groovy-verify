@@ -1913,11 +1913,12 @@ class Encoder implements TheoryApi {
         session.assertExpr(closed)
     }
 
-    /** Phase 521 — {@code name} is an instance field of the method's class (not a parameter's shadowing name). A
-     *  receiver's enum field isn't modelled (outside the fragment, said so), so there's no {@code b$f} to tie */
+    /** Phase 521 — {@code name} is an instance field of the method's class (not a parameter's shadowing name); Phase
+     *  522 — or a receiver's ({@code b$f}) */
     private boolean isEnumFieldName(String name) {
         MethodNode m = vcMethod
-        if (m == null || name == null || name.contains('$')) return false
+        if (m == null || name == null) return false
+        if (name.contains('$')) return receiverFieldType(name) != null
         if (m.parameters.any { it.name == name }) return false
         FieldNode f = fieldOf(m.declaringClass, name)
         f != null && !f.isStatic()
@@ -1946,6 +1947,12 @@ class Encoder implements TheoryApi {
             }
             scalarTypes.values().each { ClassNode t ->
                 if (t != null && (t.isEnum() || isEnumLikeType(t))) knownEnumNames.add(enumSortName(t))
+            }
+            // Phase 522 — an object parameter's enum fields' (`b.level == L.A`, a contract's `L` a name)
+            objectParams?.values()?.each { ClassNode rt ->
+                for (ClassNode c = rt; c != null && c.name != 'java.lang.Object'; c = c.superClass) {
+                    for (FieldNode f : c.fields) if (!f.isStatic() && (f.type.isEnum() || isEnumLikeType(f.type))) knownEnumNames.add(enumSortName(f.type))
+                }
             }
         }
         knownEnumNames.contains(name)
@@ -2036,12 +2043,32 @@ class Encoder implements TheoryApi {
 
     /** Phase 431 — an object parameter's field {@code c$f}: Bool when the field is a boolean, Int otherwise. */
     private Object fieldVar(String name) {
+        Object en = receiverEnumField(name)   // Phase 522
+        if (en != null) return en
         if (!booleanLocals.contains(name)) return varForRaw(name)
         Object cached = env.get(name)
         if (cached != null) return cached
         Object v = session.boolVar(name)
         env.put(name, v)
         v
+    }
+
+    /** Phase 522 — a receiver's enum field ({@code b$level}): a value of the enum's sort, not an Int, under the domain
+     *  closure tied to its null flag (Phase 521's, which {@link #isEnumFieldName} takes for a receiver's field too) */
+    private Object receiverEnumField(String name) {
+        ClassNode ft = receiverFieldType(name)
+        if (ft == null || !(ft.isEnum() || isEnumLikeType(ft))) return null
+        scalarTypes.putIfAbsent(name, ft)
+        varForOfSort(name, sortForType(ft))
+    }
+
+    /** Phase 522 — {@code b$f}'s declared type, for an object parameter {@code b} with an instance field {@code f} */
+    private ClassNode receiverFieldType(String name) {
+        int cut = name == null ? -1 : name.indexOf('$')
+        if (cut <= 0) return null
+        ClassNode rt = objectParams?.get(name.substring(0, cut))
+        FieldNode f = rt == null ? null : fieldOf(rt, name.substring(cut + 1))
+        f == null || f.isStatic() ? null : f.type
     }
 
     /** Phase 45 — raw Int variable lookup without receiver-context or non-Int-sort routing. */
@@ -2132,6 +2159,8 @@ class Encoder implements TheoryApi {
             // Phase 417 — never in the String sort: a string-valued `t.name` isn't an enum constant, and was read as
             // the literal "name"
             if (expectedSort == session.declareSort('String')) return null
+            // Phase 522 — not an object parameter's field (`m[b.level]`): that's the field's value, not a constant `level`
+            if (obj instanceof VariableExpression && objectParams?.containsKey(((VariableExpression) obj).name)) return translate(e)
             if (obj instanceof ClassExpression || obj instanceof VariableExpression) {
                 return session.litOfSort(expectedSort, pe.propertyAsString)
             }
@@ -7117,6 +7146,17 @@ class Encoder implements TheoryApi {
                 ClassNode rt = av != null ? (av.originType ?: av.type) : ref.originType
                 Object isNull = rt != null && ClassHelper.isPrimitiveType(rt) ? session.boolLit(false) : nullityOf(ref.name)
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
+            }
+            // Phase 522 — `b.level == null` for a receiver's enum field: its flag, `b$level`, which the receiver's invariant
+            // states (`level != null`, Phase 496) and the domain closure ties to its value
+            Expression rf = isNullLiteral(be.rightExpression) ? be.leftExpression : isNullLiteral(be.leftExpression) ? be.rightExpression : null
+            if (rf instanceof PropertyExpression && ((PropertyExpression) rf).objectExpression instanceof VariableExpression) {
+                String fname = ((VariableExpression) ((PropertyExpression) rf).objectExpression).name + '$' + ((PropertyExpression) rf).propertyAsString
+                ClassNode ft = receiverFieldType(fname)
+                if (ft != null && (ft.isEnum() || isEnumLikeType(ft))) {
+                    Object isNull = nullityOf(fname)
+                    return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
+                }
             }
             // Phase 423 — `xs?.isEmpty() == null`: the safe call's own nullity (null couldn't be translated)
             Expression other = isNullLiteral(be.rightExpression) ? be.leftExpression :
