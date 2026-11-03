@@ -21345,7 +21345,7 @@ element. Measured at the parent:
 `(null(x) ∨ null(a)) ? (null(x) ∧ null(a)) : x == a` where both sides' null flags are known, and a null literal's
 disjunct is the other side's flag. A side whose flag isn't known compares by value, as before.
 
-**Open:** a contract's `s == t` for two `String`s compares their values alone: `@Requires({ s == null && t == null })`
+**Open** *(fixed in Phase 515)*: a contract's `s == t` for two `String`s compares their values alone: `@Requires({ s == null && t == null })`
 with `@Ensures({ s == t })` is refuted on `f(null, null)`, where Groovy's `null == null` holds. The same shape as this
 phase's, in the general `==`.
 
@@ -21357,6 +21357,48 @@ the right, a null not matched by a value, a map literal's keys). Three pass at t
 
 Mutation-checked: 4 of 4 killed: the null-aware equality dropped (6), the null literal not handled (1), only on the
 left (1, the null element), only on the right (1, the null literal on the left).
+
+## Phase 515 — two reference parameters compared, with a null  *(shipped — precision)*
+
+Phase 514's open item. Phase 445 made a parameter compared with a `String` literal null-aware, and Phase 492 an
+element compared with anything; two reference parameters compared with each other (`s == t` for two `String`s, `n == m`
+for two `Integer`s) compared their values alone. A null's value is free, so two nulls could differ and a null could
+equal a non-null. Measured at the parent:
+- false alarms: `@Requires({ s == null && t == null })` with `@Ensures({ s == t })`, or a body's `s == t`, refuted on
+  `f(null, null)`; a null `s` and a non-null `t` not shown unequal (`==` or `!=`); two null `Integer`s; `s in ['ab', t]`
+  against `s == 'ab' || s == t` (Phase 514's open case); a parameter reassigned (`s = 'x'; s == t` with a null `t`);
+- a false alarm with a wrong repro: under `@Requires({ s == t && s != null })`, `t.length()` was reported null on
+  `f("", null)`, a call the precondition rules out at run time;
+- and under `@Requires({ s == t })`, the same report's repro was `f("", null)` where `f(null, null)` is the real one.
+
+**Fix.** For `==` or `!=` between two parameters of a reference type, by name: `(null(s) ∨ null(t)) ? (null(s) ∧
+null(t)) : s == t`, by their null flags (which a reassignment threads). Both sides must be parameters: a computed
+value's flag isn't tied to its value (Phase 445's note), and with one side's alone, `@Ensures({ t == result })` for a
+`result` of `s.reverse()` didn't prove. Two nulls are also one value, as a domain fact `(null(s) ∧ null(t)) ⇒ s == t`
+for each pair compared, so a read keyed by either (`m[s]`, `m[t]`) reads the same entry. Without it, `@Requires({ s == t })`
+no longer gave `m[s] == m[t]` on `f(m, null, null)`.
+
+Only a `String` or a boxed primitive (`Integer`, `Long`, …) takes it: the types whose comparisons with a literal are
+already null-aware (Phase 445). An enum's comparison with its constant (`a == L.Low`) still reads its value alone,
+so beside a null-aware `a == b` the two disagree. The first gate showed it: the `PL0 lattice` antisymmetry lemmas and
+the `P170 ticket-lock` mutual exclusion were refuted on a null enum. `Object` was left out at the same time, when
+`P-hof`'s `f.apply(a) == f.apply(b)` broke. The domain fact repairs that case, but widening to `Object` is left for
+its own slice. A primitive parameter is left out, so an `int`'s comparison is as before.
+
+**Open:** a local, a field or a receiver's field compared with a parameter, or two of them, still compare by value; so
+do two enum parameters (until an enum's comparison with its constant is null-aware) and two `Object`s.
+
+**Shipped tests:** group `P515 reference equality null`, 17 cases. 9 fail at the parent commit (two null `String`s
+equal in a contract and in a body, a null and a non-null not equal by `==` and by `!=`, two null `Integer`s, equal to a
+non-null so non-null, a literal list's against a null element, a reassigned parameter, the both-null repro). Five pass
+at the parent, as guards: `!=` on non-nulls, two `String`s not always equal, a null `Integer` and a number, a computed
+`result` by its value, `int`s, and three added after the first gate: two enums by value beside a constant, two
+`Object`s as a function's arguments, and two `String`s as a map's keys.
+
+Mutation-checked: 6 of 6 killed: the encoding dropped (9), `!=`'s core taken un-negated (1, `!=` on non-nulls), `!=`
+not negated (1), one side a parameter enough (1, the computed `result`). A check that a quantifier's element of a
+parameter's name isn't one survived (a closure parameter can't shadow a method's), so it was dropped. Also killed:
+the domain fact dropped (1, the map's keys), and the type narrowing dropped (1, the enums).
 
 ## Definition of done, per increment
 

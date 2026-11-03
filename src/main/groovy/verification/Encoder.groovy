@@ -5292,6 +5292,18 @@ class Encoder implements TheoryApi {
         t != null ? nullityOfExpr(e) : nullEnv.get(((VariableExpression) e).name)
     }
 
+    /** Phase 515 — a parameter, by name, of a {@code String} or a boxed primitive: the types whose comparisons with a
+     *  literal are null-aware (Phase 445). An enum's comparison with its constant, and an {@code Object}'s use as a
+     *  value (a function's argument, a map's key), still read its value alone, and a null-aware {@code ==} beside them
+     *  would disagree: two null enums equal here, their values not equal there */
+    private boolean isReferenceParam(Expression e) {
+        if (!(e instanceof VariableExpression)) return false
+        String n = ((VariableExpression) e).name
+        ClassNode t = vcMethod?.parameters?.find { it.name == n }?.type
+        t != null && (t == ClassHelper.STRING_TYPE ||
+            !ClassHelper.isPrimitiveType(t) && ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(t)))
+    }
+
     /** Phase 492 — a compared value's nullity, when the other side is an element's or a map's read: its own, or a fresh
      *  flag's when that isn't known. Null in a quantifier: one flag would be every element's (`xs.every { it == h(it) }`),
      *  so the comparison is the values' only, as before */
@@ -7000,6 +7012,25 @@ class Encoder implements TheoryApi {
                     if (core == null) return null
                     return op == Types.COMPARE_EQUAL ? session.and([session.not(nul), core]) : session.or([nul, core])
                 }
+            }
+        }
+
+        // Phase 515 — two reference parameters compare as Groovy compares a null: equal only to a null (`null == null`
+        // holds, `null == ''` doesn't), so `s == t && s != null` makes `t` non-null. A null's value is free, and on values
+        // alone two nulls could differ. A literal's side is Phase 445's, an element's Phase 492's
+        if ((op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) && !literalEqInProgress.contains(be) &&
+            isReferenceParam(be.leftExpression) && isReferenceParam(be.rightExpression)) {
+            Object ln = nullityOfExpr(be.leftExpression), rn = nullityOfExpr(be.rightExpression)
+            if (ln != null && rn != null) {
+                Object core
+                literalEqInProgress.add(be)
+                try { core = translate(be) } finally { literalEqInProgress.remove(be) }
+                if (core == null) return null
+                Object valueEq = op == Types.COMPARE_EQUAL ? core : session.not(core)
+                // two nulls are one value, so a read keyed by either (`m[s]`, `m[t]`) reads the same entry
+                session.assertDomainFact(session.implies(session.and([ln, rn]), valueEq))
+                Object eq = session.ite(session.or([ln, rn]), session.and([ln, rn]), valueEq)
+                return op == Types.COMPARE_EQUAL ? eq : session.not(eq)
             }
         }
 
