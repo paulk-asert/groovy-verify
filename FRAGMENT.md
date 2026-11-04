@@ -36,8 +36,11 @@ a coverage metric. In expressions the fragment is:
   `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) **only when the divisor
   terminates** — a constant whose unscaled integer has just the prime factors 2 and 5 (`/2`, `/1000`, `/0.25`), so
   `5 / 2 == 2.5` and a `metres / 1000` unit conversion prove exactly; a non-terminating divisor (`/3`, `/7`, a
-  symbolic one) **skips loudly**, since Groovy rounds it and an exact-Real model would prove runtime-false facts
-  (Phase 152). Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
+  symbolic one) is Groovy's **rounded quotient** (Phase 529; it skipped loudly from Phase 152, since an exact-Real
+  model would prove runtime-false facts): a value within `0.5e-10 · (|q| + 1)` of the exact `q`, of its sign or
+  zero, exact for an integer quotient and never across an integer for integral operands, and exact for a numeral
+  divisor's quotient of at most 10 places — so `10 / n > 1` bounds `n` and an average stays in bounds, while
+  `(1 / 3) * 3 == 1` is refuted as Groovy refutes it. Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
   path, below; divide-by-zero and
   `.mod`-non-positive obligations fire; `**` lowers to an axiomatised `pow$` (Phase 93) — a literal
   exponent folds to a value (`(2 ** 3).intValue() == 8` proves) and the doubling recurrence

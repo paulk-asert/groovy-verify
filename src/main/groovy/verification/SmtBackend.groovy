@@ -604,6 +604,7 @@ interface SmtSession extends AutoCloseable {
     Object realVar(String name)
     Object realDiv(Object a, Object b)      // exact real division (a/b over Reals)
     Object intToReal(Object a)              // coerce an Int handle into the Real sort
+    Object realToInt(Object a)              // Phase 529 — the floor of a Real, as an Int (SMT-LIB to_int)
 
     Object eq(Object a, Object b)
     Object ne(Object a, Object b)

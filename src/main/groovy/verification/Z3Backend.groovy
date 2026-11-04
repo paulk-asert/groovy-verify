@@ -28,6 +28,7 @@ import com.microsoft.z3.FuncDecl
 import com.microsoft.z3.DatatypeSort
 import com.microsoft.z3.Constructor
 import com.microsoft.z3.IntExpr
+import com.microsoft.z3.RealExpr
 import com.microsoft.z3.IntNum
 import com.microsoft.z3.RatNum
 import java.math.BigInteger
@@ -1352,6 +1353,7 @@ class Z3Session implements SmtSession {
     @Override Object realVar(String name)     { ctx.mkRealConst(name) }
     @Override Object realDiv(Object a, Object b) { ctx.mkDiv((ArithExpr) a, (ArithExpr) b) }
     @Override Object intToReal(Object a)      { ctx.mkInt2Real((IntExpr) a) }
+    @Override Object realToInt(Object a)      { ctx.mkReal2Int((RealExpr) a) }
 
     @Override Object eq(Object a, Object b) { ctx.mkEq((Expr) a, (Expr) b) }
     @Override Object ne(Object a, Object b) { ctx.mkNot(ctx.mkEq((Expr) a, (Expr) b)) }

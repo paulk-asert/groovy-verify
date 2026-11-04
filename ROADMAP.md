@@ -21965,7 +21965,7 @@ over-strict refusal, never an unsound proof.
 
 **Open:**
 - a contract's string subscript, int `/` and decimal `/` stay outside the fragment (loud) — when they come in, the
-  walker already collects their sites;
+  walker already collects their sites *(closed by Phase 529)*;
 - a list's negative subscript past its start throws, and a list's `get(i)` throws out of bounds: neither is a contract
   site yet;
 - a callee's precondition evaluated at a call site isn't checked for its own definedness (the caller proves the
@@ -21989,6 +21989,74 @@ bound `-a.length <= i` (the `a[-1]` boundary), `%` not a site (2), `intdiv` not 
 Survived: obligating an IEEE-754 division by its node (`isFpValued`) — equivalent today, since every FP division that
 translates has an FP-sorted divisor, which `contractPartialFact` already excuses; a `double` over an `int` divisor
 (`x / n`) is outside the fragment in a contract. Kept as insurance.
+
+## Phase 529 — a String's subscript, and Groovy's rounded division  *(shipped — capability)*
+
+Phase 528's open item: a contract's string subscript and its int or decimal `/`, loud skips. Measured at the parent,
+16 probes. Neither was contract-specific.
+
+- **A String's subscript was an unrelated array.** The SMT dump of `@Ensures({ result == s[0] })` shows `s[0]` as
+  `(select s 0)` on an `Array Int Int` sharing the String `s`'s name: free, so nothing unsound was *derived* from it,
+  but it meant nothing. `s[0] == 'a'` couldn't translate (body and contract alike: a loud skip), and
+  `@Ensures({ s[0] == s[0] })` **proved** on a maybe-empty string, where Groovy throws
+  `StringIndexOutOfBoundsException` — a silent false proof, Phase 528's walker covering arrays only. A precondition's
+  `s.charAt(0)` didn't filter either (`f("")` refuted the body's `s.length() > 0`).
+- **Every non-terminating `/` skipped**, in a body too: Phase 143/152's exact-Real model is sound only for a
+  terminating literal divisor, so `1 / 3`, `10 / n`, `x / d` and an average `s / n` were all outside the fragment.
+
+Measured Groovy first (6.0.0 source, `BigDecimalMath.divideImpl`): the exact `bigLeft.divide(bigRight)` when it
+terminates; otherwise `divide(MathContext(max(precision(a), precision(b)) + 10))` — HALF_UP — then, where finer,
+`setScale(max(scale(a), scale(b), 10), HALF_UP)`. Int, long and BigInteger `/` go through it. Runs: `1/3` is
+`0.3333333333`, `(1/3)*3` is `0.9999999999`, `0.000000000001 / 3` is `0E-12`, `123456789012345678 / 7` is
+`17636684144620811.1428571429`. And `'ab'[-1]` is `'b'`.
+
+**Fix.**
+- **`Encoder.stringSubscript`.** `s[i]` on a String receiver with a scalar index is `substr(s, i < 0 ? i + len : i, 1)`,
+  ahead of the array path; `isStringReceiver` takes it, so it compares, concatenates and calls in the String sort.
+  Exact for negatives, as Groovy is, so its bounds are exactly `-len <= i < len` — the body's (Phase 416) already were.
+- **Two contract sites** in Phase 528's walker, over the method's String formals and fields (`stringNames`): `s[i]`
+  (`-s.length() <= i < s.length()`) and `s.charAt(i)` (`0 <= i < s.length()`: no counting from the end), owed where
+  checked and assumed where filtering, reported as `StringIndexOutOfBoundsException`.
+- **`Encoder.roundedQuotient`** for a non-terminating divisor, in `asReal` — now the one home for Groovy's `/`: the
+  comparison path's own copy of the division (exact or skip) was never reached by any shape in the corpus (measured by
+  marking it), and delegates to `asReal`. A fresh Real
+  `r`, mint-once by the operands' terms, with `b != 0 ⟹`
+  - the band `|r*b - a| <= 0.5e-10 * (|a| + |b|)`: the two roundings' bound `|r - q| <= 0.5e-10 * (|q| + 1)` times
+    `|b|`, division-free;
+  - the sign of `q` or zero (rounding never crosses zero; `0E-12` is reached);
+  - for integral operands, `floor(q) <= r <= ceil(q)` and `r == q` for an integer `q`: the rounding grid holds every
+    integer, the precision being at least the quotient's integer digits plus 10 and the scale 10;
+  - for a numeral divisor, `r == q` when `q` has at most 10 places (it terminates, so the exact divide succeeds). Not
+    for a symbolic divisor: measured, the fact made an average `s / n` time out, and it proved in 6 ms without.
+
+  Sound as an assumption and as a goal: the run's value is in the band, so a proof over every value in it covers the
+  run. Needs `realToInt` (Z3's `to_int`), added to the backend.
+- Phase 143's `(x / 3.0) * 3.0 == 1.0` case moves from a loud skip to a refutation, which is what Groovy says; the
+  suite's UNKNOWN count is unchanged (37).
+
+**Boundary, pinned:** an exact non-integer quotient over a symbolic divisor isn't derivable (`10 / n == 2.5` at
+`n == 4`): over-strict, never unsound.
+
+**Open:**
+- a symbolic divisor's exact short quotient needs the scaled-integrality fact at a cost the solver couldn't pay; a
+  cheaper encoding (or the fact only where `b` is pinned) would close the boundary;
+- the units pack's quantity division (`1.m / 3.s`) has its own reader and still skips a non-terminating divisor;
+- a String subscript of a non-name (`t.name[0]`, `s.trim()[0]`) translates, but isn't a contract site for its bounds.
+
+**Shipped tests:** group `P529 string subscript and rounded division`, 23 cases: a body's and a precondition's
+`s[0] == 'a'` (non-empty, the first character), `s[-1]` as `s[s.length() - 1]`, the wrong character refuted, a
+maybe-empty `s[0]` refused with `fails on: f("")`, a precondition's `charAt(0)` filtering, a postcondition's
+`charAt(-1)` refused; a body's `10 / n` and `1 / 3` positive, a precondition's `10 / n > 1` bounding `n`, an average in
+bounds, mint-once, an integer quotient exact, a numeral divisor's short quotient exact, `(1 / 3) * 3 == 1` and a
+positive `x / d > 0` refuted, a contract's `/` by a maybe-zero divisor owing it, a body's still owing it, the boundary;
+a short decimal quotient over a numeral (`1.5 / 3 == 0.5`), a non-negative quotient's sign, a division assigned to a
+local. Phase 143's one case updated (renamed: it no longer skips).
+
+Mutation-checked: 12 of 12 killed (the three late cases were added for survivors): a String's subscript an array again
+(5), a negative index not counted from the end (1), `asReal`'s rounded quotient a skip again (11), the quotient exact
+(3, including the boundary), no band (2), no sign fact (1), no integral bracket (3), no numeral exactness (1), no
+mint-once (1), the string subscript not a contract site (1), `charAt` not a site (2), `charAt` counting from the end
+(1). The comparison path's copy, unreachable, was folded into `asReal` rather than kept as an equivalent mutant.
 
 ## Definition of done, per increment
 

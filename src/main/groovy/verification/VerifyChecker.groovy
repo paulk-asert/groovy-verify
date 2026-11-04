@@ -7059,6 +7059,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /** Phase 529 — the method's String formals and its class's String fields: their subscript and {@code charAt} throw
+     *  {@code StringIndexOutOfBoundsException} out of bounds. */
+    private static Set<String> stringNames(MethodNode m) {
+        Set<String> out = new LinkedHashSet<String>()
+        if (m == null) return out
+        for (Parameter p : m.parameters) if (p.type?.name == 'java.lang.String') out.add(p.name)
+        if (m.declaringClass?.fields != null) for (FieldNode f : m.declaringClass.fields) if (f.type?.name == 'java.lang.String') out.add(f.name)
+        out
+    }
+
     private static boolean isArrayName(ClassNode t, boolean primitiveOnly) {
         t != null && t.isArray() && (!primitiveOnly || ClassHelper.isPrimitiveType(t.componentType))
     }
@@ -7067,13 +7077,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     @CompileStatic private static class ContractPartialSite {
         String what          // 'precondition' / 'postcondition' / 'class invariant'
         Expression node      // the operation
-        String kind          // 'extremum' / 'index' / 'divide' / 'mod'
+        String kind          // 'extremum' / 'index' / 'strindex' / 'charAt' / 'divide' / 'mod'
         String recv          // the array (extremum, index)
         Expression arg       // the index (index) or the divisor (divide, mod)
         List<Object[]> guards   // [condition, positive] — the short-circuit and ternary guards it is reached under
         String exception() {
             kind == 'extremum' ? 'UnsupportedOperationException' :
-                kind == 'index' ? 'ArrayIndexOutOfBoundsException' : 'ArithmeticException'
+                kind == 'index' ? 'ArrayIndexOutOfBoundsException' :
+                kind == 'strindex' || kind == 'charAt' ? 'StringIndexOutOfBoundsException' : 'ArithmeticException'
         }
     }
 
@@ -7090,35 +7101,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private static void contractPartialSites(Expression e, List<Object[]> guards, MethodNode m, String what,
                                              List<ContractPartialSite> out) {
-        partialSitesIn(e, guards, arrayNames(m, true), arrayNames(m, false), what, out)
+        partialSitesIn(e, guards, arrayNames(m, true), arrayNames(m, false), stringNames(m), what, out)
     }
 
     private static void partialSitesIn(Expression e, List<Object[]> guards, Set<String> primArrays, Set<String> arrays,
-                                       String what, List<ContractPartialSite> out) {
+                                       Set<String> strings, String what, List<ContractPartialSite> out) {
         if (e == null || e instanceof ClosureExpression) return
-        if (e instanceof BooleanExpression) { partialSitesIn(((BooleanExpression) e).expression, guards, primArrays, arrays, what, out); return }
-        if (e instanceof NotExpression) { partialSitesIn(((NotExpression) e).expression, guards, primArrays, arrays, what, out); return }
+        if (e instanceof BooleanExpression) { partialSitesIn(((BooleanExpression) e).expression, guards, primArrays, arrays, strings, what, out); return }
+        if (e instanceof NotExpression) { partialSitesIn(((NotExpression) e).expression, guards, primArrays, arrays, strings, what, out); return }
         if (e instanceof TernaryExpression) {
             TernaryExpression te = (TernaryExpression) e
-            partialSitesIn(te.booleanExpression, guards, primArrays, arrays, what, out)
-            partialSitesIn(te.trueExpression, withGuard(guards, te.booleanExpression, true), primArrays, arrays, what, out)
-            partialSitesIn(te.falseExpression, withGuard(guards, te.booleanExpression, false), primArrays, arrays, what, out)
+            partialSitesIn(te.booleanExpression, guards, primArrays, arrays, strings, what, out)
+            partialSitesIn(te.trueExpression, withGuard(guards, te.booleanExpression, true), primArrays, arrays, strings, what, out)
+            partialSitesIn(te.falseExpression, withGuard(guards, te.booleanExpression, false), primArrays, arrays, strings, what, out)
             return
         }
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             int op = be.operation.type
-            partialSitesIn(be.leftExpression, guards, primArrays, arrays, what, out)
+            partialSitesIn(be.leftExpression, guards, primArrays, arrays, strings, what, out)
             if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
-                partialSitesIn(be.rightExpression, withGuard(guards, be.leftExpression, op == Types.LOGICAL_AND), primArrays, arrays, what, out)
+                partialSitesIn(be.rightExpression, withGuard(guards, be.leftExpression, op == Types.LOGICAL_AND), primArrays, arrays, strings, what, out)
                 return
             }
-            partialSitesIn(be.rightExpression, guards, primArrays, arrays, what, out)
+            partialSitesIn(be.rightExpression, guards, primArrays, arrays, strings, what, out)
             if (op == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression &&
                     arrays.contains(((VariableExpression) be.leftExpression).name) &&
                     !(be.rightExpression instanceof RangeExpression) && !(be.rightExpression instanceof ListExpression)) {
                 // a slice (`a[0..<n]`, `a[[0, 2]]`) is a list with its own model (Phases 51b, 323), not a scalar subscript
                 out.add(new ContractPartialSite(what: what, node: be, kind: 'index',
+                    recv: ((VariableExpression) be.leftExpression).name, arg: be.rightExpression, guards: new ArrayList<Object[]>(guards)))
+            } else if (op == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression &&
+                    strings.contains(((VariableExpression) be.leftExpression).name) &&
+                    !(be.rightExpression instanceof RangeExpression) && !(be.rightExpression instanceof ListExpression)) {
+                // Phase 529 — a String's subscript throws StringIndexOutOfBoundsException outside [-length, length)
+                out.add(new ContractPartialSite(what: what, node: be, kind: 'strindex',
                     recv: ((VariableExpression) be.leftExpression).name, arg: be.rightExpression, guards: new ArrayList<Object[]>(guards)))
             } else if (be.operation.text == '/' || be.operation.text == '%') {   // by its text: `%` is REMAINDER, not MOD, in Groovy 6
                 out.add(new ContractPartialSite(what: what, node: be, kind: 'divide', arg: be.rightExpression,
@@ -7126,21 +7143,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             return
         }
-        if (e instanceof UnaryMinusExpression) { partialSitesIn(((UnaryMinusExpression) e).expression, guards, primArrays, arrays, what, out); return }
-        if (e instanceof CastExpression) { partialSitesIn(((CastExpression) e).expression, guards, primArrays, arrays, what, out); return }
-        if (e instanceof PropertyExpression) { partialSitesIn(((PropertyExpression) e).objectExpression, guards, primArrays, arrays, what, out); return }
+        if (e instanceof UnaryMinusExpression) { partialSitesIn(((UnaryMinusExpression) e).expression, guards, primArrays, arrays, strings, what, out); return }
+        if (e instanceof CastExpression) { partialSitesIn(((CastExpression) e).expression, guards, primArrays, arrays, strings, what, out); return }
+        if (e instanceof PropertyExpression) { partialSitesIn(((PropertyExpression) e).objectExpression, guards, primArrays, arrays, strings, what, out); return }
         if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
-            partialSitesIn(mce.objectExpression, guards, primArrays, arrays, what, out)
+            partialSitesIn(mce.objectExpression, guards, primArrays, arrays, strings, what, out)
             List<Expression> args = mce.arguments instanceof TupleExpression ?
                 ((TupleExpression) mce.arguments).expressions : Collections.<Expression>emptyList()
-            for (Expression a : args) partialSitesIn(a, guards, primArrays, arrays, what, out)
+            for (Expression a : args) partialSitesIn(a, guards, primArrays, arrays, strings, what, out)
             if (mce.safe || mce.implicitThis) return
             String mm = mce.methodAsString
             if (isExtremumCall(mce) && mce.objectExpression instanceof VariableExpression &&
                     primArrays.contains(((VariableExpression) mce.objectExpression).name)) {
                 out.add(new ContractPartialSite(what: what, node: mce, kind: 'extremum',
                     recv: ((VariableExpression) mce.objectExpression).name, guards: new ArrayList<Object[]>(guards)))
+            } else if (mm == 'charAt' && args.size() == 1 && mce.objectExpression instanceof VariableExpression &&
+                    strings.contains(((VariableExpression) mce.objectExpression).name)) {
+                // Phase 529 — `s.charAt(i)` throws outside [0, length): no counting from the end
+                out.add(new ContractPartialSite(what: what, node: mce, kind: 'charAt',
+                    recv: ((VariableExpression) mce.objectExpression).name, arg: args[0], guards: new ArrayList<Object[]>(guards)))
             } else if (args.size() == 1 && (mm == 'intdiv' || mm == 'remainder' || mm == 'mod')) {
                 out.add(new ContractPartialSite(what: what, node: mce, kind: mm == 'mod' ? 'mod' : 'divide', arg: args[0],
                     guards: new ArrayList<Object[]>(guards)))
@@ -7149,7 +7171,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) e).arguments instanceof TupleExpression) {
             for (Expression a : ((TupleExpression) ((StaticMethodCallExpression) e).arguments).expressions) {
-                partialSitesIn(a, guards, primArrays, arrays, what, out)
+                partialSitesIn(a, guards, primArrays, arrays, strings, what, out)
             }
         }
     }
@@ -7175,6 +7197,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object size = enc.sizeOf(f.recv)
             return s.and([s.le(assumed ? s.neg(size) : s.intLit(0L), i), s.lt(i, size)])
         }
+        if (f.kind == 'strindex' || f.kind == 'charAt') {
+            // Phase 529 — a String's subscript is modelled counting from the end (Encoder.stringSubscript), so it owes
+            // exactly where Groovy doesn't throw, `-len <= i < len`; `charAt` doesn't count from the end
+            Object sH = enc.translateInSort(new VariableExpression(f.recv), s.declareSort('String'))
+            Object i = enc.translate(f.arg)
+            if (sH == null || i == null || !s.isInt(i)) return null
+            Object len = s.stringLength(sH)
+            return s.and([s.le(f.kind == 'charAt' ? s.intLit(0L) : s.neg(len), i), s.lt(i, len)])
+        }
         if (Encoder.packsClaimExpression(f.node) || enc.isFpValued(f.node)) return NO_OBLIGATION
         boolean decimal = enc.isDecimalValued(f.arg)
         Object d = decimal ? enc.asRealValue(f.arg) : enc.translate(f.arg)
@@ -7191,6 +7222,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return "${t} is reached with ${asWritten(f.arg)} outside [0, ${f.recv}.length): past either end Groovy throws " +
                 "ArrayIndexOutOfBoundsException (a negative index within the length counts from the end, which the verifier doesn't model)"
         }
+        if (f.kind == 'strindex') {
+            return "${t} is reached with ${asWritten(f.arg)} outside [-${f.recv}.length(), ${f.recv}.length()), where Groovy throws StringIndexOutOfBoundsException"
+        }
+        if (f.kind == 'charAt') {
+            return "${t} is reached with ${asWritten(f.arg)} outside [0, ${f.recv}.length()), where it throws StringIndexOutOfBoundsException"
+        }
         if (f.kind == 'mod') return "${t} is reached with ${asWritten(f.arg)} <= 0, where mod throws ArithmeticException"
         "${t} is reached with ${asWritten(f.arg)} == 0, where Groovy throws ArithmeticException"
     }
@@ -7199,6 +7236,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (f.kind == 'extremum') return "0 < ${f.recv}.length"
         String a = asWritten(f.arg)
         if (f.kind == 'index') return "0 <= ${a} && ${a} < ${f.recv}.length"
+        if (f.kind == 'strindex') return "-${f.recv}.length() <= ${a} && ${a} < ${f.recv}.length()"
+        if (f.kind == 'charAt') return "0 <= ${a} && ${a} < ${f.recv}.length()"
         f.kind == 'mod' ? "${a} > 0" : "${a} != 0"
     }
 

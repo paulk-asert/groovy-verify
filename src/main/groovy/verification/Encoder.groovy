@@ -654,8 +654,29 @@ class Encoder implements TheoryApi {
         null
     }
 
+    /** Phase 529 — {@code s[i]} on a String {@code s} with a scalar index (a range or list index is a slice). */
+    private boolean isStringSubscript(Expression e) {
+        e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET &&
+            !(((BinaryExpression) e).rightExpression instanceof RangeExpression) &&
+            !(((BinaryExpression) e).rightExpression instanceof ListExpression) &&
+            isStringReceiver(((BinaryExpression) e).leftExpression)
+    }
+
+    /** Phase 529 — {@code s[i]}: {@code substr(s, i < 0 ? i + len : i, 1)}, null when not a String subscript or outside
+     *  the fragment. Its bounds ({@code -len <= i < len}) are the body's obligation (Phase 416) or a contract's (528). */
+    private Object stringSubscript(BinaryExpression be) {
+        if (!isStringSubscript(be)) return null
+        Object sH = translateInSort(be.leftExpression, session.declareSort('String'))
+        Object i = translate(be.rightExpression)
+        if (sH == null || i == null || !session.isInt(i)) return null
+        Object len = session.stringLength(sH)
+        Object at = session.ite(session.lt(i, session.intLit(0L)), session.plus(i, len), i)
+        session.stringSubstring(sH, at, session.intLit(1L))
+    }
+
     private boolean isStringReceiver(Expression recv) {
         if (recv == null) return false
+        if (isStringSubscript(recv)) return true   // Phase 529
         if (recv instanceof ConstantExpression) {
             return ((ConstantExpression) recv).value instanceof String
         }
@@ -6347,6 +6368,75 @@ class Encoder implements TheoryApi {
      * (a 3, a 7, a symbolic value) makes Groovy round to its `MathContext`, so the Real model would be unsound
      * and the division must skip.
      */
+    /** Phase 529 — the rounded quotients minted in this encoder, by their operands' terms (mint-once: one division of
+     *  the same values is one value, as Groovy's is deterministic). */
+    private final Map<String, Object> roundedQuotients = new HashMap<String, Object>()
+
+    /**
+     * Phase 529 — Groovy's {@code a / b} where the exact quotient {@code q} may not terminate (a symbolic or
+     * non-terminating divisor). {@code BigDecimalMath.divideImpl} (Groovy 6.0.0): exact when {@code q} terminates, else
+     * rounded HALF_UP to {@code max(precision(a), precision(b)) + 10} significant digits, then HALF_UP to a scale of
+     * {@code max(scale(a), scale(b), 10)} where finer — so {@code |r - q| <= 0.5e-10 * |q|} after the first and another
+     * {@code 0.5e-10} after the second (both knobs at their defaults). The result is a fresh Real {@code r} with
+     * {@code b != 0 ⟹ |r*b - a| <= 0.5e-10 * (|a| + |b|)} (the bound times {@code |b|}, division-free) and the sign of
+     * {@code q} or zero (rounding never crosses zero). Sound as an assumption and as a goal: the runtime's value is in
+     * the band, so a proof over every value in it covers the run. Exact facts about a terminating {@code q}
+     * Two exact refinements, both sound: a quotient of at most 10 decimal places terminates, so the exact divide succeeds
+     * and {@code r == q} ({@code x / 3} at {@code x == 6} is 2) — asserted for a numeral divisor only, where it stays
+     * linear (for a symbolic one it cost the solver its decision: measured, an average `s / n` timed out with it and
+     * proved in 6 ms without); and for integral operands the rounding grid holds every
+     * integer (the precision is at least the quotient's integer digits plus 10, the scale 10), so {@code r} never
+     * crosses one: {@code floor(q) <= r <= ceil(q)}. Exact facts about a terminating quotient of more places aren't
+     * derivable: over-strict, never unsound. A zero divisor is the division's own obligation (a body's DivideSite, a
+     * contract's Phase 528 site).
+     */
+    private Object roundedQuotient(Object a, Object b, boolean integral, boolean numeralDivisor) {
+        String key = a.toString() + ' / ' + b.toString()
+        Object cached = roundedQuotients.get(key)
+        if (cached != null) return cached
+        Object r = session.realVar(symFor('div$' + roundedQuotients.size()))
+        Object zero = session.realLit('0')
+        Object eps = session.realLit('1/20000000000')   // 0.5e-10
+        Object absA = session.ite(session.ge(a, zero), a, session.neg(a))
+        Object absB = session.ite(session.ge(b, zero), b, session.neg(b))
+        Object err = session.minus(session.times(r, b), a)
+        Object absErr = session.ite(session.ge(err, zero), err, session.neg(err))
+        Object band = session.le(absErr, session.times(eps, session.plus(absA, absB)))
+        Object sameSign = session.and([
+            session.implies(session.and([session.ge(a, zero), session.gt(b, zero)]), session.ge(r, zero)),
+            session.implies(session.and([session.le(a, zero), session.gt(b, zero)]), session.le(r, zero)),
+            session.implies(session.and([session.ge(a, zero), session.lt(b, zero)]), session.le(r, zero)),
+            session.implies(session.and([session.le(a, zero), session.lt(b, zero)]), session.ge(r, zero))])
+        Object q = session.realDiv(a, b)
+        List<Object> facts = [band, sameSign]
+        if (numeralDivisor) {
+            Object scaled = session.times(q, session.realLit('10000000000'))
+            facts.add(session.implies(session.eq(session.intToReal(session.realToInt(scaled)), scaled), session.eq(r, q)))
+        }
+        if (integral) {
+            Object fl = session.intToReal(session.realToInt(q))
+            facts.addAll([session.le(fl, r), session.le(r, session.plus(fl, session.realLit('1'))),
+                          session.implies(session.eq(fl, q), session.eq(r, q))])
+        }
+        session.assertExpr(session.implies(session.not(session.eq(b, zero)), session.and(facts)))
+        roundedQuotients.put(key, r)
+        r
+    }
+
+    /** Phase 529 — a numeric literal (or its negation). */
+    private static boolean numeralOperand(Expression e) {
+        Expression c = e instanceof UnaryMinusExpression ? ((UnaryMinusExpression) e).expression : e
+        c instanceof ConstantExpression && ((ConstantExpression) c).value instanceof Number
+    }
+
+    /** Phase 529 — an operand Groovy's division reads as an integer: neither decimal nor IEEE-754, and Int-valued. */
+    private boolean integralOperand(Expression e) {
+        if (isDecimalExpr(e) || isFpValued(e)) return false
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.text == '/') return false
+        Object t = translate(e)
+        t != null && session.isInt(t)
+    }
+
     static boolean isTerminatingDivisor(Expression e) {
         Expression c = (e instanceof UnaryMinusExpression) ? ((UnaryMinusExpression) e).expression : e
         if (!(c instanceof ConstantExpression)) return false
@@ -6418,7 +6508,12 @@ class Encoder implements TheoryApi {
                 Object R = asReal(((BinaryExpression) e).rightExpression)
                 if (L == null || R == null) return null
                 if (t == '/') {
-                    if (!isTerminatingDivisor(((BinaryExpression) e).rightExpression)) return null   // Phase 143 — sound exact-div only
+                    // Phase 143 — exact only for a terminating divisor; Phase 529 — else the rounded quotient
+                    if (!isTerminatingDivisor(((BinaryExpression) e).rightExpression)) {
+                        BinaryExpression dv = (BinaryExpression) e
+                        return roundedQuotient(L, R, integralOperand(dv.leftExpression) && integralOperand(dv.rightExpression),
+                            numeralOperand(dv.rightExpression))
+                    }
                     return session.realDiv(L, R)
                 }
                 if (t == '+') return session.plus(L, R)
@@ -6973,6 +7068,10 @@ class Encoder implements TheoryApi {
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
         // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
         if (op == Types.LEFT_SQUARE_BRACKET) {
+            // Phase 529 — a String's subscript is the one-character String at i, counting from the end for a negative i
+            // (`'ab'[-1]` is 'b', measured); it was read as an unrelated Int array's element of the same name
+            Object strAt = stringSubscript(be)
+            if (strAt != null) return strAt
             // Phase 38 — `[a, b, c][i]` / `Map.of(k, v)[k']` / `[k:v][k']`: factory receiver
             // peephole-folds to the i-th element (for constant i) or an ite-chain over entries.
             // For an EMPTY list factory ({@code positive = []}) with a symbolic index — common
@@ -7323,10 +7422,9 @@ class Encoder implements TheoryApi {
             }
             switch (be.operation.text) {
                 case '/':
-                    // Phase 143 — exact Real division is sound only for a terminating divisor; Groovy rounds the
-                    // rest (`/3`, `/7`, a symbolic divisor), so skip those rather than prove a runtime-false fact.
-                    if (!isTerminatingDivisor(be.rightExpression)) return null
-                    return session.realDiv(dl, dr)
+                    // Phase 143 — exact Real division only for a terminating divisor; Phase 529 — else Groovy's rounded
+                    // quotient. One home for it, asReal's: this arm had its own copy, which no shape in the corpus reached
+                    return asReal(be)
                 case '+': return session.plus(dl, dr)
                 case '-': return session.minus(dl, dr)
                 case '*': return session.times(dl, dr)

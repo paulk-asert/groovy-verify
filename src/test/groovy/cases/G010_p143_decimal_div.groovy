@@ -36,8 +36,9 @@ class G010_p143_decimal_div {
                         static BigDecimal f(BigDecimal x) { x / 1000.0 }
                     }''')],
         // A NON-terminating divisor (`/3`) rounds in Groovy (0.333…), so exact Real division would prove false
-        // facts — it now SKIPS loudly instead. (Before the fix, `(x/3)*3 == 1.0` "verified", a runtime-false claim.)
-        [group: 'P143 decimal div', name: 'non-terminating divisor skips (sound)', expect: 'Skipped verification of postcondition',
+        // facts — it SKIPPED loudly instead. (Before the fix, `(x/3)*3 == 1.0` "verified", a runtime-false claim.)
+        // Phase 529 — now the rounded quotient: the claim is refuted, as Groovy's 0.9999999999 refutes it.
+        [group: 'P143 decimal div', name: 'non-terminating divisor rounds: the exact claim is refuted (sound)', expect: 'Cannot prove postcondition',
          src: tc('''class C {
                         @Requires({ x == 1.0 })
                         @Ensures({ result == 1.0 })
