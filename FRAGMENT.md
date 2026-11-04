@@ -40,7 +40,11 @@ a coverage metric. In expressions the fragment is:
   model would prove runtime-false facts): a value within `0.5e-10 · (|q| + 1)` of the exact `q`, of its sign or
   zero, exact for an integer quotient and never across an integer for integral operands, and exact for a numeral
   divisor's quotient of at most 10 places — so `10 / n > 1` bounds `n` and an average stays in bounds, while
-  `(1 / 3) * 3 == 1` is refuted as Groovy refutes it. Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
+  `(1 / 3) * 3 == 1` is refuted as Groovy refutes it. For integral operands (Phase 530) it is also within
+  `0.55e-10` of `q` and on the `1e-10` grid unless the exact divide succeeded (off the grid only for `|b| >= 2048`),
+  so a symbolic divisor's short quotient is exact (`10 / n == 2.5` at `n == 4`) and a non-terminating one has
+  Groovy's HALF_UP digits (`2 / n == 0.6666666667` at `n == 3`); a terminating quotient of more than 10 places over
+  a symbolic divisor (`1 / 2048`) isn't derivable. Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
   path, below; divide-by-zero and
   `.mod`-non-positive obligations fire; `**` lowers to an axiomatised `pow$` (Phase 93) — a literal
   exponent folds to a value (`(2 ** 3).intValue() == 8` proves) and the doubling recurrence

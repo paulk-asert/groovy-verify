@@ -22039,7 +22039,7 @@ terminates; otherwise `divide(MathContext(max(precision(a), precision(b)) + 10))
 
 **Open:**
 - a symbolic divisor's exact short quotient needs the scaled-integrality fact at a cost the solver couldn't pay; a
-  cheaper encoding (or the fact only where `b` is pinned) would close the boundary;
+  cheaper encoding (or the fact only where `b` is pinned) would close the boundary — *closed by Phase 530*;
 - the units pack's quantity division (`1.m / 3.s`) has its own reader and still skips a non-terminating divisor;
 - a String subscript of a non-name (`t.name[0]`, `s.trim()[0]`) translates, but isn't a contract site for its bounds.
 
@@ -22057,6 +22057,46 @@ Mutation-checked: 12 of 12 killed (the three late cases were added for survivors
 (3, including the boundary), no band (2), no sign fact (1), no integral bracket (3), no numeral exactness (1), no
 mint-once (1), the string subscript not a contract site (1), `charAt` not a site (2), `charAt` counting from the end
 (1). The comparison path's copy, unreachable, was folded into `asReal` rather than kept as an equivalent mutant.
+
+## Phase 530 — a symbolic divisor's short quotient  *(shipped — capability)*
+
+Phase 529's open boundary: an exact short quotient over a symbolic divisor (`10 / n == 2.5` at `n == 4`) wasn't
+derivable, because the fact that gives it, `isInt(q * 1e10) ⟹ r == q`, puts `to_int` on the nonlinear `a / b`, and
+an average `s / n` timed out with it (6 ms without).
+
+Measured Groovy first (6.0.0, ~970,000 int, long and BigInteger pairs, a dense sweep of divisors 1000..5000): for
+integral operands the rounded quotient is within `0.55e-10` of the exact one (worst `5.4945e-11`: an integer's
+precision is at least the quotient's integer digits, so the first rounding keeps at least 10 places and errs by at
+most `0.05e-10` when it keeps more, the second by `0.5e-10`); it is on the `1e-10` grid unless the exact divide
+succeeded; and an exact result off the grid needs `|b| >= 2048` (it terminates in more than 10 places, so its reduced
+denominator `2^i 5^j` has `max(i, j) >= 11`). `1 / 2048` is `0.00048828125`; `1 / 1024` is `0.0009765625`.
+
+**Fix.** `Encoder.roundedQuotient`, for integral operands, adds two facts under `b != 0`, both division-free:
+- `|r*b - a| <= 0.55e-10 * |b|`;
+- `(r*b == a ∧ |b| >= 2048) ∨ isInt(r * 1e10)` — `to_int` on a term linear in `r`.
+
+A quotient on the grid is then the only grid point within the band, so it is exact; a non-terminating one is the
+nearest grid point, Groovy's HALF_UP digits. Each check runs in at most 15 ms; the average is unaffected. The band is tight: `16 / 11` is `1.4545454546`
+(error `5.455e-11`), the first rounding to 12 digits giving `1.45454545455`, so `0.5e-10` would exclude Groovy's value.
+
+**Boundary, pinned:** a terminating quotient of more than 10 places over a symbolic divisor (`1 / n == 0.00048828125`
+at `n == 2048`) isn't derivable: two grid neighbours are as close as the band allows. Over-strict, never unsound; its
+negation is refuted, so the exact value stays reachable.
+
+**Open:**
+- decimal operands keep Phase 529's band: their scale is symbolic, so the grid isn't known;
+- the units pack's quantity division and a non-name String subscript's bounds (Phase 529's other open items).
+
+**Shipped tests:** group `P530 symbolic short quotient`, 13 cases: `10 / n == 2.5` at `n == 4` (moved from Phase
+529's boundary), `1 / n == 0.125` at `n == 8`, the 10-place `1 / 1024`, a short quotient over a divisor in a set, a
+symbolic dividend (`a / b == 0.5` where `b == 2 * a`), Groovy's digits for `10 / 3` and `2 / 3`; the wrong short
+quotient, `(1 / n) * n == 1` at `n == 3` and the truncated `0.6666666666` refuted; `1 / 2048`'s exact value
+reachable; double rounding reachable (`16 / 11` is `1.4545454546`, where a single HALF_UP to 10 places gives `…545`);
+the boundary.
+
+Mutation-checked: 6 of 6 killed (the double-rounding case was added for the survivor): no tight band (4), the band
+at `0.5e-10` — unsound against `16 / 11` (1), no grid (7), the exact branch unrestricted (2), the exact branch at
+`|b| >= 4096` — unsound against `1 / 2048` (1), the grid at `1e-9` (4).
 
 ## Definition of done, per increment
 

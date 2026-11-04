@@ -83,8 +83,5 @@ class G570_p529_contract_string_index_division {
          src: tc('class C { @Ensures({ 10 / n == 10 / n }) static int f(int n) { 1 } }')],
         [group: G, name: "a body's / by a maybe-zero divisor is still its obligation", expect: 'ArithmeticException',
          src: tc('class C { static BigDecimal f(int n) { 10 / n } }')],
-        // boundary: a symbolic divisor's exact non-integer quotient isn't derivable (over-strict, never unsound)
-        [group: G, name: "boundary: 10 / n == 2.5 at n == 4 isn't derivable for a symbolic divisor", expect: 'Cannot prove postcondition',
-         src: tc('class C { @Requires({ n == 4 }) @Ensures({ result == 2.5 }) static BigDecimal f(int n) { 10 / n } }')],
     ]
 }

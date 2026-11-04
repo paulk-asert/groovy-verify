@@ -6386,8 +6386,11 @@ class Encoder implements TheoryApi {
      * linear (for a symbolic one it cost the solver its decision: measured, an average `s / n` timed out with it and
      * proved in 6 ms without); and for integral operands the rounding grid holds every
      * integer (the precision is at least the quotient's integer digits plus 10, the scale 10), so {@code r} never
-     * crosses one: {@code floor(q) <= r <= ceil(q)}. Exact facts about a terminating quotient of more places aren't
-     * derivable: over-strict, never unsound. A zero divisor is the division's own obligation (a body's DivideSite, a
+     * crosses one: {@code floor(q) <= r <= ceil(q)}. Phase 530 — for integral operands, the symbolic divisor's
+     * exactness too, linearly: {@code |r*b - a| <= 0.55e-10 * |b|} and {@code r} on the {@code 1e-10} grid unless the
+     * exact divide succeeded (off the grid only for {@code |b| >= 2048}), so a grid quotient is exact and a
+     * non-terminating one has Groovy's double-rounded HALF_UP digits. A terminating quotient of more than 10 places
+     * over a symbolic divisor isn't derivable: over-strict, never unsound. A zero divisor is the division's own obligation (a body's DivideSite, a
      * contract's Phase 528 site).
      */
     private Object roundedQuotient(Object a, Object b, boolean integral, boolean numeralDivisor) {
@@ -6414,6 +6417,19 @@ class Encoder implements TheoryApi {
             facts.add(session.implies(session.eq(session.intToReal(session.realToInt(scaled)), scaled), session.eq(r, q)))
         }
         if (integral) {
+            // Phase 530 — the short-quotient exactness, linear: an integer's precision is at least the quotient's
+            // integer digits, so the first rounding keeps >= 10 places and the two together err by at most
+            // 0.5e-10 + 0.05e-10; the rounded value sits on the 1e-10 grid unless the exact divide succeeded.
+            // A quotient on the grid is then the only grid point within the band: r == q, no division in the fact.
+            // Off the grid the exact quotient terminates in more than 10 places, so its reduced denominator 2^i 5^j
+            // has max(i, j) >= 11 and |b| >= 2^11: below that, a non-terminating q is pinned to its HALF_UP digits.
+            Object rb = session.times(r, b)
+            Object gap = session.minus(rb, a)
+            Object absGap = session.ite(session.ge(gap, zero), gap, session.neg(gap))
+            Object scaledR = session.times(r, session.realLit('10000000000'))
+            facts.add(session.le(absGap, session.times(session.realLit('11/200000000000'), absB)))
+            facts.add(session.or([session.and([session.eq(rb, a), session.ge(absB, session.realLit('2048'))]),
+                                   session.eq(session.intToReal(session.realToInt(scaledR)), scaledR)]))
             Object fl = session.intToReal(session.realToInt(q))
             facts.addAll([session.le(fl, r), session.le(r, session.plus(fl, session.realLit('1'))),
                           session.implies(session.eq(fl, q), session.eq(r, q))])
