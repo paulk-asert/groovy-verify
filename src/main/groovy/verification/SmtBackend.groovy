@@ -168,8 +168,9 @@ interface SmtSession extends AutoCloseable {
      * Declare an integer array variable {@code Array Int -> Int}, modelling the
      * *contents* of an array/list named {@code name}. The element at index
      * {@code i} is {@link #select}; an update is {@link #store}. Index and value
-     * sorts are both Int — the spike's only modelled element type. (See
-     * roadmap Phase 6.)
+     * sorts are both Int here — the original element type (roadmap Phase 6); String,
+     * floating-point, boolean and enum element arrays are minted through the sorted
+     * variants.
      */
     Object arrayVar(String name)
 

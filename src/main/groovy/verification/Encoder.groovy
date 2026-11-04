@@ -1749,11 +1749,10 @@ class Encoder implements TheoryApi {
      * binary-name prefix stripped (so {@code C$Color} → {@code Color}). The CONTRACT-side enum
      * literal {@code Color.RED} (re-parsed from text, unresolved receiver name "Color") and the
      * BODY-side {@code Color.RED} (resolved to the inner-class binary "C$Color") then agree on
-     * the same sort. The known limitation: two enums with the same source-level name in different
-     * outer classes collapse into one sort — acceptable for the spike's scale.
+     * the same sort. Phase 524 — when two of the module's enums share the simple name, each is
+     * named by its dotted nested name ({@code C.L}, {@code D.L}) instead: two sorts, their own
+     * constants and counts (the contract side is normalised to the same spelling).
      */
-    /** An enum's sort's name: its simple name, or (Phase 524) its dotted nested name ({@code C.L}) when two of the
-     *  module's enums share the simple name, so they're two sorts with their own constants and counts. */
     private String enumSortName(ClassNode t) {
         String n = t.nameWithoutPackage
         int dollar = n.lastIndexOf('$')   // String-overload — finds the last '$' separator if present

@@ -35,7 +35,7 @@ period is over: the upstream `@ThrowsIf` exceptional contracts (GROOVY-12135), t
 `woven`/`direct` members (GROOVY-12136) and the groovy-contracts loop-annotation fixes
 (GROOVY-12128/12129/12130) — the reasons the build rode 6.0.0-SNAPSHOT, and what cleared eleven
 catalogued rung divergences — are all in the beta-1 release. To ride upstream changes ahead of the
-next pre-release, set `groovyVersion` in `gradle.properties` to `6.0.0-SNAPSHOT` and un-comment the ASF
+next release, set `groovyVersion` in `gradle.properties` to `6.0.0-SNAPSHOT` and un-comment the ASF
 snapshot repo in `build.gradle` (and `examples-dsl/build.gradle`); if a freshly-published snapshot looks
 stale, `--refresh-dependencies`.
 

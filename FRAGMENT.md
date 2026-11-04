@@ -170,7 +170,18 @@ a coverage metric. In expressions the fragment is:
   and nested-set mutation remain outside;
 - list element nullability: `xs[i].method()` / `xs.get(i).method()` is an implicit NPE obligation
   against a per-element nullity oracle, discharged by `@Requires({ xs[i] != null })` or an
-  `if` guard;
+  `if` guard; an element's nullity follows its stores and survives calls (Phases 445–446, 487–490), a
+  literal list's elements carry theirs (Phases 484, 509), and a map's values are null for a missing key or a
+  null put (Phases 482–486, the unboxing of one an obligation);
+- the rest of the null surface (Phases 414–430, 479–480): a subscript's receiver, an array's `length`, a
+  property read and `xs << v` may each be on null and carry the obligation; `x?.m()` is obligated only
+  where its null would throw (an unboxing, an arithmetic operand — Phase 422); a boxed local, a local
+  declared without a value, a reassigned local and a `new` value each have their own nullity; and only a
+  null equals a null — two reference parameters compare as Groovy compares them (Phases 423, 515);
+- a receiver's state through an object parameter: its arrays (Phase 413), lists (Phases 500–506, with writes,
+  removals and insertions), boolean and enum fields (Phases 431, 522), and the nullity of any reference
+  field (`b.s == null`, a String field a String value — Phases 521, 526), under the receiver's class
+  invariant in Phase 496's receiver scope;
 - `src.findAll { t -> p(t) }` over an `Int`-element list or array (Phase 320): a fresh non-null list with
   `0 <= size <= src.size()` whose every element passes `p` and is drawn from `src`, so `result.every { … }`
   claims and size bounds prove. Not modelled: completeness (every passing element is kept), order and
@@ -205,7 +216,10 @@ a coverage metric. In expressions the fragment is:
 The unit of verification is a **method** (static or instance) carrying contracts — the enclosing definition is
 *context*, not itself a proof target. The engine models a **class** (instance fields, SSA-tracked across a
 mutator's pre/post state, and a class `@Invariant` assumed-on-entry / checked-preserved-on-exit), an **enum**
-(a finite uninterpreted sort with a known value-count, for membership / pigeonhole / cardinality), and a
+(a finite uninterpreted sort with a known value-count, for membership / pigeonhole / cardinality — and a null
+value that equals no constant, as `null == L.Low` is false in Groovy: a null enum parameter, map key or field is
+no constant, Phases 516–522; a nested enum's constant is read through its outer class too, `C.L.A`, and two
+enums of one simple name are two sorts whose values are never equal, Phases 523–525), and a
 **record** (its components are final fields, so they read like any class field, and a record may carry its own
 contracts) — but it does *not* in general verify the definition itself: deconstruction / pattern matching and
 generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is understood only through
@@ -441,7 +455,9 @@ trusted reading "writes nothing" unless it declares otherwise. A call on a class
 framed the same way onto the receiver's fields, its `@Ensures` assumed under the receiver and the receiver's
 invariants re-assumed (Phase 350), and likewise on an object field or a local holding one; any other explicit receiver
 whose callee writes or reads its fields is loud, and a static on another class writes only its own statics (Phase
-351). A class-level
+351). A write through the parameter owes its class invariant at the exit (Phases 432–434, 503), and a call on one
+of its fields that isn't a known read — or a field handed to a method, static or constructor that may write it —
+counts as a write of the field (Phases 519–520), so an invariant over it is re-proved, not assumed. A class-level
 `@Invariant` on a mutable object is **assumed on entry and checked preserved on exit** of every method, so a
 data structure verifies as a unit — a mutator that breaks it refutes (Phases 45 / 107, the ring buffer). When the
 solver returns *UNKNOWN* on a

@@ -17206,12 +17206,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /**
-     * Locate the single top-level annotated loop, returning its {@link LoopSpec}
-     * plus the straight-line prefix/suffix around it, or null if there is none.
-     * Raises {@link UnsupportedConstructException} (→ "skipped") if the body has
-     * more than one — the spike models a single loop.
-     */
-    /**
      * Phase 334 — the bodies a top-level {@code if} with an annotated loop in a branch splits into: for
      * {@code P; if (c) T else E; R}, {@code P; assume c; T; R} and {@code P; assume !c; E; R} (a missing else is
      * empty), each split again while a variant still has such an {@code if}. Null when the body has none. The assume
