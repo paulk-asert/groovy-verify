@@ -724,7 +724,10 @@ class RuntimeRung {
             List<Class> classes
             try {
                 gcl.parseClass(src, 'Case.groovy')
-                classes = gcl.loadedClasses.findAll { !it.name.contains('$') && !it.isInterface() && !it.isAnnotation() }
+                // An enum's compiler-generated `valueOf(String)` is public static and not flagged synthetic, so it
+                // would be exercised with grid strings and throw IllegalArgumentException (Phase 522's top-level
+                // `enum L` surfaced it): enums carry no contracts, skip them.
+                classes = gcl.loadedClasses.findAll { !it.name.contains('$') && !it.isInterface() && !it.isAnnotation() && !it.isEnum() }
             } catch (MultipleCompilationErrorsException mce) { if (('' + c.group).contains('213')) System.err.println('P213 COMPILE FAIL:\n' + mce.message?.take(800)); exCompile++; return }
             catch (Throwable ignored) { exCompile++; return }
             def methods = classes.collectMany { targetMethods(it) }
