@@ -63,7 +63,10 @@ a coverage metric. In expressions the fragment is:
   that held was evaluated without throwing, so its array is non-empty for the body, as a dereferenced
   reference is non-null — and an obligation where the contract is checked: an `@Ensures` or exit invariant owes
   `0 < a.length` where the call is reached, under the `&&`/`||`/ternary guards before it, refused as "the
-  postcondition may throw" rather than as the claim failing;
+  postcondition may throw" rather than as the claim failing. A contract's other partial operations follow the
+  same rule (Phase 528): an array's subscript (`0 <= i < a.length` owed, as the body's is; a list's reads null
+  past its end and isn't one) and an integral or decimal `/`, `%`, `intdiv`, `remainder` (divisor non-zero) or
+  `mod` (divisor positive); an IEEE-754 division owes nothing;
   `double[]` / `List<Double>` element predicates ride the same FP theory (a hand-written extremum *loop*
   stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
 - aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold

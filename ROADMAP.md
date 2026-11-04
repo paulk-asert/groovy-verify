@@ -21908,7 +21908,8 @@ open below; and `f(new int[0])` as a caller's actual is a loud skip (an array co
 
 **Open:**
 - a contract's subscript (`a[0]`) and division (`10 / n`) are the same shape — a partial operation the contract
-  itself evaluates — and remain unchecked; the walker and the two hooks are where they would go;
+  itself evaluates — and remain unchecked; the walker and the two hooks are where they would go *(closed by Phase 528,
+  which also replaced this phase's extrema walk with a guarded implication)*;
 - a list's `xs.max() + 1` in a precondition NPEs on an empty list; a precondition's dereference of a maybe-null
   *value* (not a name) is Phase 414's open edge, not an extremum's;
 - an array constructor as a caller's actual (`f(new int[0])`) is outside the fragment at the call site.
@@ -21924,6 +21925,70 @@ at entry (`a.length > 0` provable) and owed at exit (emptying refused, a non-emp
 Mutation-checked: 6 of 6 killed: no precondition filter (4), no invariant entry filter (1), the exit obligation
 dropped (2, the tautology and the emptying write), an `&&`'s guard polarity flipped (2), any array taken as primitive
 (the `Integer[]` case), a negation not flipping in the extrema walk (the negated `||`, added for it).
+
+## Phase 528 — a contract's subscript and division  *(shipped — capability)*
+
+Phase 527's open item: a contract's other partial operations. Measured first (Groovy 6.0.0): an `int[]`'s or
+`Integer[]`'s subscript past either end throws `ArrayIndexOutOfBoundsException`, and a negative index within the length
+counts from the end (`([1, 2] as int[])[-1]` is 2); a list's reads null past its end (and throws for a negative index
+past its start); a string's throws. An integral or decimal `/`, `%`, `intdiv` by zero throws `ArithmeticException`
+(int `/` included — it is decimal division); a division with a `double` operand gives `Infinity`.
+
+Measured at the parent, 18 probe cases. Four **silent false proofs**: `@Ensures({ a[0] == a[0] })` on a maybe-empty
+`int[]`, `x.intdiv(n) == x.intdiv(n)` and `x % n == x % n` for a maybe-zero `n` all proved (the runtime throws), and
+an `@Invariant({ a != null && a[0] >= 0 })` passed after `a = new int[0]` — the next invariant check throws. And six
+misses: a precondition's `a[0] > 0` (an `int[]`, an `Integer[]`, `a[-1]`) or an entry invariant's gave the body no
+`a.length > 0`, nor did it discharge the body's own `a[0]`. Correct already: a list's `xs[0]` (null past the end, no
+filter); a contract's string subscript, int `/` and decimal `/` are loud skips (outside the fragment), unchanged.
+
+**Fix** — Phase 527's two hooks, generalised and simplified:
+- **One walker, three kinds.** `contractPartialSites` collects each partial operation a contract evaluates with the
+  guards it is reached under (an `&&`'s right where its left is true, an `||`'s where false, a ternary's arms under
+  its condition; a closure body isn't walked): `a.max()`/`a.min()` on a primitive array (Phase 527), `a[i]` on an array
+  formal or field of any element type, and `/`, `%` (matched by text: `%` is `Types.REMAINDER` in Groovy 6, not
+  `Types.MOD`), `intdiv`, `remainder`, `mod`. `contractPartialFact` gives each one's definedness: `0 < a.length`;
+  `-a.length <= i < a.length` assumed (exactly where Groovy doesn't throw) and `0 <= i < a.length` owed (as the body's
+  subscript owes it — counting from the end isn't modelled); `d != 0`, `d > 0` for `mod`, in the Real sort for a
+  decimal divisor; nothing for an IEEE-754 or a pack's division (the body's `DivideSite` rules).
+- **The filter is now an implication.** `assumeContractEvaluated` asserts `guards ⟹ defined` for each site of a
+  precondition, or of a class invariant at entry. Sound for a contract that held: it was evaluated without throwing,
+  so each operation its guards reached was defined. This replaces Phase 527's *extrema mode* of Phase 414's
+  `trueDerefs` walk, which is back to dereferences only; the implication covers an `||` and a negation without the
+  polarity bookkeeping. A guard or operand outside the fragment drops that one fact (weaker, sound).
+- **The exit obligation** is Phase 527's, per kind; `Reporter.formatContractMayThrow` names the operation, the
+  exception and the obligation: "The postcondition of f may throw rather than hold or fail: a[0] is reached with 0
+  outside [0, a.length): past either end Groovy throws ArrayIndexOutOfBoundsException (…) obligation: 0 <= 0 && 0 <
+  a.length … fails on: f(new int[0])".
+
+**Boundary, pinned:** a postcondition's `a[-1]` on a non-empty array is refused, as the body's `a[-1]` is — an
+over-strict refusal, never an unsound proof.
+
+**Open:**
+- a contract's string subscript, int `/` and decimal `/` stay outside the fragment (loud) — when they come in, the
+  walker already collects their sites;
+- a list's negative subscript past its start throws, and a list's `get(i)` throws out of bounds: neither is a contract
+  site yet;
+- a callee's precondition evaluated at a call site isn't checked for its own definedness (the caller proves the
+  precondition holds, which an unconstrained `a[0]` can't fake, but `a[0] == a[0]` could);
+- `Encoder` still matches `%` as `Types.MOD` in three numeric-shape tests (`isNumberValued` among them), which Groovy 6
+  never produces — measured nothing wrong yet, but worth a look.
+
+**Shipped tests:** group `P528 contract partial ops`, 23 cases: a precondition's subscript filtering (the body's
+`a.length > 0` and `a[0]`, an `Integer[]`, `a[-1]`, `a[i]` with `i >= 0` bounding the body's `a[i]`), a negative `i`
+left possible, an `||` not filtering, a list's subscript not filtering, a precondition's `intdiv` and `%` making the
+divisor non-zero, an entry invariant's `a[0]`; a postcondition's `a[0]` on a maybe-empty array (the throw message,
+`fails on: f(new int[0])`), guarded by its own `||` and by a ternary, `a[-1]` refused (the boundary), `intdiv` and `%`
+by a maybe-zero divisor refused, `%` guarded by `n == 0 ||`, a zero path that throws, an IEEE-754 division owing
+nothing, a slice not a subscript; the exit invariant's `a[0]` (emptying refused, a non-empty replacement verifies).
+Phase 527's 19 cases pass unchanged on the new implementation.
+
+Mutation-checked over Phases 520–528 (105 cases): 11 of 12 killed: no precondition filter, no entry-invariant filter,
+the exit obligation dropped (7), an `&&`'s guard polarity flipped (17), a ternary's arm guards swapped (2), the
+filter's guards ignored (3), the assumed index bound `0 <= i` (unsound for `a[-1]`; the negative-`i` case), the owed
+bound `-a.length <= i` (the `a[-1]` boundary), `%` not a site (2), `intdiv` not a site (2), lists taken as arrays (1).
+Survived: obligating an IEEE-754 division by its node (`isFpValued`) — equivalent today, since every FP division that
+translates has an FP-sorted divisor, which `contractPartialFact` already excuses; a `double` over an `int` divisor
+(`x / n`) is outside the fragment in a contract. Kept as insurance.
 
 ## Definition of done, per increment
 
