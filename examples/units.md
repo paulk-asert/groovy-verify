@@ -76,7 +76,7 @@ static BigDecimal total() {
 `1 km + 1 mile`, normalized to metres, is exactly `2609.344` — proved over exact `BigDecimal` (rational)
 arithmetic, not floating point. Read the *same* sum back in **kilometres** and claim the metre number and it
 **refutes**: that is the scale bug — same dimension, wrong unit — caught. Units resolve by simple name from a
-curated base-unit + metric-prefix table (`tech.units.indriya` supplies `Quantities` / `Units` / `MetricPrefix`;
+curated base-unit + metric-prefix table, plus the derived `METRE_PER_SECOND` (`tech.units.indriya` supplies `Quantities` / `Units` / `MetricPrefix`;
 `systems.uom.common.USCustomary` supplies `MILE`). Those scales are *trusted constants* — the engine asserts
 them rather than running the conversion — so `UnitScaleTest` pins each one against the reference implementation
 (the international mile is `1609.344 m`, not the US-survey `1609.347…`), failing loudly if a library ever

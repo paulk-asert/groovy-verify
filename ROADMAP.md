@@ -22135,7 +22135,7 @@ in metres is `10000` at runtime) now skips. Modelling indriya's rationals exactl
 rounding and the value's number type tracked along the chain.
 
 **Open:** indriya's `RationalNumber` model (above); a `METRE_PER_SECOND` read-out isn't in the curated table
-(pre-existing).
+(pre-existing; closed by Phase 532).
 
 **Shipped tests:** group `P531 non-name sites and indriya division`, 21 cases: `t.name[0]`, `s.trim()[0]`,
 `(s + t)[0]`, `'abc'[i]` and `t.name.charAt(0)` refused where maybe empty, defined where non-empty or in range, and
@@ -22146,6 +22146,32 @@ reciprocal outside the fragment; `2^48`, `10 km / 4` and `1.5 m / 2 s · 2 s` ex
 Mutation-checked: 7 of 7 killed (the two list cases were added for the survivor): the method `divide` unguarded (5),
 no 34-digit bound (1), the bound at 35 (1), no `getQuantity` closed magnitude (1), non-name String receivers not
 sites (6), a non-String candidate obligated (2), receiver array fields not sites (2).
+
+## Phase 532 — metre per second, and `asType` to a kind  *(shipped — capability)*
+
+Phase 531's last open item. `METRE_PER_SECOND` wasn't in the units pack's curated tables, so a quantity built in it,
+or compared with one, skipped. Measured (probes in the suite's harness), every form type-checks and reached the
+verifier only to skip; but the read-out the open item named, a quotient's `.to(METRE_PER_SECOND)`, can't be written
+at all: `divide` returns `Quantity<?>`, which STC won't match against `to(Unit<Speed>)`. The type-checking way to that
+read-out is `q.asType(Speed)`, which the readers didn't model.
+
+**Shipped:** `METRE_PER_SECOND` joins `BASE_UNIT_SCALE` (1) and `BASE_UNIT_DIM` (`[1,0,-1]`), pinned against indriya
+by `UnitScaleTest` (5 km/s is 5000 m/s; 10 m / 2 s == 5 m/s; 5 m/s · 2 s == 10 m; 18 km / 2 s == 9 km/s). And
+`q.asType(K)` over a `QUANTITY_KIND` class: indriya checks the unit's dimension against `K`, throwing
+`ClassCastException` on a mismatch, and returns the quantity itself (pinned: `asType(Speed).is(v)`). So the
+dimension reader keeps the receiver's vector only when it equals `K`'s (a mismatch is null, a skip), and the
+magnitude and current-unit-scale readers pass the receiver's through.
+
+**Boundary:** an `asType` to an uncurated kind (`Pressure`) skips; a divisor outside Phase 531's guard
+(`18 km / 3 s`) still skips; `q as Quantity<Speed>` (a cast, not `asType`) isn't read.
+
+**Shipped tests:** group `P532 metre per second`, 15 cases: a speed's value read back and a wrong value refuted;
+10 m / 2 s, 5 m/s · 2 s and 18 km / 2 s; 5 km/s in m/s; 18 km / 3 s outside the fragment; a speed as a length
+refuted; a quotient read out through `asType(Speed)`, right and wrong; `asType` keeping the quantity and its unit
+(5 km/s reads 5, not 5000); `asType(Length)` and `asType(Pressure)` outside the fragment.
+
+Mutation-checked: 6 of 6 killed: `asType` ignoring a kind mismatch (1), dropping its magnitude (5), resetting its
+unit scale to SI (2), any class as Speed (1), `METRE_PER_SECOND` as a length (8), its scale as 1000 (5).
 
 ## Definition of done, per increment
 

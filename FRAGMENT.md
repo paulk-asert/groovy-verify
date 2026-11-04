@@ -288,6 +288,9 @@ Indriya's division, in the DSL `/` and the method `q.divide(x)` alike (Phase 531
 rational reciprocal, which a `BigDecimal` value meets rounded to 34 digits (`1.5 m / 3 · 3` is `1.4999…85`), and a
 read-out rounds a non-terminating rational to 34 digits: so a quotient is exact only for a closed divisor that
 terminates with a reciprocal of at most 34 significant digits (`/ 2^48` is, `/ 2^49` isn't), and skips otherwise.
+`METRE_PER_SECOND` is a curated unit (Phase 532: scale 1, Speed), and `q.asType(K)` over a curated kind keeps the
+magnitude and unit (indriya checks the kind and returns the quantity itself), so a quotient's `Quantity<?>` reads out
+in m/s as `asType(Speed).to(METRE_PER_SECOND)`; a kind mismatch, which throws, or an uncurated kind skips.
 A coherent-derived-unit suffix `mps` (Speed, scale 1) lets a contract name a speed directly — `@Ensures({ result ==
 1.mps })` over `d / s` verifies — the statically-checkable form, since `1.m/s` referencing the body local is rejected
 by `@TypeChecked` first (the contract closure is checked in signature scope, not body scope — upstream, not a verifier gap).

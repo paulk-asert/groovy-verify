@@ -19,11 +19,14 @@ import tech.units.indriya.quantity.Quantities
 import static javax.measure.MetricPrefix.CENTI
 import static javax.measure.MetricPrefix.KILO
 import static org.junit.jupiter.api.Assertions.assertEquals
+import static org.junit.jupiter.api.Assertions.assertThrows
 import static systems.uom.common.USCustomary.FOOT
 import static systems.uom.common.USCustomary.INCH
 import static systems.uom.common.USCustomary.MILE
 import static systems.uom.common.USCustomary.YARD
 import static tech.units.indriya.unit.Units.METRE
+import static tech.units.indriya.unit.Units.METRE_PER_SECOND
+import static tech.units.indriya.unit.Units.SECOND
 
 /**
  * Phase 132 — pin the value/scale engine's trusted unit-scale constants (the {@code BASE_UNIT_SCALE} /
@@ -48,5 +51,25 @@ class UnitScaleTest {
         assertEquals(0, metres(1, YARD).compareTo(new BigDecimal('0.9144')))          // international yard
         assertEquals(0, metres(1, FOOT).compareTo(new BigDecimal('0.3048')))          // international foot
         assertEquals(0, metres(1, INCH).compareTo(new BigDecimal('0.0254')))          // international inch
+    }
+
+    /** Phase 532 — METRE_PER_SECOND is the coherent SI speed: scale 1, and a prefix scales it like any unit. */
+    @Test
+    void metrePerSecondIsTheCoherentSpeed() {
+        def mps = { Number v, javax.measure.Unit u ->
+            new BigDecimal(Quantities.getQuantity(v, u).to(METRE_PER_SECOND).value.toString()) }
+        assertEquals(0, mps(5, METRE_PER_SECOND).compareTo(new BigDecimal('5')))
+        assertEquals(0, mps(5, KILO(METRE_PER_SECOND)).compareTo(new BigDecimal('5000')))
+        // a length over a time is that speed, and a speed times a time is that length (Groovy == on Comparable)
+        assert Quantities.getQuantity(10, METRE).divide(Quantities.getQuantity(2, SECOND)) == Quantities.getQuantity(5, METRE_PER_SECOND)
+        assert Quantities.getQuantity(5, METRE_PER_SECOND).multiply(Quantities.getQuantity(2, SECOND)) == Quantities.getQuantity(10, METRE)
+        assert Quantities.getQuantity(5, METRE_PER_SECOND) != Quantities.getQuantity(6, METRE_PER_SECOND)
+        // asType(K) checks the kind and returns the quantity itself: the value and unit carry through, a mismatch throws
+        def v = Quantities.getQuantity(10, METRE).divide(Quantities.getQuantity(2, SECOND))
+        assert v.asType(javax.measure.quantity.Speed).is(v)
+        assertEquals(0, new BigDecimal(v.asType(javax.measure.quantity.Speed).to(METRE_PER_SECOND).value.toString()).compareTo(5G))
+        assertThrows(ClassCastException) { v.asType(javax.measure.quantity.Length) }
+        assert Quantities.getQuantity(18, KILO(METRE)).divide(Quantities.getQuantity(2, SECOND)) == Quantities.getQuantity(9, KILO(METRE_PER_SECOND))
+        assertEquals(0, new BigDecimal(Quantities.getQuantity(5, KILO(METRE_PER_SECOND)).asType(javax.measure.quantity.Speed).value.toString()).compareTo(5G))
     }
 }

@@ -342,6 +342,8 @@ class UnitsPack implements EncodingPack {
             // Non-SI length units (scale to metres). The international mile is exactly 1609.344 m — pinned against
             // the JSR 385 RI by UnitScaleTest, since these scales are trusted constants, not computed.
             'MILE': 1609.344G, 'YARD': 0.9144G, 'FOOT': 0.3048G, 'INCH': 0.0254G,
+            // Phase 532 — the coherent derived unit metre-per-second: SI magnitude is its value (pinned by UnitScaleTest).
+            'METRE_PER_SECOND': 1.0G,
         ]
 
         /** Metric prefixes → their multiplier, so {@code KILO(METRE)} resolves to scale 1000. */
@@ -375,6 +377,7 @@ class UnitsPack implements EncodingPack {
             'MILE': [1, 0, 0] as int[], 'YARD': [1, 0, 0] as int[], 'FOOT': [1, 0, 0] as int[], 'INCH': [1, 0, 0] as int[],
             'KILOGRAM': [0, 1, 0] as int[], 'GRAM': [0, 1, 0] as int[],
             'SECOND': [0, 0, 1] as int[],
+            'METRE_PER_SECOND': [1, 0, -1] as int[],     // Phase 532 — Speed = Length·Time⁻¹
         ]
 
         /** Phase 151 — the dimension twin of {@link #DSL_SUFFIX_SCALE} for the experimental unit-suffix sugar. */
@@ -442,6 +445,11 @@ class UnitsPack implements EncodingPack {
                 String m = mc.methodAsString
                 List<Expression> a = argList(mc)
                 if (m == 'to' && a.size() == 1) return dimensionOf(mc.objectExpression)        // unit relabel: dimension invariant
+                if (m == 'asType' && a.size() == 1) {                                             // Phase 532 — a kind check
+                    int[] d = dimensionOf(mc.objectExpression)
+                    int[] k = asTypeKind(a.get(0))
+                    return (d != null && k != null && Arrays.equals(d, k)) ? d : null             // a mismatch throws: skip
+                }
                 if (m in ['add', 'subtract'] && a.size() == 1) return dimensionOf(mc.objectExpression)
                 if (m in ['multiply', 'divide'] && a.size() == 1) {
                     int[] dRecv = dimensionOf(mc.objectExpression)
@@ -524,6 +532,13 @@ class UnitsPack implements EncodingPack {
          * and {@code multiply}/{@code divide} take a Quantity or a scalar. A Quantity whose construction isn't
          * visible (a parameter) → null, i.e. out of scope.
          */
+        /** Phase 532 — the exponent vector of {@code q.asType(K)}'s kind class {@code K}, or null when {@code K} isn't
+         *  a curated {@code javax.measure.quantity} kind. indriya's {@code asType} checks the unit's dimension against
+         *  {@code K} (throwing on a mismatch) and returns the quantity itself, so magnitude and unit carry through. */
+        private static int[] asTypeKind(Expression k) {
+            k instanceof ClassExpression ? QUANTITY_KIND.get(((ClassExpression) k).type.name) : null
+        }
+
         private Object siMagnitude(Expression e) {
             Expression src = quantitySourceOf(e)
             if (src != null) return siMagnitude(src)
@@ -540,6 +555,8 @@ class UnitsPack implements EncodingPack {
                 String m = mc.methodAsString
                 List<Expression> a = argList(mc)
                 if (m == 'to' && a.size() == 1) return siMagnitude(mc.objectExpression)         // unit relabel: magnitude invariant
+                if (m == 'asType' && a.size() == 1)                                               // Phase 532 — returns itself
+                    return asTypeKind(a.get(0)) != null && dimensionOf(e) != null ? siMagnitude(mc.objectExpression) : null
                 if (m in ['add', 'subtract', 'multiply', 'divide'] && a.size() == 1) {
                     Object recvM = siMagnitude(mc.objectExpression)
                     if (recvM == null) return null
@@ -761,6 +778,8 @@ class UnitsPack implements EncodingPack {
                 List<Expression> a = argList(mc)
                 if (mc.methodAsString == 'to' && a.size() == 1) return scaleOf(a.get(0))
                 if (mc.methodAsString in ['add', 'subtract'] && a.size() == 1) return currentUnitScale(mc.objectExpression)
+                if (mc.methodAsString == 'asType' && a.size() == 1 && asTypeKind(a.get(0)) != null)
+                    return currentUnitScale(mc.objectExpression)                                  // Phase 532 — same unit
             }
             if (isGetQuantityCall(e)) {
                 List<Expression> a = callArgs(e)
