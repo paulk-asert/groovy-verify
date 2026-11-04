@@ -61,6 +61,9 @@ class TypeEnvironment {
     /** Enum-sorted names → the enum's constant count, for the domain-closure axiom (Phase L0). */
     final Map<String, Integer> enumDomainSizes = new HashMap<String, Integer>()
 
+    /** Phase 524 — simple names two of the module's enums share; such an enum's sort is named by its dotted name. */
+    final Set<String> ambiguousEnumNames = new HashSet<String>()
+
     /** {@code Map<K, Set<V>>}-typed names → inner set element type (Phase 36). */
     final Map<String, ClassNode> nestedSetValueTypes = new HashMap<String, ClassNode>()
 

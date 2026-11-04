@@ -216,6 +216,7 @@ class Encoder implements TheoryApi {
      * from walking the type's fields directly.
      */
     private final Map<String, Integer> enumDomainSizes
+    private final Set<String> ambiguousEnumNames   // Phase 524 — simple names two of the module's enums share
     /**
      * Phase 38b — local variables bound to a recognised immutable-container factory: {@code xs}
      * after {@code xs = List.of(1, 2, 3)} (or {@code [1, 2, 3]} / {@code Map.of(…)} / {@code Set.of(…)}).
@@ -381,6 +382,7 @@ class Encoder implements TheoryApi {
         this.listElementTypes = env.listElementTypes
         this.scalarTypes = env.scalarTypes
         this.enumDomainSizes = env.enumDomainSizes
+        this.ambiguousEnumNames = env.ambiguousEnumNames
         this.nestedSetValueTypes = env.nestedSetValueTypes
         this.listNames = env.listNames
         this.objectParams = env.objectParams
@@ -1747,10 +1749,20 @@ class Encoder implements TheoryApi {
      * the same sort. The known limitation: two enums with the same source-level name in different
      * outer classes collapse into one sort — acceptable for the spike's scale.
      */
-    private static String enumSortName(ClassNode t) {
+    /** An enum's sort's name: its simple name, or (Phase 524) its dotted nested name ({@code C.L}) when two of the
+     *  module's enums share the simple name, so they're two sorts with their own constants and counts. */
+    private String enumSortName(ClassNode t) {
         String n = t.nameWithoutPackage
         int dollar = n.lastIndexOf('$')   // String-overload — finds the last '$' separator if present
-        dollar >= 0 ? n.substring(dollar + 1) : n
+        String simple = dollar >= 0 ? n.substring(dollar + 1) : n
+        ambiguousEnumNames.contains(simple) ? n.replace('$', '.') : simple
+    }
+
+    /** Phase 524 — a contract's or body snapshot's enum name as its sort is named: itself, or for a simple name two
+     *  enums share, the one this method's class sees ({@code L} in {@code C} is {@code C.L}). */
+    private String canonicalEnumName(String name) {
+        if (name == null || !ambiguousEnumNames.contains(name)) return name
+        ContractNormalizer.resolveEnumName(vcMethod?.declaringClass, name) ?: name
     }
 
     private static boolean isIntLikeType(ClassNode t) {
@@ -1862,7 +1874,7 @@ class Encoder implements TheoryApi {
             }
         }
         if (recv instanceof VariableExpression) {
-            return enumDomainSizes.get(((VariableExpression) recv).name)
+            return enumDomainSizes.get(canonicalEnumName(((VariableExpression) recv).name))
         }
         null
     }
@@ -1954,8 +1966,13 @@ class Encoder implements TheoryApi {
                     for (FieldNode f : c.fields) if (!f.isStatic() && (f.type.isEnum() || isEnumLikeType(f.type))) knownEnumNames.add(enumSortName(f.type))
                 }
             }
+            // Phase 524 — the module's enums by their sorts' names (`D.L.A` in a contract on a `C.L` parameter: another
+            // type's constant, never equal to it), unless a parameter has the name
+            vcMethod?.declaringClass?.module?.classes?.each { ClassNode t ->
+                if (t.isEnum() && !vcMethod.parameters.any { it.name == enumSortName(t) }) knownEnumNames.add(enumSortName(t))
+            }
         }
-        knownEnumNames.contains(name)
+        knownEnumNames.contains(canonicalEnumName(name))
     }
 
     /** The Z3 sort for the element type of a set receiver name, or Int if unknown / Int-element. */
@@ -5380,6 +5397,15 @@ class Encoder implements TheoryApi {
             !ClassHelper.isPrimitiveType(t) && ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(t)))
     }
 
+    /** Phase 524 — the enum type of an enum parameter or an enum constant, else null */
+    private ClassNode enumTypeOfExpr(Expression e) {
+        if (isEnumParam(e)) return vcMethod.parameters.find { it.name == ((VariableExpression) e).name }.type
+        if (!isEnumConstant(e)) return null
+        Expression obj = ((PropertyExpression) e).objectExpression
+        if (obj instanceof ClassExpression) return ((ClassExpression) obj).type
+        knownEnumType(canonicalEnumName(((VariableExpression) obj).name))
+    }
+
     /** Phase 516 — a parameter, by name, of an enum type */
     private boolean isEnumParam(Expression e) {
         if (!(e instanceof VariableExpression)) return false
@@ -5423,7 +5449,8 @@ class Encoder implements TheoryApi {
         List<ClassNode> ts = new ArrayList<ClassNode>()
         ts.addAll(setElementTypes.values()); ts.addAll(listElementTypes.values()); ts.addAll(scalarTypes.values())
         mapTypes.values().each { ClassNode[] pair -> ts.add(pair[0]); ts.add(pair[1]) }
-        ts.find { ClassNode t -> t != null && t.isEnum() && enumSortName(t) == name }
+        ts.find { ClassNode t -> t != null && t.isEnum() && enumSortName(t) == name } ?:
+            vcMethod?.declaringClass?.module?.classes?.find { ClassNode t -> t.isEnum() && enumSortName(t) == name }   // Phase 524 — the module's
     }
 
     /** Phase 492 — {@code name}'s element nullity flags when its elements are references that may be null, else null */
@@ -5979,7 +6006,7 @@ class Encoder implements TheoryApi {
                 }
             }
             if (obj instanceof VariableExpression) {
-                String recvName = ((VariableExpression) obj).name
+                String recvName = canonicalEnumName(((VariableExpression) obj).name)   // Phase 524 — the sort's name
                 if (isKnownEnumName(recvName)) {
                     return session.litOfSort(session.declareSort(recvName), prop)
                 }
@@ -7072,6 +7099,20 @@ class Encoder implements TheoryApi {
                     case Types.COMPARE_LESS_THAN_EQUAL:    return session.ite(either, ln, core)
                     case Types.COMPARE_GREATER_THAN:       return session.ite(either, session.and([rn, session.not(ln)]), core)
                     default:                               return session.ite(either, rn, core)
+                }
+            }
+        }
+
+        // Phase 524 — values of two enum types (`C.L` and `D.L`, one simple name) are never equal, as Groovy's `==` is
+        // their equals: only two nulls are (a constant is none). Before their two sorts meet in one comparison
+        if ((op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) && !literalEqInProgress.contains(be)) {
+            ClassNode lt = enumTypeOfExpr(be.leftExpression), rt = enumTypeOfExpr(be.rightExpression)
+            if (lt != null && rt != null && enumSortName(lt) != enumSortName(rt)) {
+                Object ln = isEnumConstant(be.leftExpression) ? session.boolLit(false) : nullityOfExpr(be.leftExpression)
+                Object rn = isEnumConstant(be.rightExpression) ? session.boolLit(false) : nullityOfExpr(be.rightExpression)
+                if (ln != null && rn != null) {
+                    Object eq = session.and([ln, rn])
+                    return op == Types.COMPARE_EQUAL ? eq : session.not(eq)
                 }
             }
         }

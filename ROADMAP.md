@@ -21731,26 +21731,74 @@ the JVM names it: `m[C$L.A] is null for a missing key`.
   (`enumSortName`), so `C.L.A` and `L.A` are one constant, and the `values().length` fold and set and map paths
   follow.
 - **Only when unambiguous.** Two enums of one simple name in a module (`C.L` and `C.D.L`) would meet in one sort, so
-  neither is rewritten, and the contract stays outside the fragment, as before. Nor when the outer name is a
-  parameter's (`b.L` is a value's property).
+  neither is rewritten, and the contract stays outside the fragment, as before (Phase 524 gives each its own sort and
+  rewrites both). Nor when the outer name is a parameter's (`b.L` is a value's property).
 - **The echo.** A nested class in a diagnostic is shown as Groovy spells it: `m[C.L.A]`.
 
 The full suite at the first gate: nothing else moved.
 
 **Open:**
 - a module's two enums of one simple name (`C.L`, `D.L`) already share one sort, each spelled `L` in its own
-  class: a question for the encoder that predates this slice;
+  class: a question for the encoder that predates this slice — Phase 524 measured it (two silent false proofs) and
+  closed it;
 - a package-qualified spelling (`pkg.C.L.A`) isn't rewritten.
 
 **Shipped tests:** group `P523 nested enum constant`, 12 cases. 10 fail at the parent commit: nine loud skips where
 the method now verifies or is refuted for its own reason (equal to the constant, every constant refuted on a null
 with `f(null)`, mixed spellings, a different constant refuted, a map's key, a set's member, a receiver's field, its
 class invariant, the constants counted), and the echo. Two pass at the parent, as guards: a body's resolved
-`a == C.L.A` meets the contract's short `L.A`, and a simple name two enums share stays loud.
+`a == C.L.A` meets the contract's short `L.A`, and a simple name two enums share stays loud (flipped by Phase 524,
+which resolves it).
 
 Mutation-checked: 4 of 5 killed: no rewrite (9), the uniqueness check dropped (1), the JVM's name echoed (1), and
 an earlier dotted `values()` path, found redundant and removed (the fold follows the rewrite). The parameter-name
 check survives: no case writes an outer class's name as a parameter's; it's insurance.
+
+## Phase 524 — two enums of one simple name  *(shipped — soundness)*
+
+Phase 523's open item, and a soundness hole. An enum's Z3 sort was named by its simple name (`enumSortName`, the
+last `$` segment), and the `values().length` fold's scope (`enumDomainSizes`) was keyed by it too. So a module with
+`class C { enum L { A, B } }` and `class D { enum L { A, Y, Z } }` had one sort `L` for both, with one literal `A`,
+and `L`'s count was whichever enum the scope collected last. Measured at the parent, with the class under test `C`:
+- **silent, false proofs.** Inside `C`, `L.values().length` folded to **3**, `D.L`'s count: `@Ensures({ result ==
+  L.values().length })` on a body returning 3 compiled cleanly, and a body returning 2 was refuted ("ensured: (result
+  == 3)"). And a body's resolved `D.L.A` was `C.L`'s literal `A`: `@Requires({ a == L.A }) @Ensures({ result })
+  static boolean f(L a) { a == D.L.A }` compiled cleanly, where Groovy's `==` across two enum types is false;
+- **loud.** Every `D.L.…` spelling in a contract was outside the fragment (Phase 523 declined the rewrite on the
+  collision), and `f(L a, D.L b) { a == b }` with `@Ensures({ !result })` was refuted with `f(L.A, L.A)`, the one
+  literal.
+
+**Fix.**
+- **Two sorts.** When two of the module's enums share a simple name (`ContractNormalizer.ambiguousEnumNames`, carried
+  in the `TypeEnvironment`), each such enum's sort is named by its dotted nested name, `C.L` and `D.L`. Each has its
+  own constants and its own domain closure. Unambiguous enums keep their simple-name sorts: nothing else in the
+  corpus moved.
+- **Each its own count.** `enumDomainSizes` carries the dotted key for every enum and the simple key only when it's
+  unambiguous. A contract's bare `L` is resolved by the class that writes it (`canonicalEnumName`, Groovy's own rule:
+  an enum nested in the class or its outer classes, else the module's top-level one), so `L.values().length` and
+  `L.A` inside `C` are `C.L`'s.
+- **The other's spelling.** Phase 523's rewrite now maps `D.L` to the one name `D.L` when the simple name is shared,
+  instead of declining, and the module's enums are known to a contract by their sorts' names, so `D.L.A` in a
+  contract on a `C.L` parameter is another type's constant.
+- **Never equal.** Values of two enum types compare as Groovy's `==` (their `equals`) does: never equal, unless both
+  are null (a constant is none). Before the fix landed on a sort error, this rule makes `a == b` for `C.L a, D.L b`,
+  and `a == D.L.A` for a `C.L a`, false.
+- **The repro.** A witness of an ambiguous enum is spelled by its dotted name: `fails on: f(D.L.Z)`.
+
+**Open:**
+- a package-qualified spelling (`pkg.C.L.A`) in a contract isn't rewritten (from Phase 523);
+- a receiver's enum field compared across types (`b.level == D.L.A` for a `C.L` field) still meets the sort error:
+  loud, said so.
+
+**Shipped tests:** group `P524 same-named enums`, 12 cases. 11 fail at the parent commit: the two silent false
+proofs above, their refuted twins, every `D.L.…` contract (loud skips: the other's count through its class, its
+every constant, one short refuted with `f(D.L.Z)`, two same-named constants not equal, a map keyed by each, the
+other's constant in a contract), and the cross-type `a == b` false alarm. One passes at the parent, as a guard:
+`C.L`'s every constant by the short spelling.
+
+Mutation-checked: 7 of 7 killed: one sort again (7), the simple count key overwritten (2), no cross-type equality rule
+(4), no canonical name (5), the repro's simple name (1), the module's enums unknown to a contract (1), `D.L` rewritten
+to `L` (6). Phase 523's guard that pinned the shared name as loud now expects the resolved result.
 
 ## Definition of done, per increment
 

@@ -361,6 +361,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@link VariableExpression} (no resolved type information).
      */
     private Map<String, Integer> currentEnumDomainSizes = new HashMap<String, Integer>()
+    private Set<String> currentAmbiguousEnumNames = new HashSet<String>()   // Phase 524
     /**
      * The {@code k} bound expressions of every {@code Sets.boundedCount(_, k)} in the postcondition/measure being
      * discharged — the bcount per-add law (Phase 21) is asserted for each of these {@code k}s at every set
@@ -383,6 +384,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             listElementTypes   : currentListElementTypes,
             scalarTypes        : currentScalarTypes,
             enumDomainSizes    : currentEnumDomainSizes,
+            ambiguousEnumNames : currentAmbiguousEnumNames,
             nestedSetValueTypes: currentNestedSetValueTypes,
             listNames          : currentListNames,
             objectParams       : currentObjectParams,
@@ -4389,7 +4391,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (t != null && (t.isEnum() || isEnumLikeType(t))) {
             String modelVal = sortedCe?.get(p.name)
-            return modelVal != null ? "${simpleEnumName(t)}.${modelVal}".toString() : 'null'
+            return modelVal != null ? "${reproEnumName(t)}.${modelVal}".toString() : 'null'
         }
         if (isSetType(t)) return nulled ? 'null' : '[] as Set'
         if (isMapType(t)) {   // Phase 485 — its entries, when the model (or the precondition's, repaired) gives them
@@ -4465,6 +4467,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Strip the inner-class binary prefix from an enum's nameWithoutPackage (mirrors Encoder.enumSortName). */
+    /** Phase 524 — an enum witness's type as a repro spells it: the simple name, or the dotted nested name
+     *  ({@code D.L}) when two of its module's enums share the simple name */
+    private static String reproEnumName(ClassNode t) {
+        ClassNode r = t.redirect()
+        ContractNormalizer.ambiguousEnumNames(r).contains(simpleEnumName(r)) ? r.nameWithoutPackage.replace('$', '.') : simpleEnumName(r)
+    }
+
     private static String simpleEnumName(ClassNode t) {
         ContractNormalizer.simpleEnumName(t)
     }
@@ -5595,6 +5604,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentCharNames = collectNamesOfType(node) { ClassNode t -> ClassHelper.isPrimitiveChar(t) }
         currentBoxedNames = collectNamesOfType(node) { ClassNode t -> (isIntElement(t) || isBooleanType(t)) && !ClassHelper.isPrimitiveType(t) }
         currentEnumDomainSizes = collectEnumDomainSizes(node)
+        currentAmbiguousEnumNames = ContractNormalizer.ambiguousEnumNames(node.declaringClass)   // Phase 524
         currentIsConstructor = (node instanceof ConstructorNode)
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
         currentObjectParams = collectObjectParams(node)
@@ -5963,6 +5973,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentCharNames = new HashSet<String>()
             currentBoxedNames = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
+            currentAmbiguousEnumNames = new HashSet<String>()
         }
     }
 

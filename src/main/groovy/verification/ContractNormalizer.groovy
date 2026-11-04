@@ -97,26 +97,51 @@ class ContractNormalizer {
         new SamRewriter(fns, biFns, enums, nested).transform(e)
     }
 
-    /** Phase 523 — a nested enum spelled through its outer classes ({@code C.L}, {@code A.B.L}) → its simple name
-     *  ({@code L}), the spelling the encoder reads as the enum (its sort is named by the simple name). Only for an
-     *  enum of {@code context}'s module whose simple name no other enum of the module shares (two would meet in one
-     *  sort), and whose outermost name isn't a parameter's ({@code b.L} is a value's property, not a class's). */
+    /** Phase 523 — a nested enum spelled through its outer classes ({@code C.L}, {@code A.B.L}) → the name the
+     *  encoder names its sort by: its simple name ({@code L}), or (Phase 524) its dotted name itself when two of the
+     *  module's enums share the simple name (a bare {@code L} two enums share is the encoder's to resolve, by the class
+     *  that writes it). Not when the outermost name is a parameter's ({@code b.L} is a value's property, not a class's). */
     static Map<String, String> nestedEnumSpellings(ClassNode context, Set<String> params) {
         Map<String, String> out = new HashMap<String, String>()
         if (context == null || context.module == null) return out
-        Map<String, Integer> simpleCount = new HashMap<String, Integer>()
-        for (ClassNode cn : context.module.classes) {
-            if (cn.isEnum()) simpleCount.put(simpleEnumName(cn), (simpleCount.get(simpleEnumName(cn)) ?: 0) + 1)
-        }
+        Set<String> ambiguous = ambiguousEnumNames(context)
         for (ClassNode cn : context.module.classes) {
             String n = cn.nameWithoutPackage
             if (!cn.isEnum() || !n.contains('$')) continue
             String simple = simpleEnumName(cn)
-            if (simpleCount.get(simple) != 1) continue
             if (params.contains(n.substring(0, n.indexOf('$')))) continue
-            out.put(n.replace('$', '.'), simple)
+            String dotted = n.replace('$', '.')
+            out.put(dotted, ambiguous.contains(simple) ? dotted : simple)
         }
         out
+    }
+
+    /** Phase 524 — the simple names two or more of {@code context}'s module's enums share ({@code C.L} and {@code D.L}
+     *  are both {@code L}): each such enum's sort is named by its dotted name instead. */
+    static Set<String> ambiguousEnumNames(ClassNode context) {
+        Set<String> out = new HashSet<String>()
+        if (context == null || context.module == null) return out
+        Set<String> seen = new HashSet<String>()
+        for (ClassNode cn : context.module.classes) {
+            if (cn.isEnum() && !seen.add(simpleEnumName(cn))) out.add(simpleEnumName(cn))
+        }
+        out
+    }
+
+    /** Phase 524 — the enum a bare {@code simple} names from {@code context}, as Groovy resolves it: an enum nested
+     *  in {@code context} or one of its outer classes, else the module's top-level one; by its dotted name
+     *  ({@code C.L}, or {@code L} for a top-level enum). Null when none does. */
+    static String resolveEnumName(ClassNode context, String simple) {
+        if (context == null || context.module == null || simple == null) return null
+        for (ClassNode c = context; c != null; c = c.outerClass) {
+            for (ClassNode cn : context.module.classes) {
+                if (cn.isEnum() && cn.name == c.name + '$' + simple) return cn.nameWithoutPackage.replace('$', '.')
+            }
+        }
+        for (ClassNode cn : context.module.classes) {
+            if (cn.isEnum() && cn.nameWithoutPackage == simple) return simple
+        }
+        null
     }
 
     /** The dotted spelling of a chain of plain names ({@code C.L}), or null when it's anything else. */
@@ -137,13 +162,16 @@ class ContractNormalizer {
     static Map<String, Integer> enumDomainSizes(ClassNode context) {
         Map<String, Integer> out = new LinkedHashMap<String, Integer>()
         if (context == null || context.module == null) return out
+        Set<String> ambiguous = ambiguousEnumNames(context)
         for (ClassNode cn : context.module.classes) {
             if (!cn.isEnum()) continue
             int count = countEnumConstants(cn)
             if (count <= 0) continue
             out.put(cn.nameWithoutPackage, count)
+            out.put(cn.nameWithoutPackage.replace('$', '.'), count)   // Phase 524 — the dotted name, an ambiguous one's sort
             String simple = simpleEnumName(cn)   // strips C$ from C$Color → Color (nested-class case)
-            if (simple != cn.nameWithoutPackage) out.put(simple, count)
+            // Phase 524 — not the simple name two enums share: the second's count overwrote the first's
+            if (simple != cn.nameWithoutPackage && !ambiguous.contains(simple)) out.put(simple, count)
         }
         out
     }
@@ -241,11 +269,12 @@ class ContractNormalizer {
         @Override
         Expression transform(Expression expr) {
             if (expr == null) return null
-            // Phase 523 — `C.L` (a nested enum through its outer class) → `L`, before the folds below look at it
+            // Phase 523 — `C.L` (a nested enum through its outer class) → `L`, before the folds below look at it;
+            // Phase 524 — or to the one name `D.L` when two enums share the simple name
             if (expr instanceof PropertyExpression && !nestedEnums.isEmpty()) {
-                String simple = nestedEnums.get(dottedName(expr))
-                if (simple != null) {
-                    VariableExpression v = new VariableExpression(simple)
+                String canonical = nestedEnums.get(dottedName(expr))
+                if (canonical != null) {
+                    VariableExpression v = new VariableExpression(canonical)
                     v.setSourcePosition(expr)
                     return v
                 }

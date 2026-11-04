@@ -98,7 +98,7 @@ class G564_p523_nested_enum_constant {
                         @Ensures({ result == 3 })
                         static int f(int n) { n }
                     }''')],
-        [group: G, name: "a simple name two enums share, not rewritten", expect: ["the precondition's 'a == C.L.A' is outside what the verifier models"],
+        [group: G, name: "a simple name two enums share, each its own (Phase 524)", ok: true,
          src: tc('''class C {
                         enum L { A, B }
                         static class D { enum L { X, Y } }
