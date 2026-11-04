@@ -172,13 +172,19 @@ class UomDslVerifyTest {
     }
 
     @Test
-    void nonTerminatingDivisorSkips() {
-        // Soundness boundary (Phase 143 posture): `1.m / 3.s` has SI magnitude 1/3, which Groovy/indriya *round* —
-        // the exact Real model would disagree (and a multiply-back could then "verify" a runtime-false fact). The
-        // dimension is fine (Speed), but the magnitude is non-terminating, so the comparison skips loudly.
-        String d = diagnostics(snippet('result == 1.m / 3.s', 'javax.measure.Quantity', '1.m / 3.s'))
+    void nonTerminatingDivisorOfIntegerValuesIsExact() {
+        // Phase 533: indriya keeps an integer value's quotient as an exact RationalNumber (1/3 m/s), and two
+        // RationalNumbers compare exactly, so `1.m / 3.s` is `1.m / 3.s` — it skipped through Phase 532.
+        assertNull(diagnostics(snippet('result == 1.m / 3.s', 'javax.measure.Quantity', '1.m / 3.s')))
+    }
+
+    @Test
+    void nonTerminatingDivisorOfADecimalSkips() {
+        // Soundness boundary: a BigDecimal value meets the reciprocal 1/3 as 34 digits (`1.5 m / 3 s` is
+        // 0.4999…95 m/s, measured), which the exact model would not see, so the comparison skips loudly.
+        String d = diagnostics(snippet('result == 1.5.m / 3.s', 'javax.measure.Quantity', '1.5.m / 3.s'))
         assertTrue(d?.contains('Skipped verification') || d?.contains('outside fragment'),
-            "expected a loud skip for a non-terminating divisor, got: $d")
+            "expected a loud skip for a decimal over a non-terminating divisor, got: $d")
     }
 
     // ── `mps` — a coherent Speed *suffix*, the clean way to state a speed in a contract (no `1.m/s` body-local) ──

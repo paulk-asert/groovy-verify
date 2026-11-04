@@ -116,6 +116,13 @@ interface EncodingPack {
         TheoryApi.NO_MATCH
     }
 
+    /** Try to translate a cast {@code (T) x} / {@code x as T} (same tri-state as {@link #translateCall}). Dispatched from
+     *  the core's cast translator before it treats the cast as transparent (Phase 533 — a JSR 385 value read out
+     *  {@code as BigDecimal} converts a RationalNumber to 34 digits). */
+    default Object translateCast(TheoryApi api, org.codehaus.groovy.ast.expr.CastExpression ce) {
+        TheoryApi.NO_MATCH
+    }
+
     /** True iff {@code e} is a pack-domain value that scalar classifiers must not claim — e.g. a JSR 385
      *  {@code quantity / quantity} is Quantity.divide, not BigDecimal division (so no Real classification
      *  and no divide-by-zero obligation on the divisor). Static context: no {@link TheoryApi} available. */

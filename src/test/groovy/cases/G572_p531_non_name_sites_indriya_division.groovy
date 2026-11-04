@@ -79,7 +79,7 @@ class G572_p531_non_name_sites_indriya_division {
         [group: G, name: "a list literal's subscript owes nothing", ok: true,
          src: tc("class C { @Ensures({ [1, 2, 3][1] == 2 }) static int f() { 1 } }")],
         // ---- indriya's division ----
-        [group: G, name: "q.divide(3) read in metres is outside the fragment: indriya reads 1 / 3 as 34 digits", expect: 'outside fragment',
+        [group: G, name: "q.divide(3) read in metres is refuted: indriya reads 1 / 3 as 34 digits, so · 3 isn't 1 (Phase 533)", expect: 'Cannot prove postcondition',
          src: uom('result * 3 == 1', 'Quantities.getQuantity(1, METRE).divide(3).to(METRE).getValue() as BigDecimal')],
         [group: G, name: "a BigDecimal value's q.divide(3).multiply(3) is outside the fragment: 1.4999…85 at runtime", expect: 'outside fragment',
          src: uom('result == 1.5', 'Quantities.getQuantity(1.5, METRE).divide(3).multiply(3).to(METRE).getValue() as BigDecimal')],

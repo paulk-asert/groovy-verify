@@ -135,10 +135,10 @@ static Quantity speed() {
 The `/` subtracts the dimension exponents (Length − Time = Speed) and divides the magnitudes, threading through the
 locals `d` and `s`; the verifier confirms the computed speed *is* the `1.mps` literal, on both layers. A wrong speed
 (`2.mps`) refutes on magnitude; a plain length (`result == 1.m`) refutes on dimension — the `Quantity<Speed>` cast
-the erased generics never re-check. (Honest boundary: a non-terminating divisor like `1.m / 3.s`, SI magnitude ⅓,
-skips rather than risk an exact-arithmetic proof the runtime wouldn't honour. Indriya keeps an integer quotient as
-an exact rational, but a `BigDecimal` value meets the reciprocal rounded to 34 digits — `1.5 m / 3 · 3` is
-`1.4999…85` — and reading a non-terminating value out rounds it to 34 digits too, measured on indriya 2.2.4.)
+the erased generics never re-check. A non-terminating divisor like `1.m / 3.s` is fine too: indriya keeps an integer
+value's quotient as an exact rational (⅓ m/s), and two rationals compare exactly. (Honest boundary: a `BigDecimal`
+value meets the reciprocal rounded to 34 digits — `1.5.m / 3.s · 3.s` is `1.4999…85 m` — so that skips, and reading a
+non-terminating rational out `as BigDecimal` gives its 34 digits, measured on indriya 2.2.4.)
 
 Because it needs the extension module on the classpath, this lives in its own
 [`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a
@@ -300,9 +300,9 @@ named unit divides by a now-*symbolic* scale, so that direction skips — like a
   runtime, so the verifier recovers it from the declared types), and a plain `(l, m, t)` record field in the bespoke
   type (you write the exponents; the verifier reads them as data). The "propagate a label, check it at a forbidden
   point" shape never changes — only where the label is stored does.
-- **Honest skips** — affine units (°C / °F carry an *offset*, not a pure scale), a read-out by a *non-terminating*
-  divisor (Groovy rounds it — unsound to model exactly), and any unit or kind outside the curated tables, all skip
-  loudly rather than guess.
+- **Honest skips** — affine units (°C / °F carry an *offset*, not a pure scale), a `BigDecimal` value that a
+  RationalNumber meets inexactly (a non-terminating divisor, or a mile/foot conversion: indriya rounds it to 34
+  digits), and any unit or kind outside the curated tables, all skip loudly rather than guess.
 
 The full capability rows are in **[CAPABILITIES.md](../CAPABILITIES.md)** (Phases 131–133, 142, 142b, 142c,
 143–148, 151, 152 — the last three the experimental DSL).

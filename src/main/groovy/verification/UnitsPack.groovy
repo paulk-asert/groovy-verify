@@ -79,7 +79,7 @@ class UnitsPack implements EncodingPack {
     @Override
     Object translateCall(TheoryApi api, MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         if (m == 'getValue' && args.isEmpty()) {
-            Object v = new Reader(api).quantityValueTerm(recv)
+            Object v = new Reader(api).valueTerm(recv, false)
             if (v != null) return v
         }
         TheoryApi.NO_MATCH
@@ -90,10 +90,27 @@ class UnitsPack implements EncodingPack {
     @Override
     Object translateProperty(TheoryApi api, PropertyExpression pe, Expression obj, String prop) {
         if (prop == 'value' && Reader.isQuantityTyped(obj)) {
-            Object v = new Reader(api).quantityValueTerm(obj)
+            Object v = new Reader(api).valueTerm(obj, false)
             if (v != null) return v
         }
         TheoryApi.NO_MATCH
+    }
+
+    /** Phase 533 — {@code X.getValue() as BigDecimal} (or {@code X.value as BigDecimal}): Groovy converts a RationalNumber
+     *  to its 34-digit {@code bigDecimalValue()}, where a bare read-out meets {@code ==} as {@code equals}. */
+    @Override
+    Object translateCast(TheoryApi api, CastExpression ce) {
+        if (ce.type?.name != 'java.math.BigDecimal') return TheoryApi.NO_MATCH
+        Expression inner = ce.expression
+        Expression recv = null
+        if (inner instanceof MethodCallExpression && ((MethodCallExpression) inner).methodAsString == 'getValue' &&
+                Reader.argList((MethodCallExpression) inner).isEmpty()) recv = ((MethodCallExpression) inner).objectExpression
+        if (inner instanceof PropertyExpression && ((PropertyExpression) inner).propertyAsString == 'value' &&
+                Reader.isQuantityTyped(((PropertyExpression) inner).objectExpression)) recv = ((PropertyExpression) inner).objectExpression
+        if (recv == null) return TheoryApi.NO_MATCH
+        Reader r = new Reader(api)
+        if (r.kind(recv) == null) return TheoryApi.NO_MATCH          // not a modelled quantity: the bare read-out decides
+        r.valueTerm(recv, true)
     }
 
     /** Quantity-to-quantity {@code ==} / {@code !=} (Phase 151/159). Sound only by consulting BOTH layers:
@@ -124,6 +141,7 @@ class UnitsPack implements EncodingPack {
         Object mL = r.siMagnitude(be.leftExpression)
         Object mR = r.siMagnitude(be.rightExpression)
         if (mL == null || mR == null) return null
+        if (!r.comparesExactly(be.leftExpression, be.rightExpression)) return null      // Phase 533 — a 34-digit compare
         Object eq = api.session.eq(mL, mR)
         opType == Types.COMPARE_EQUAL ? eq : api.session.not(eq)
     }
@@ -525,13 +543,6 @@ class UnitsPack implements EncodingPack {
                   'java.lang.Double', 'java.lang.Float', 'java.math.BigDecimal', 'java.math.BigInteger', 'java.lang.Number']
         }
 
-        /**
-         * The SI magnitude (a Real term) of a Quantity-valued expression, recovered from its construction:
-         * {@code getQuantity(v, U)} is {@code v·scale(U)}, {@code to(U)} is magnitude-invariant, {@code add}/{@code
-         * subtract} combine same-dimension magnitudes (the dimension match is what STC already enforces on these),
-         * and {@code multiply}/{@code divide} take a Quantity or a scalar. A Quantity whose construction isn't
-         * visible (a parameter) → null, i.e. out of scope.
-         */
         /** Phase 532 — the exponent vector of {@code q.asType(K)}'s kind class {@code K}, or null when {@code K} isn't
          *  a curated {@code javax.measure.quantity} kind. indriya's {@code asType} checks the unit's dimension against
          *  {@code K} (throwing on a mismatch) and returns the quantity itself, so magnitude and unit carry through. */
@@ -539,9 +550,22 @@ class UnitsPack implements EncodingPack {
             k instanceof ClassExpression ? QUANTITY_KIND.get(((ClassExpression) k).type.name) : null
         }
 
-        private Object siMagnitude(Expression e) {
+        /**
+         * The SI magnitude (a Real term) of a Quantity-valued expression, recovered from its construction, gated on
+         * {@link #kind}: the Real is indriya's exact value only where the kind analysis says no rounding occurs on the
+         * way (Phase 533). Null = out of scope, a loud skip.
+         */
+        Object siMagnitude(Expression e) { kind(e) == null ? null : siMagnitudeRaw(e) }
+
+        /**
+         * The exact SI magnitude: {@code getQuantity(v, U)} is {@code v·scale(U)}, {@code to(U)} keeps it, {@code add}/
+         * {@code subtract} combine same-dimension magnitudes (STC enforces the match), and {@code multiply}/{@code divide}
+         * take a Quantity or a scalar. Exact rational arithmetic throughout: whether that is what indriya computes is
+         * {@link #kind}'s question, so callers reach this only through {@link #siMagnitude}.
+         */
+        private Object siMagnitudeRaw(Expression e) {
             Expression src = quantitySourceOf(e)
-            if (src != null) return siMagnitude(src)
+            if (src != null) return siMagnitudeRaw(src)
             if (isGetQuantityCall(e)) {
                 List<Expression> a = callArgs(e)
                 if (a.size() != 2) return null
@@ -554,29 +578,11 @@ class UnitsPack implements EncodingPack {
                 MethodCallExpression mc = (MethodCallExpression) e
                 String m = mc.methodAsString
                 List<Expression> a = argList(mc)
-                if (m == 'to' && a.size() == 1) return siMagnitude(mc.objectExpression)         // unit relabel: magnitude invariant
+                if (m == 'to' && a.size() == 1) return siMagnitudeRaw(mc.objectExpression)      // unit relabel: magnitude invariant
                 if (m == 'asType' && a.size() == 1)                                               // Phase 532 — returns itself
-                    return asTypeKind(a.get(0)) != null && dimensionOf(e) != null ? siMagnitude(mc.objectExpression) : null
+                    return asTypeKind(a.get(0)) != null && dimensionOf(e) != null ? siMagnitudeRaw(mc.objectExpression) : null
                 if (m in ['add', 'subtract', 'multiply', 'divide'] && a.size() == 1) {
-                    Object recvM = siMagnitude(mc.objectExpression)
-                    if (recvM == null) return null
-                    Expression arg = a.get(0)
-                    Object other
-                    if (m == 'add' || m == 'subtract') {
-                        other = siMagnitude(arg)                  // add/subtract take a same-dimension Quantity (STC-enforced)
-                    } else {
-                        Object q = siMagnitude(arg)               // multiply/divide: a Quantity if we can model it,
-                        other = q != null ? q : (isNumericScalar(arg) ? api.asRealValue(arg) : null)   // else a numeric scalar
-                    }
-                    if (other == null) return null
-                    if (m == 'add')      return api.session.plus(recvM, other)
-                    if (m == 'subtract') return api.session.minus(recvM, other)
-                    if (m == 'multiply') return api.session.times(recvM, other)
-                    // Phase 531 — Quantity.divide is indriya's, not Groovy's: x · reciprocal(d), exact as a rational but
-                    // rounded to 34 digits once a BigDecimal value meets it (`1.5 m / 3 · 3` is 1.4999…85) and at a
-                    // read-out (`1 m / 3` reads 0.333…3). Exact only for the DSL `/`'s divisor: closed and terminating.
-                    if (!isTerminatingQuantityDivisor(arg)) return null
-                    return api.session.realDiv(recvM, other)                                          // divide
+                    return combineRaw(m, siMagnitudeRaw(mc.objectExpression), a.get(0))
                 }
             }
             // Phase 148 (experimental DSL) — a curated unit-suffix property `v.km` is `v · scale`, and the DSL `+`/`-`
@@ -591,118 +597,207 @@ class UnitsPack implements EncodingPack {
                     return (sc.compareTo(BigDecimal.ONE) == 0) ? vR : api.session.times(vR, api.session.realLit(TheoryApi.rationalOf(sc)))
                 }
             }
-            if (e instanceof BinaryExpression) {
+            // Phase 150/152 — the DSL `+`/`-` (add/subtract), `*` (Quantity.multiply) and `/` (the `div` extension, i.e.
+            // Quantity.divide): the method forms' magnitudes. `1.km * 1.km` is an area of SI magnitude 1e6 (m²).
+            if (e instanceof BinaryExpression && isQuantityExpr(e)) {
                 BinaryExpression be = (BinaryExpression) e
-                String op = be.operation.text
-                if ((op == '+' || op == '-') && isQuantityExpr(e)) {
-                    Object l = siMagnitude(be.leftExpression)
-                    Object r = siMagnitude(be.rightExpression)
-                    if (l == null || r == null) return null
-                    return op == '+' ? api.session.plus(l, r) : api.session.minus(l, r)
-                }
-                // Phase 150/152 — the DSL `*` (Quantity.multiply) and `/` (Quantity.divide): magnitudes multiply/divide.
-                // `1.km * 1.km` is an *area* whose SI magnitude is 1000·1000 = 1e6 (m²); `1.m / 1.s` is a *speed* whose SI
-                // magnitude is 1 (m/s). A scalar factor multiplies/divides the magnitude. (The dimension the operator
-                // produces is invisible to the magnitude alone — the dimension reader / the .value read-out make it
-                // observable to the verifier.)
-                if ((op == '*' || op == '/') && isQuantityExpr(e)) {
-                    Object l = siMagnitude(be.leftExpression)
-                    if (l == null && isNumericScalar(be.leftExpression)) l = api.asRealValue(be.leftExpression)
-                    Object r = siMagnitude(be.rightExpression)
-                    if (r == null && isNumericScalar(be.rightExpression)) r = api.asRealValue(be.rightExpression)
-                    if (l == null || r == null) return null
-                    if (op == '*') return api.session.times(l, r)
-                    // Phase 143 posture: exact Real division is sound only for a terminating divisor (Groovy rounds the
-                    // rest, e.g. `/3`). The divisor here is a *quantity's magnitude*, not a syntactic literal, so guard on
-                    // the right operand's scale being a terminating decimal — a unit scale (1, 1000, 1609.344) always is.
-                    if (!isTerminatingQuantityDivisor(be.rightExpression)) return null
-                    return api.session.realDiv(l, r)
-                }
+                String m = DSL_OP.get(be.operation.text)
+                if (m != null) return combineRaw(m, siMagnitudeRaw(be.leftExpression), be.rightExpression)
             }
             null
         }
 
-        /** Phase 152 — true when the divisor {@code e}'s SI magnitude is a *closed terminating decimal*, so exact Real
-         *  division is sound (Groovy/indriya round a non-terminating quotient, which the exact Real model would not — and
-         *  a later multiply-back could then "verify" a runtime-false contract, the Phase 143 hazard). We compute the full
-         *  magnitude (value·scale, including the unit scale — so {@code 1.mile} = 1609.344, which has a factor of 3, is
-         *  correctly rejected) and test it has only the prime factors 2 and 5; a symbolic divisor (a parameter) → false. */
-        private boolean isTerminatingQuantityDivisor(Expression e) {
-            BigDecimal m = closedQuantityMagnitude(e)
-            return m != null && isExactIndriyaDivisor(m)
+        /** The DSL operators' method forms (the extension module's plus/minus/div, and Quantity's own multiply). */
+        private static final Map<String, String> DSL_OP = ['+': 'add', '-': 'subtract', '*': 'multiply', '/': 'divide']
+
+        /** {@code recv.m(arg)}'s exact SI magnitude from the receiver's: the argument is a Quantity if it reads as one,
+         *  else (multiply/divide only) a numeric scalar. */
+        private Object combineRaw(String m, Object recvM, Expression arg) {
+            if (recvM == null) return null
+            Object other = siMagnitudeRaw(arg)
+            if (other == null && (m == 'multiply' || m == 'divide') && isNumericScalar(arg)) other = api.asRealValue(arg)
+            if (other == null) return null
+            if (m == 'add')      return api.session.plus(recvM, other)
+            if (m == 'subtract') return api.session.minus(recvM, other)
+            if (m == 'multiply') return api.session.times(recvM, other)
+            return api.session.realDiv(recvM, other)                       // a closed non-zero divisor: kind's guard
         }
 
-        /** Phase 531 — indriya divides by multiplying with the divisor's reciprocal, a RationalNumber that a BigDecimal
-         *  value meets as {@code bigDecimalValue()}, rounded to {@code Calculus.MATH_CONTEXT} (DECIMAL128, 34 digits).
-         *  So the quotient is exact iff the divisor terminates AND its reciprocal fits 34 significant digits (measured,
-         *  indriya 2.2.4: {@code 1.5 m / 2^48 · 2^48} is 1.5, {@code / 2^49 · 2^49} is 1.49999…96, reciprocal precisions
-         *  34 and 35). */
-        private static boolean isExactIndriyaDivisor(BigDecimal m) {
-            if (!isTerminatingDecimal(m)) return false
-            BigDecimal recip = BigDecimal.ONE.divide(m.abs())          // exact: m terminates
-            recip.precision() <= 34
+        // ==================== Phase 533 — indriya's number system ====================
+
+        /**
+         * What indriya 2.2.4 holds a quantity's value as, and so whether the exact Real is what it computes (measured).
+         * Its number system keeps Integer, Long, BigInteger and RationalNumber exact (overflow widens, a division
+         * multiplies by the divisor's exact reciprocal, a unit conversion by an exact rational factor), and narrows an
+         * integral result to an integer type. A BigDecimal is exact too, until a RationalNumber meets it: the rational
+         * is then read as {@code bigDecimalValue()}, rounded to 34 significant digits. And a BigDecimal's arithmetic in
+         * a non-SI unit goes to the SI unit and back, so a factor whose reciprocal doesn't terminate (mile, foot) rounds
+         * it: {@code 1.5 mile + 0 mile} is 1.4999…948. Fields: {@code dec}, the value may be a BigDecimal; {@code rat},
+         * it may be a non-integral RationalNumber; {@code cur}/{@code si}, its exact value in its unit and in SI when
+         * closed over literals; {@code scale}, its unit's scale to SI when known.
+         */
+        @CompileStatic
+        static final class Kind {
+            boolean dec
+            boolean rat
+            Rat cur
+            Rat si
+            Rat scale
         }
 
-        /** The SI magnitude of a Quantity (or scalar) expression as a literal {@link BigDecimal}, when it's fully closed
-         *  over numeric literals and curated units; null if anything is symbolic (a name, a parameter). The BigDecimal
-         *  twin of {@link #siMagnitude}, used only by the division soundness guard. */
-        private BigDecimal closedQuantityMagnitude(Expression e) {
-            if (e == null) return null
+        /** The value's kind, or null where indriya may round (or the expression isn't a modelled quantity). */
+        Kind kind(Expression e) {
             Expression src = quantitySourceOf(e)
-            if (src != null) return closedQuantityMagnitude(src)        // a quantity local resolves to its RHS
-            if (e instanceof UnaryMinusExpression) {
-                BigDecimal inner = closedQuantityMagnitude(((UnaryMinusExpression) e).expression)
-                return inner == null ? null : inner.negate()
-            }
-            if (e instanceof ConstantExpression) {
-                Object v = ((ConstantExpression) e).value
-                if (!(v instanceof Number) || v instanceof Double || v instanceof Float) return null
-                try { return new BigDecimal(v.toString()) } catch (Exception ignored) { return null }
+            if (src != null) return kind(src)
+            if (isGetQuantityCall(e)) {
+                List<Expression> a = callArgs(e)
+                if (a.size() != 2) return null
+                BigDecimal s = scaleOf(a.get(1))
+                return s == null ? null : leaf(a.get(0), Rat.of(s))
             }
             if (e instanceof PropertyExpression) {
                 PropertyExpression pe = (PropertyExpression) e
                 BigDecimal sc = DSL_SUFFIX_SCALE.get(pe.propertyAsString)
-                if (sc == null) return null
-                BigDecimal v = closedQuantityMagnitude(pe.objectExpression)
-                return v == null ? null : v.multiply(sc)
+                if (sc != null && isQuantityExpr(pe)) return leaf(pe.objectExpression, Rat.of(sc))
+                return null
             }
-            // Phase 531 — the method forms' divisor: `getQuantity(v, U)` is v · scale(U), and `to(U)` keeps the magnitude
-            if (isGetQuantityCall(e)) {
-                List<Expression> a = callArgs(e)
-                if (a.size() != 2) return null
-                BigDecimal sc = scaleOf(a.get(1))
-                BigDecimal v = closedQuantityMagnitude(a.get(0))
-                return sc == null || v == null ? null : v.multiply(sc)
-            }
-            if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'to' &&
-                    argList((MethodCallExpression) e).size() == 1) {
-                return closedQuantityMagnitude(((MethodCallExpression) e).objectExpression)
-            }
-            if (e instanceof BinaryExpression) {
-                BinaryExpression be = (BinaryExpression) e
-                String op = be.operation.text
-                BigDecimal l = closedQuantityMagnitude(be.leftExpression)
-                BigDecimal r = closedQuantityMagnitude(be.rightExpression)
-                if (l == null || r == null) return null
-                switch (op) {
-                    case '+': return l.add(r)
-                    case '-': return l.subtract(r)
-                    case '*': return l.multiply(r)
-                    case '/': return (r.signum() == 0 || !isExactIndriyaDivisor(r)) ? null : l.divide(r)
+            if (e instanceof MethodCallExpression) {
+                MethodCallExpression mc = (MethodCallExpression) e
+                String m = mc.methodAsString
+                List<Expression> a = argList(mc)
+                if (a.size() != 1) return null
+                if (m == 'to') {
+                    BigDecimal t = scaleOf(a.get(0))
+                    return t == null ? null : converted(kind(mc.objectExpression), Rat.of(t))
                 }
+                if (m == 'asType') return asTypeKind(a.get(0)) != null && dimensionOf(e) != null ? kind(mc.objectExpression) : null
+                if (m in ['add', 'subtract', 'multiply', 'divide']) return combined(m, kind(mc.objectExpression), a.get(0))
+                return null
+            }
+            if (e instanceof BinaryExpression && isQuantityExpr(e)) {
+                BinaryExpression be = (BinaryExpression) e
+                String m = DSL_OP.get(be.operation.text)
+                if (m != null) return combined(m, kind(be.leftExpression), be.rightExpression)
             }
             null
         }
 
-        /** A BigDecimal whose unscaled integer has only the prime factors 2 and 5 — i.e. a *terminating* decimal, safe
-         *  as an exact Real divisor (the value-level twin of {@link #isTerminatingDivisor}'s expression test). */
-        private static boolean isTerminatingDecimal(BigDecimal bd) {
-            if (bd == null || bd.signum() == 0) return false
-            BigInteger u = bd.unscaledValue().abs()
-            BigInteger two = BigInteger.valueOf(2), five = BigInteger.valueOf(5)
-            while (u.mod(two).signum() == 0) u = u.divide(two)
-            while (u.mod(five).signum() == 0) u = u.divide(five)
-            u.equals(BigInteger.ONE)
+        /** {@code getQuantity(v, U)}: an integer-typed value is held exactly, a BigDecimal as itself (an integral one is
+         *  narrowed, which the {@code dec} flag over-approximates); a double or an unknown number type is out of scope. */
+        private Kind leaf(Expression v, Rat scale) {
+            Boolean dec = isDecValue(v)
+            if (dec == null || api.asRealValue(v) == null) return null
+            Rat c = closedValue(v)
+            new Kind(dec: dec, rat: false, cur: c, si: c?.times(scale), scale: scale)
+        }
+
+        /** {@code q.to(U)}: the value times the direct factor scale(q)/scale(U), an exact rational; a BigDecimal meets it
+         *  as 34 digits ({@code 1.5 m} to miles is 0.000932…7730, measured), so it must convert exactly. */
+        private Kind converted(Kind k, Rat target) {
+            if (k == null || k.scale == null) return null
+            Rat f = k.scale.div(target)
+            if (k.dec && !f.bdExact()) return null
+            new Kind(dec: k.dec, rat: k.rat || (!f.isInteger() && !surelyBigDecimal(k)), cur: k.cur?.times(f), si: k.si, scale: target)
+        }
+
+        /** {@code recv.m(arg)} for add/subtract (a Quantity argument) and multiply/divide (a Quantity or a scalar). */
+        private Kind combined(String m, Kind r, Expression arg) {
+            if (r == null) return null
+            Kind q = kind(arg)
+            if (m == 'add' || m == 'subtract') return q == null ? null : sum(r, q, m == 'add')
+            if (q != null) return m == 'multiply' ? product(r, q) : quotient(r, q)
+            if (siMagnitudeRaw(arg) != null || !isNumericScalar(arg)) return null      // an unmodelled quantity argument
+            scaled(r, arg, m == 'multiply')
+        }
+
+        /** add/subtract: both to SI, combined, and back to the receiver's unit (measured: {@code 1.5 mile + 0 m} and
+         *  {@code + 0 mile} alike are 1.4999…948). A BigDecimal needs every factor on that route to convert exactly,
+         *  and a RationalNumber meeting it must read exactly at 34 digits. */
+        private Kind sum(Kind a, Kind b, boolean plus) {
+            boolean dec = a.dec || b.dec
+            if (dec && !(decimalScale(a.scale) && decimalScale(b.scale) && meetsExactly(a) && meetsExactly(b))) return null
+            boolean rat = a.rat || b.rat || a.scale == null || b.scale == null || !(a.scale.isOne() && b.scale.isOne())
+            Rat si = (a.si != null && b.si != null) ? (plus ? a.si.plus(b.si) : a.si.minus(b.si)) : null
+            Rat cur = (si != null && a.scale != null) ? si.div(a.scale) : null
+            new Kind(dec: dec, rat: rat, cur: cur, si: si, scale: a.scale)
+        }
+
+        /** multiply/divide by a scalar: to SI, scaled, and back (measured: {@code 1.5 mile · 2} is 2.9999…). A divisor is
+         *  closed and non-zero (a zero throws), and its reciprocal is a RationalNumber even of a BigDecimal. */
+        private Kind scaled(Kind a, Expression c, boolean mul) {
+            Boolean cdec = isDecValue(c)
+            if (cdec == null) return null
+            Rat cv = closedValue(c)
+            if (!mul && (cv == null || cv.isZero())) return null
+            Rat factor = mul ? cv : cv.inverse()
+            boolean dec = a.dec || (mul && cdec)
+            if (dec) {
+                if (!decimalScale(a.scale) || !meetsExactly(a)) return null
+                if (!mul && !factor.bdExact()) return null      // the reciprocal meets the BigDecimal as 34 digits
+            }
+            boolean rat = a.rat || a.scale == null || !a.scale.isOne() || (!mul && !factor.isInteger() && !surelyBigDecimal(a))
+            new Kind(dec: dec, rat: rat, cur: (a.cur != null && factor != null) ? a.cur.times(factor) : null,
+                     si: (a.si != null && factor != null) ? a.si.times(factor) : null, scale: a.scale)
+        }
+
+        /** multiply by a Quantity: the values multiply, no conversion (measured: {@code 1.5 mile · 1 s} is 1.5). */
+        private Kind product(Kind a, Kind b) {
+            boolean dec = a.dec || b.dec
+            if (dec && !(meetsExactly(a) && meetsExactly(b))) return null
+            new Kind(dec: dec, rat: a.rat || b.rat,
+                     cur: (a.cur != null && b.cur != null) ? a.cur.times(b.cur) : null,
+                     si: (a.si != null && b.si != null) ? a.si.times(b.si) : null,
+                     scale: (a.scale != null && b.scale != null) ? a.scale.times(b.scale) : null)
+        }
+
+        /** divide by a Quantity: times the reciprocal of its value, a RationalNumber even of a BigDecimal (measured:
+         *  {@code 1 m / 1.5 s} is 2/3), so the divisor's value is closed and non-zero. */
+        private Kind quotient(Kind a, Kind b) {
+            if (b.cur == null || b.cur.isZero() || b.si == null || b.scale == null) return null
+            Rat inv = b.cur.inverse()
+            if (a.dec && !(inv.bdExact() && meetsExactly(a))) return null
+            new Kind(dec: a.dec, rat: a.rat || (!inv.isInteger() && !surelyBigDecimal(a)), cur: a.cur?.times(inv), si: a.si?.div(b.si),
+                     scale: a.scale?.div(b.scale))
+        }
+
+        /** A value that may be a RationalNumber meets a BigDecimal exactly only when it reads exactly at 34 digits —
+         *  known only when closed (a symbolic one may be any rational). */
+        private static boolean meetsExactly(Kind k) {
+            !k.rat || (k.cur != null && k.si != null && k.cur.bdExact() && k.si.bdExact())
+        }
+
+        /** A closed non-integral BigDecimal: one a RationalNumber factor meets as 34 digits, leaving a BigDecimal (or,
+         *  integral, an integer), never a RationalNumber (measured: {@code 1.5 m / 2^48} is a BigDecimal). An integral
+         *  one was narrowed to an integer, which the factor turns into a RationalNumber ({@code 3.0 m / 4} is 3/4). */
+        private static boolean surelyBigDecimal(Kind k) { k.dec && !k.rat && k.cur != null && !k.cur.isInteger() }
+
+        /** A unit scale a BigDecimal can go to SI and back through exactly: it and its reciprocal read exactly as 34
+         *  digits (the metric prefixes and coherent units; not the mile, yard, foot or inch). */
+        private static boolean decimalScale(Rat s) { s != null && !s.isZero() && s.bdExact() && s.inverse().bdExact() }
+
+        /** True for an integer-typed value, false for a BigDecimal, null for anything else (a double, an unknown type). */
+        private static Boolean isDecValue(Expression v) {
+            if (v instanceof UnaryMinusExpression) return isDecValue(((UnaryMinusExpression) v).expression)
+            if (v instanceof ConstantExpression) {
+                Object c = ((ConstantExpression) v).value
+                if (c instanceof Integer || c instanceof Long || c instanceof BigInteger || c instanceof Short || c instanceof Byte) return false
+                return c instanceof BigDecimal ? Boolean.TRUE : null
+            }
+            ClassNode t = (ClassNode) v?.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
+            if (t == null) { try { t = v?.getType() } catch (ignored) {} }
+            String n = t?.name
+            if (n in ['int', 'long', 'short', 'byte', 'java.lang.Integer', 'java.lang.Long', 'java.lang.Short',
+                      'java.lang.Byte', 'java.math.BigInteger']) return false
+            n == 'java.math.BigDecimal' ? Boolean.TRUE : null
+        }
+
+        /** A numeric literal (or its negation) as an exact rational; null when symbolic. */
+        private static Rat closedValue(Expression v) {
+            if (v instanceof UnaryMinusExpression) { Rat r = closedValue(((UnaryMinusExpression) v).expression); return r?.negate() }
+            if (!(v instanceof ConstantExpression)) return null
+            Object c = ((ConstantExpression) v).value
+            if (!(c instanceof Number) || c instanceof Double || c instanceof Float) return null
+            Rat.of(new BigDecimal(c.toString()))
         }
 
         /** Phase 148 — true when {@code e}'s (STC-inferred) type is {@code javax.measure.Quantity} — the gate that
@@ -746,55 +841,96 @@ class UnitsPack implements EncodingPack {
             return isNumericScalar(r)
         }
 
-        /** Phase 148 — the scale of an expression's *current* unit, for a getValue read-out: a unit-suffix property's
-         *  scale, a {@code to(U)} / {@code getQuantity(_, U)}'s unit, or (for the DSL `+`/`-` and `add`/`subtract`) the
-         *  receiver's unit, which those keep. {@code value-in-unit = siMagnitude / currentUnitScale}. */
-        private BigDecimal currentUnitScale(Expression e) {
-            Expression src = quantitySourceOf(e)
-            if (src != null) return currentUnitScale(src)
-            if (e instanceof PropertyExpression) {
-                BigDecimal sc = DSL_SUFFIX_SCALE.get(((PropertyExpression) e).propertyAsString)
-                if (sc != null) return sc
+        /**
+         * {@code X.getValue()} (or the property {@code X.value}) as a Real: the value in X's unit. Phase 533 — what the
+         * read-out is depends on indriya's number type. A bare read-out ({@code asBigDecimal} false) meets Groovy's
+         * {@code ==}, which on a RationalNumber (not Comparable) is {@code equals}: {@code 1 m / 4}'s value {@code == 0.25}
+         * is false (measured), so a value that may be a non-integral RationalNumber skips. Under {@code as BigDecimal} a
+         * RationalNumber reads as its 34 significant digits ({@code 10 km / 3} in metres is 3333.333…3), exactly
+         * computed when closed.
+         */
+        Object valueTerm(Expression recv, boolean asBigDecimal) {
+            Kind k = kind(recv)
+            if (k == null || k.scale == null || k.scale.isZero()) return null
+            Object mag = siMagnitudeRaw(recv)
+            if (mag == null) return null
+            Object term = k.scale.isOne() ? mag : api.session.realDiv(mag, api.session.realLit(k.scale.smt()))
+            if (k.cur != null && k.cur.isInteger()) return term                 // narrowed to an integer type
+            if (!asBigDecimal) return k.rat ? null : term                       // a RationalNumber's == is equals
+            if (k.cur != null) {
+                if (k.cur.bdExact()) return term
+                if (!k.dec) return api.session.realLit(Rat.of(k.cur.round34()).smt())
             }
-            if (e instanceof BinaryExpression) {
-                BinaryExpression be = (BinaryExpression) e
-                String op = be.operation.text
-                if (op == '+' || op == '-') return currentUnitScale(be.leftExpression)
-                // Phase 150/152 — a product/quotient's current unit is the product/quotient of the operands' units
-                // (km · km = km², scale 1e6; m / s = m·s⁻¹, scale 1), so `(1.km * 1.km).value` reads back 1e6/1e6 = 1 and
-                // `(1.m / 1.s).value` reads back 1. A scalar factor carries unit-scale 1.
-                if (op == '*' || op == '/') {
-                    BigDecimal l = currentUnitScale(be.leftExpression)
-                    if (l == null && isNumericScalar(be.leftExpression)) l = 1.0G
-                    BigDecimal r = currentUnitScale(be.rightExpression)
-                    if (r == null && isNumericScalar(be.rightExpression)) r = 1.0G
-                    if (l == null || r == null) return null
-                    if (op == '*') return l * r
-                    return (r.signum() == 0 || !isTerminatingDecimal(r)) ? null : l.divide(r)
-                }
-            }
-            if (e instanceof MethodCallExpression) {
-                MethodCallExpression mc = (MethodCallExpression) e
-                List<Expression> a = argList(mc)
-                if (mc.methodAsString == 'to' && a.size() == 1) return scaleOf(a.get(0))
-                if (mc.methodAsString in ['add', 'subtract'] && a.size() == 1) return currentUnitScale(mc.objectExpression)
-                if (mc.methodAsString == 'asType' && a.size() == 1 && asTypeKind(a.get(0)) != null)
-                    return currentUnitScale(mc.objectExpression)                                  // Phase 532 — same unit
-            }
-            if (isGetQuantityCall(e)) {
-                List<Expression> a = callArgs(e)
-                if (a.size() == 2) return scaleOf(a.get(1))
-            }
-            null
+            k.rat ? null : term
         }
 
-        /** {@code X.getValue()} (or the property `X.value`) as a Real — the SI magnitude read back in X's *current*
-         *  unit, i.e. {@code siMagnitude(X) / currentUnitScale(X)}. Modelled only when both are syntactically known
-         *  (a {@code to(U)} / {@code getQuantity(_, U)} top, or the experimental DSL forms); else null (skips). */
-        private Object quantityValueTerm(Expression recv) {
-            Object mag = siMagnitude(recv)
-            BigDecimal s = currentUnitScale(recv)
-            if (mag == null || s == null) return null
-            return (s.compareTo(BigDecimal.ONE) == 0) ? mag : api.session.realDiv(mag, api.session.realLit(TheoryApi.rationalOf(s)))
-        }    }
+        /** Phase 533 — whether quantity {@code ==} between {@code l} and {@code r} compares exactly. Two values that are
+         *  never BigDecimals are exact rationals, compared exactly (measured: {@code 1 m / 3} isn't 0.333…3 / 1). With a
+         *  BigDecimal side, indriya converts the argument into the receiver's unit and reads a RationalNumber at 34
+         *  digits ({@code 1 m / 3 == 0.333…3 m}, 34 threes, is true, and {@code 1.5 mile == 2414.016 m} false while the
+         *  reverse is true), so the conversion and both values must read exactly. */
+        boolean comparesExactly(Expression l, Expression r) {
+            Kind a = kind(l), b = kind(r)
+            if (a == null || b == null) return false
+            if (!a.dec && !b.dec) return true
+            if (a.scale == null || b.scale == null || a.scale.isZero()) return false
+            Rat f = b.scale.div(a.scale)
+            if (b.dec && !f.bdExact()) return false
+            Rat argInRecv = b.cur?.times(f)
+            boolean argMayRat = b.rat || !f.isInteger()
+            if (argMayRat && !(argInRecv != null && argInRecv.bdExact())) return false
+            meetsExactly(a)
+        }
+    }
+
+    /** Phase 533 — an exact rational (reduced, positive denominator), for indriya's closed values. */
+    @CompileStatic
+    static final class Rat {
+        final BigInteger n
+        final BigInteger d
+
+        Rat(BigInteger num, BigInteger den) {
+            if (den.signum() == 0) throw new ArithmeticException('a rational with a zero denominator')
+            if (den.signum() < 0) { num = num.negate(); den = den.negate() }
+            BigInteger g = num.gcd(den)
+            if (g.signum() == 0) g = BigInteger.ONE
+            n = num.divide(g)
+            d = den.divide(g)
+        }
+
+        static Rat of(BigDecimal b) {
+            b.scale() <= 0 ? new Rat(b.toBigIntegerExact(), BigInteger.ONE) : new Rat(b.unscaledValue(), BigInteger.TEN.pow(b.scale()))
+        }
+
+        Rat plus(Rat o)  { new Rat(n * o.d + o.n * d, d * o.d) }
+        Rat minus(Rat o) { new Rat(n * o.d - o.n * d, d * o.d) }
+        Rat times(Rat o) { new Rat(n * o.n, d * o.d) }
+        Rat div(Rat o)   { new Rat(n * o.d, d * o.n) }
+        Rat inverse()    { new Rat(d, n) }
+        Rat negate()     { new Rat(n.negate(), d) }
+        boolean isZero()    { n.signum() == 0 }
+        boolean isOne()     { n == BigInteger.ONE && d == BigInteger.ONE }
+        boolean isInteger() { d == BigInteger.ONE }
+
+        /** A denominator of only 2s and 5s: a terminating decimal. */
+        boolean terminates() {
+            BigInteger u = d
+            BigInteger two = BigInteger.valueOf(2), five = BigInteger.valueOf(5)
+            while (u.mod(two).signum() == 0) u = u.divide(two)
+            while (u.mod(five).signum() == 0) u = u.divide(five)
+            u == BigInteger.ONE
+        }
+
+        /** Reads exactly as indriya's {@code bigDecimalValue()}: an integer, or a terminating decimal of at most 34
+         *  significant digits (DECIMAL128). */
+        boolean bdExact() {
+            isInteger() || (terminates() && new BigDecimal(n).divide(new BigDecimal(d)).precision() <= 34)
+        }
+
+        /** indriya's {@code bigDecimalValue()}: 34 significant digits, half-even (measured: 1/2^49 reads …312, not …313). */
+        BigDecimal round34() { new BigDecimal(n).divide(new BigDecimal(d), java.math.MathContext.DECIMAL128) }
+
+        /** The SMT rational literal. */
+        String smt() { d == BigInteger.ONE ? n.toString() : n.toString() + '/' + d.toString() }
+    }
 }

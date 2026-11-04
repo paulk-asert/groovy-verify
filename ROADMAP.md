@@ -22130,11 +22130,11 @@ Phase 529's two other open items. Measured, both were silent false proofs, not j
   terminating, and a reciprocal of at most 34 significant digits. `closedQuantityMagnitude` reads `getQuantity(v, U)`
   and `to(U)`, so a quantity divisor `getQuantity(2, SECOND)` is closed.
 
-**Boundary, pinned by over-strictness:** an integer-valued chain over a non-terminating divisor (`10 km / 3 · 3` read
+**Boundary, pinned by over-strictness (closed by Phase 533):** an integer-valued chain over a non-terminating divisor (`10 km / 3 · 3` read
 in metres is `10000` at runtime) now skips. Modelling indriya's rationals exactly needs the read-out's 34-digit
 rounding and the value's number type tracked along the chain.
 
-**Open:** indriya's `RationalNumber` model (above); a `METRE_PER_SECOND` read-out isn't in the curated table
+**Open:** indriya's `RationalNumber` model (above; closed by Phase 533); a `METRE_PER_SECOND` read-out isn't in the curated table
 (pre-existing; closed by Phase 532).
 
 **Shipped tests:** group `P531 non-name sites and indriya division`, 21 cases: `t.name[0]`, `s.trim()[0]`,
@@ -22163,7 +22163,7 @@ dimension reader keeps the receiver's vector only when it equals `K`'s (a mismat
 magnitude and current-unit-scale readers pass the receiver's through.
 
 **Boundary:** an `asType` to an uncurated kind (`Pressure`) skips; a divisor outside Phase 531's guard
-(`18 km / 3 s`) still skips; `q as Quantity<Speed>` (a cast, not `asType`) isn't read.
+(`18 km / 3 s`, proved by Phase 533) still skips; `q as Quantity<Speed>` (a cast, not `asType`) isn't read.
 
 **Shipped tests:** group `P532 metre per second`, 15 cases: a speed's value read back and a wrong value refuted;
 10 m / 2 s, 5 m/s · 2 s and 18 km / 2 s; 5 km/s in m/s; 18 km / 3 s outside the fragment; a speed as a length
@@ -22172,6 +22172,61 @@ refuted; a quotient read out through `asType(Speed)`, right and wrong; `asType` 
 
 Mutation-checked: 6 of 6 killed: `asType` ignoring a kind mismatch (1), dropping its magnitude (5), resetting its
 unit scale to SI (2), any class as Speed (1), `METRE_PER_SECOND` as a length (8), its scale as 1000 (5).
+
+## Phase 533 — indriya's number system  *(shipped — soundness + capability)*
+
+Phase 531's open item: model indriya's RationalNumber, so a runtime-true integer chain like `10 km / 3 · 3` (exactly
+10000 m) proves again. Measured on indriya 2.2.4 (a throwaway JUnit probe of ~150 forms), the exact-Real model was
+right only for some of what indriya does, and five silent false proofs predated Phase 531:
+
+- `getQuantity(1, CENTI(METRE)).to(METRE).getValue() == 0.01` proved; it is **false**. The value is a RationalNumber,
+  which isn't Comparable, so Groovy's `==` is `equals`, false against any other number (`R(4,1) == 4` too). `<`,
+  `<=>` and `as BigDecimal` are numeric.
+- `1.5 m` to miles and back read as 1.5 proved (it is `1.4999…948`), and to feet and back (`1.4999…904`); and
+  `(1.5 mile + 1 m)` in metres as 2415.016 (`2415.0159…916`); and `1.5 m` to miles and back `== 1.5 m` (false).
+
+What indriya does: Integer, Long, BigInteger and RationalNumber are exact (overflow widens; a division multiplies by
+the divisor's exact reciprocal, a RationalNumber even of a BigDecimal divisor; a conversion multiplies by an exact
+factor; an integral result narrows to an integer type, so `1.5 km + 0 m` is the RationalNumber 3/2). A BigDecimal is
+exact until a RationalNumber meets it, which reads as `bigDecimalValue()`, 34 significant digits half-even (`1/2^49`
+reads `…312`). A BigDecimal's add, subtract and scalar multiply/divide in a non-SI unit go to SI and back
+(`1.5 mile + 0 mile` and `1.5 mile · 2` round), `to(U)` takes the direct factor, and multiply by a quantity takes none.
+Rationals compare exactly; a rational against a BigDecimal at 34 digits (`1 m / 3 == 0.333…3 m`, 34 threes, is true),
+the argument converted into the receiver's unit (`1.5 mile == 2414.016 m` false, the reverse true).
+
+**Shipped:** `UnitsPack.Reader.kind(e)`, a per-expression analysis beside the Real model: whether the value may be a
+BigDecimal, whether it may be a non-integral RationalNumber, its exact value in its unit and in SI when closed (a
+small `Rat`), and its unit's scale. The Real magnitude is used only where `kind` is non-null, i.e. where no
+RationalNumber meets a BigDecimal inexactly: every factor on a BigDecimal's route (a reciprocal, a conversion factor,
+a non-SI unit's SI round trip) must read exactly at 34 digits, and a value that may be a RationalNumber meeting one
+must be closed and read exactly. A divisor is closed and non-zero (`1 m / 0` throws). Read-outs follow the runtime
+type: a bare `getValue()`/`.value` is modelled only when the value can't be a non-integral RationalNumber; a new
+`EncodingPack.translateCast` hook (the encoder's cast translator consults it before treating a cast as transparent)
+gives `getValue() as BigDecimal` a RationalNumber's 34-digit read-out, computed exactly when closed. Quantity `==`
+with a BigDecimal side skips unless its conversion and both values read exactly. The old divisor guards
+(`isTerminatingQuantityDivisor`, `closedQuantityMagnitude`) and `currentUnitScale` are subsumed and removed.
+
+**Expectations changed:** Phase 531's `1 m / 3` read in metres with `result · 3 == 1` now refutes (0.333…3 · 3 isn't
+1) where it skipped; Phase 532's `18 km / 3 s == 6 km/s` and the DSL's `1.m / 3.s == 1.m / 3.s` now verify, the DSL
+skip moving to the decimal `1.5.m / 3.s`.
+
+**Boundary:** a symbolic value's non-integral read-out (`n km / 3 · 3` in metres, read out) skips, as a symbolic
+rational's digits aren't bounded; a symbolic divisor skips; a decimal value in miles, feet, yards or inches skips
+under arithmetic; a double value skips; `1 m / 3 == 0.333…3 m` (true at runtime) skips.
+
+**Shipped tests:** group `P533 indriya number system`, 35 cases: `10 km / 3 · 3`, `1 m / 7 · 7`, `1/3 + 2/3`,
+`2^49`, `1 km / 3 s · 3 s` exact and a wrong value refuted; rationals compared exactly across units, and a symbolic
+`n km / 3 · 3 == n km`; the 34-digit read-outs (`1/3`, `2/3`, `-2/3`, half-even at `2^49`) and `· 3 == 1` refuted;
+`1 cm` in metres under `as BigDecimal`; the bare `== 0.01`, `== 0.25` and `1.5 km + 0 m` read-outs outside; `1 m / 0`
+outside; the five false proofs outside; `1.5 m + 1 cm`, `1.5 km + 1 m`, `1.5 mile` in metres and `2414.016 m == 1.5 mile`
+exact.
+
+Mutation-checked: 13 of 13 killed (two survivors fixed: a redundant read-out line removed; the `1 m / 0` case added):
+34-digit bound at 35 (2), a rational always meeting a BigDecimal exactly (1), every scale decimal (2), a bare read-out
+ignoring the rational flag (3), no 34-digit read-out (6), half-up rounding (1), quantity `==` always exact (2), `to()`
+ignoring a BigDecimal's factor (3), `add` ignoring the SI round trip (1), scalar arithmetic ignoring the unit (1), a
+quotient ignoring a BigDecimal's reciprocal (1), a BigDecimal literal integer-typed (11), a divisor not closed
+non-zero (1).
 
 ## Definition of done, per increment
 

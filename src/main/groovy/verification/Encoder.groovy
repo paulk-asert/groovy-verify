@@ -5843,6 +5843,14 @@ class Encoder implements TheoryApi {
             }
             // and `n as String` of an integer is its decimal text, not the number (the GString conversion)
             if (cn == 'String' && isIntLikeType(ce.expression.getType())) return translateValueAsString(ce.expression)
+            // Phase 533 — the EncodingPack cast hook (a JSR 385 value read out `as BigDecimal`)
+            for (EncodingPack p : PackRegistry.packs()) {
+                explainPackName = p.name()
+                try {
+                    Object pc = p.translateCast(this, ce)
+                    if (!NO_MATCH.is(pc)) return pc
+                } finally { explainPackName = null }
+            }
             return translate(ce.expression)
         }
 

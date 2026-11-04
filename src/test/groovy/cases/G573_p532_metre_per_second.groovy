@@ -63,7 +63,7 @@ class G573_p532_metre_per_second {
          src: uom('result == 5000', "${Q}(5, KILO(METRE_PER_SECOND)).to(METRE_PER_SECOND).getValue() as BigDecimal")],
         [group: G, name: "18 km / 2 s is 9 km/s", ok: true,
          src: uomB("${Q}(18, KILO(METRE)).divide(${Q}(2, SECOND)) == ${Q}(9, KILO(METRE_PER_SECOND))")],
-        [group: G, name: "18 km / 3 s stays outside the fragment (Phase 531's divisor guard)", expect: 'outside fragment',
+        [group: G, name: "18 km / 3 s is 6 km/s: integer values are exact rationals (Phase 533)", ok: true,
          src: uomB("${Q}(18, KILO(METRE)).divide(${Q}(3, SECOND)) == ${Q}(6, KILO(METRE_PER_SECOND))")],
         [group: G, name: "a speed claimed as a length is refuted on dimension", expect: 'Cannot prove postcondition',
          src: uomB("${Q}(1, METRE_PER_SECOND) == ${Q}(1, METRE)")],

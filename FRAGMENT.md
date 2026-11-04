@@ -283,11 +283,20 @@ dimensions compare magnitude — and the area-vs-length `Quantity squareKm() { 1
 **Division and locals** (Phase 160): `/` subtracts the dimension exponents (Length−Time = Speed) and divides
 magnitudes, quantity-typed locals are aliased to their RHS, and `s` (seconds) joins the vocabulary — so
 `def s = 1.s; def d = 1.m; return d / s` with `@Ensures({ result == 1.m / 1.s })` verifies; a `quantity/quantity` is
-a Quantity op (no divide-by-zero obligation), and a non-terminating divisor (`1.m / 3.s`) skips (exact-Real soundness).
-Indriya's division, in the DSL `/` and the method `q.divide(x)` alike (Phase 531), multiplies by the divisor's exact
-rational reciprocal, which a `BigDecimal` value meets rounded to 34 digits (`1.5 m / 3 · 3` is `1.4999…85`), and a
-read-out rounds a non-terminating rational to 34 digits: so a quotient is exact only for a closed divisor that
-terminates with a reciprocal of at most 34 significant digits (`/ 2^48` is, `/ 2^49` isn't), and skips otherwise.
+a Quantity op (no divide-by-zero obligation), and a non-terminating divisor over a decimal (`1.5.m / 3.s`) skips.
+Indriya's number system (Phases 531, 533, measured on 2.2.4) decides what a quantity's value is. An integer-typed
+value (Integer, Long, BigInteger) stays an exact rational through every operation: a division multiplies by the
+divisor's exact reciprocal, a conversion by an exact factor, and an integral result narrows back to an integer, so
+`10 km / 3 · 3` is exactly 10000 m and two rationals compare exactly. A `BigDecimal` value is exact until a
+RationalNumber meets it, as 34 significant digits (DECIMAL128): a reciprocal (`1.5 m / 3 · 3` is `1.4999…85`), a
+conversion factor (`1.5 m` to miles and back is `1.4999…948`), and the SI round trip a non-SI unit's arithmetic takes
+(`1.5 mile + 0 mile` is `1.4999…948`), so a decimal value is modelled only where every such factor reads exactly at 34
+digits (the metric prefixes, not the mile, yard, foot or inch). The read-outs follow the runtime type:
+`getValue() as BigDecimal` reads a RationalNumber as its 34 digits (`1 m / 3` is `0.333…3`, computed exactly when
+closed), while a bare `getValue() == x` on a non-integral RationalNumber is `equals` (it isn't Comparable), false
+against any other number, so it skips. Quantity `==` with a decimal side converts the argument into the receiver's
+unit and compares a rational at 34 digits (`1.5 mile == 2414.016 m` is false, the reverse true), and skips unless
+that is exact. A symbolic integer value (`n km / 3 · 3 == n km`) compares exactly; its non-integral read-out skips.
 `METRE_PER_SECOND` is a curated unit (Phase 532: scale 1, Speed), and `q.asType(K)` over a curated kind keeps the
 magnitude and unit (indriya checks the kind and returns the quantity itself), so a quotient's `Quantity<?>` reads out
 in m/s as `asType(Speed).to(METRE_PER_SECOND)`; a kind mismatch, which throws, or an uncurated kind skips.
