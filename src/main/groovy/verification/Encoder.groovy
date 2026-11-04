@@ -5172,6 +5172,8 @@ class Encoder implements TheoryApi {
         if (e == null) return null
         String rl = receiverFieldList(e)   // Phase 500 — `b.xs` is the list `b$xs`, and its element reads read that
         if (rl != null) return nullityOf(rl)
+        String ef = receiverEnumFieldKey(e)   // Phase 525 — `b.level`'s flag, `b$level` (Phase 522's, as `b.level == null` reads it)
+        if (ef != null) return nullityOf(ef)
         Expression named = asNamedLists(e)
         if (!named.is(e)) return nullityOfExpr(named)
         // Phase 422 — `x?.m()` is null when x is, else the call's own (a primitive's is never null)
@@ -5397,9 +5399,20 @@ class Encoder implements TheoryApi {
             !ClassHelper.isPrimitiveType(t) && ClassHelper.isPrimitiveType(ClassHelper.getUnwrapper(t)))
     }
 
-    /** Phase 524 — the enum type of an enum parameter or an enum constant, else null */
+    /** Phase 525 — {@code b.f}'s key {@code b$f} when {@code b} is an object parameter whose field {@code f} is an
+     *  enum (Phase 522's receiver enum field), else null */
+    private String receiverEnumFieldKey(Expression e) {
+        if (!(e instanceof PropertyExpression) || !(((PropertyExpression) e).objectExpression instanceof VariableExpression)) return null
+        String key = ((VariableExpression) ((PropertyExpression) e).objectExpression).name + '$' + ((PropertyExpression) e).propertyAsString
+        ClassNode ft = receiverFieldType(key)
+        ft != null && (ft.isEnum() || isEnumLikeType(ft)) ? key : null
+    }
+
+    /** Phase 524 — the enum type of an enum parameter, an enum constant or (Phase 525) a receiver's enum field, else null */
     private ClassNode enumTypeOfExpr(Expression e) {
         if (isEnumParam(e)) return vcMethod.parameters.find { it.name == ((VariableExpression) e).name }.type
+        String rf = receiverEnumFieldKey(e)
+        if (rf != null) return receiverFieldType(rf)
         if (!isEnumConstant(e)) return null
         Expression obj = ((PropertyExpression) e).objectExpression
         if (obj instanceof ClassExpression) return ((ClassExpression) obj).type
@@ -7191,13 +7204,10 @@ class Encoder implements TheoryApi {
             // Phase 522 — `b.level == null` for a receiver's enum field: its flag, `b$level`, which the receiver's invariant
             // states (`level != null`, Phase 496) and the domain closure ties to its value
             Expression rf = isNullLiteral(be.rightExpression) ? be.leftExpression : isNullLiteral(be.leftExpression) ? be.rightExpression : null
-            if (rf instanceof PropertyExpression && ((PropertyExpression) rf).objectExpression instanceof VariableExpression) {
-                String fname = ((VariableExpression) ((PropertyExpression) rf).objectExpression).name + '$' + ((PropertyExpression) rf).propertyAsString
-                ClassNode ft = receiverFieldType(fname)
-                if (ft != null && (ft.isEnum() || isEnumLikeType(ft))) {
-                    Object isNull = nullityOf(fname)
-                    return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
-                }
+            String fname = receiverEnumFieldKey(rf)
+            if (fname != null) {
+                Object isNull = nullityOf(fname)
+                return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
             }
             // Phase 423 — `xs?.isEmpty() == null`: the safe call's own nullity (null couldn't be translated)
             Expression other = isNullLiteral(be.rightExpression) ? be.leftExpression :

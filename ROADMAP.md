@@ -21788,7 +21788,7 @@ and `L`'s count was whichever enum the scope collected last. Measured at the par
 **Open:**
 - a package-qualified spelling (`pkg.C.L.A`) in a contract isn't rewritten (from Phase 523);
 - a receiver's enum field compared across types (`b.level == D.L.A` for a `C.L` field) still meets the sort error:
-  loud, said so.
+  loud, said so — Phase 525.
 
 **Shipped tests:** group `P524 same-named enums`, 12 cases. 11 fail at the parent commit: the two silent false
 proofs above, their refuted twins, every `D.L.…` contract (loud skips: the other's count through its class, its
@@ -21799,6 +21799,35 @@ other's constant in a contract), and the cross-type `a == b` false alarm. One pa
 Mutation-checked: 7 of 7 killed: one sort again (7), the simple count key overwritten (2), no cross-type equality rule
 (4), no canonical name (5), the repro's simple name (1), the module's enums unknown to a contract (1), `D.L` rewritten
 to `L` (6). Phase 523's guard that pinned the shared name as loud now expects the resolved result.
+
+## Phase 525 — a receiver's enum field compared across types  *(shipped — capability)*
+
+Phase 524's open item. Its cross-type rule (values of two enum types are never equal, unless both null) knew an
+enum parameter and an enum constant; a receiver's enum field (Phase 522's `b.level`, a `C.L`) compared with the other
+type's constant or field met the two sorts in one comparison: "internal: Sorts C.L and D.L are incompatible", a loud
+skip. Measured at the parent with `final class B { C.L level }` and `final class E { D.L level }`: 7 of 8 cases were
+that skip (a body's and a contract's `b.level == D.L.A`, `b.level == e.level`, `b.level != a` for a `D.L a`); one, the
+field against its own type's constant, verified.
+
+**Fix.** One helper, `receiverEnumFieldKey` (`b.level` → `b$level` when `b` is an object parameter and `level` an
+enum field), used in three places:
+- `enumTypeOfExpr` knows the field's type, so the cross-type rule fires for it;
+- `nullityOfExpr` reads the field's flag `b$level` (the one Phase 522's `b.level == null` reads and the receiver's
+  invariant constrains), so the rule's "both null" is the field's own nullity: `b.level == e.level` is proved for two
+  null fields and refuted when either may be non-null;
+- Phase 522's `b.level == null` reads through the helper (a refactor, same flag).
+
+**Open:** none new. A receiver's enum field and its own type's constant were Phase 522's; a receiver's non-enum field's
+`b.f == null` is still Phase 522's open item.
+
+**Shipped tests:** group `P525 receiver enum field across types`, 8 cases. 7 fail at the parent commit, each a loud
+sort error where the method now verifies or is refuted for its own reason: the other's constant in a body and in a
+contract, a maybe-null field (a null is no constant either), two receivers' fields never equal, equal when both null,
+refuted when maybe both null, a field and the other type's parameter. One passes at the parent, as a guard: the field
+against its own type's constant is still refuted with `f(new B(`.
+
+Mutation-checked: 3 of 3 killed: the type lookup blind to a receiver's field (7), the nullity lookup blind to it (7),
+no receiver enum field key at all (10, two of them Phase 522's `b.level == null` cases: one helper, one path).
 
 ## Definition of done, per increment
 
