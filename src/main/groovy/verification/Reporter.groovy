@@ -408,9 +408,8 @@ class Reporter {
     static String formatPostconditionSkipped(String methodName, String reason) {
         reason = withReadNote(reason)
         "Skipped verification of postcondition for ${methodName} (${reason}). " +
-        "The body uses a construct or value outside the spike's supported " +
-        "fragment (straight-line code, if/else, single-assignment locals, " +
-        "linear int arithmetic). The method is allowed to proceed unchecked."
+        "The body uses a construct or value outside the verifier's supported " +
+        "fragment (see FRAGMENT.md). The method is allowed to proceed unchecked."
     }
 
     /**
@@ -839,9 +838,8 @@ class Reporter {
 
     static String formatSkipped(String calleeName, String reason) {
         "Skipped verification of precondition for ${calleeName} (${reason}). " +
-        "The contract or one of the actual arguments is outside the spike's " +
-        "supported fragment (linear int arithmetic, comparisons, boolean ops). " +
-        "The call is allowed to proceed unchecked."
+        "The contract or one of the actual arguments is outside the verifier's " +
+        "supported fragment (see FRAGMENT.md). The call is allowed to proceed unchecked."
     }
 
     // ---- User assertions (Dafny-style compile-time `assert`) ----
@@ -1033,8 +1031,7 @@ class Reporter {
 
     static String formatImplicitSkipped(String kind, String reason) {
         "Skipped ${kind} safety check (${reason}). The expression is outside the " +
-        "spike's supported fragment (linear int arithmetic, comparisons, " +
-        ".size()/.length, nullity). The access is allowed to proceed unchecked."
+        "verifier's supported fragment (see FRAGMENT.md). The access is allowed to proceed unchecked."
     }
 
     private static String implicit(String refutedHead, String obligation,
@@ -1105,7 +1102,7 @@ class Reporter {
 
     static String formatTerminationSkipped(String methodName, String measureText) {
         "Skipped recursion termination for ${methodName}: measure (${measureText}) is outside the " +
-        "spike's supported fragment, so the inductive hypothesis at this recursive call is not justified."
+        "verifier's supported fragment, so the inductive hypothesis at this recursive call is not justified."
     }
 
     /** Phase 503 — a write the model doesn't take into a receiver's field its class invariant reads. */
@@ -1123,9 +1120,8 @@ class Reporter {
 
     static String formatLoopSkipped(String methodName, String reason) {
         "Skipped loop verification for ${methodName} (${reason}). " +
-        "The loop or its surrounding code uses a construct outside the spike's " +
-        "supported fragment (a while-loop carrying @Invariant, straight-line " +
-        "prefix/body/suffix, linear int arithmetic). The method proceeds unchecked."
+        "The loop or its surrounding code uses a construct outside the verifier's " +
+        "supported fragment (see FRAGMENT.md). The method proceeds unchecked."
     }
 
     private static String loopFailure(String refutedHead, String label, String contractText,
