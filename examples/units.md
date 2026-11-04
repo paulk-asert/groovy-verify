@@ -135,8 +135,10 @@ static Quantity speed() {
 The `/` subtracts the dimension exponents (Length − Time = Speed) and divides the magnitudes, threading through the
 locals `d` and `s`; the verifier confirms the computed speed *is* the `1.mps` literal, on both layers. A wrong speed
 (`2.mps`) refutes on magnitude; a plain length (`result == 1.m`) refutes on dimension — the `Quantity<Speed>` cast
-the erased generics never re-check. (Honest boundary: a non-terminating divisor like `1.m / 3.s`, SI magnitude ⅓
-which the runtime *rounds*, skips rather than risk an exact-arithmetic proof the runtime wouldn't honour.)
+the erased generics never re-check. (Honest boundary: a non-terminating divisor like `1.m / 3.s`, SI magnitude ⅓,
+skips rather than risk an exact-arithmetic proof the runtime wouldn't honour. Indriya keeps an integer quotient as
+an exact rational, but a `BigDecimal` value meets the reciprocal rounded to 34 digits — `1.5 m / 3 · 3` is
+`1.4999…85` — and reading a non-terminating value out rounds it to 34 digits too, measured on indriya 2.2.4.)
 
 Because it needs the extension module on the classpath, this lives in its own
 [`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a

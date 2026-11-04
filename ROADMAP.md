@@ -22040,8 +22040,10 @@ terminates; otherwise `divide(MathContext(max(precision(a), precision(b)) + 10))
 **Open:**
 - a symbolic divisor's exact short quotient needs the scaled-integrality fact at a cost the solver couldn't pay; a
   cheaper encoding (or the fact only where `b` is pinned) would close the boundary — *closed by Phase 530*;
-- the units pack's quantity division (`1.m / 3.s`) has its own reader and still skips a non-terminating divisor;
-- a String subscript of a non-name (`t.name[0]`, `s.trim()[0]`) translates, but isn't a contract site for its bounds.
+- the units pack's quantity division (`1.m / 3.s`) has its own reader and still skips a non-terminating divisor —
+  *Phase 531: the method form was exact for any divisor, a false proof, now guarded*;
+- a String subscript of a non-name (`t.name[0]`, `s.trim()[0]`) translates, but isn't a contract site for its
+  bounds — *closed by Phase 531*.
 
 **Shipped tests:** group `P529 string subscript and rounded division`, 23 cases: a body's and a precondition's
 `s[0] == 'a'` (non-empty, the first character), `s[-1]` as `s[s.length() - 1]`, the wrong character refuted, a
@@ -22097,6 +22099,53 @@ the boundary.
 Mutation-checked: 6 of 6 killed (the double-rounding case was added for the survivor): no tight band (4), the band
 at `0.5e-10` — unsound against `16 / 11` (1), no grid (7), the exact branch unrestricted (2), the exact branch at
 `|b| >= 4096` — unsound against `1 / 2048` (1), the grid at `1e-9` (4).
+
+## Phase 531 — any String's and a receiver array's contract sites; indriya's division  *(shipped — soundness)*
+
+Phase 529's two other open items. Measured, both were silent false proofs, not just skips.
+
+- **A contract's non-name String receiver wasn't a site.** `@Ensures({ t.name[0] == t.name[0] })` on a maybe-empty
+  name proved, as did `s.trim()[0]`, `(s + t)[0]`, `'abc'[i]` and `t.name.charAt(0)`: Groovy throws
+  `StringIndexOutOfBoundsException` on each. The body's were already obligations (Phase 417). Measuring found the
+  array twin: a receiver's array field, `t.a[0] == t.a[0]` on an empty array, proved too (Phase 528 took names only).
+- **The units pack's method `q.divide(x)` was exact Real division for any divisor**, while the DSL `/` had Phase
+  152's terminating-divisor guard. Indriya 2.2.4, measured: `divide` is `multiply(x, reciprocal(d))` with an exact
+  `RationalNumber` reciprocal, so an integer-valued chain stays exact (`(1 m / 3) · 3` is `1`); but a `BigDecimal`
+  value meets the reciprocal as `bigDecimalValue()`, rounded to DECIMAL128's 34 digits (`1.5 m / 3 · 3` is
+  `1.49999999999999999999999999999999985`), and a read-out of a non-terminating rational rounds to 34 digits
+  (`1 m / 3` reads `0.3333…3`). Four read-outs through `.to(METRE)` proved and are false at runtime:
+  `1.5 m / 3 · 3 == 1.5`, `1 m / 3 · 3 == 1`, `1.5 m / 3 == 0.5`, `1.5 m / 7 · 7 == 1.5`. Phase 152's premise that
+  indriya rounds the quotient was half right: it rounds where a `BigDecimal` or a read-out meets it.
+  The terminating guard alone isn't enough either: `1.5 m / 2^49 · 2^49` is `1.4999…96`, the reciprocal's precision
+  being 35 (`2^48`, precision 34, is exact).
+
+**Fix.**
+- **Contract String sites over any receiver.** Phase 528's walker emits a `strindex` / `charAt` candidate for any
+  non-name receiver; a contract carries no inferred types, so the fact asks the encoder (`Encoder.isStringValued`,
+  the receiver test its subscript translates by) and owes nothing for a non-String (a list's subscript reads null).
+  The obligation reads in the receiver's spelling: `-(s + t).length() <= 0 && 0 < (s + t).length()`.
+- **A receiver's array field** is an index site by its Phase 413 name (`t$a`, shown `t.a`), where
+  `receiverArraysOf` admits it, owed and filtering like a formal's.
+- **`UnitsPack`:** the method `divide` takes the DSL `/`'s guard, and the guard is `isExactIndriyaDivisor`: closed,
+  terminating, and a reciprocal of at most 34 significant digits. `closedQuantityMagnitude` reads `getQuantity(v, U)`
+  and `to(U)`, so a quantity divisor `getQuantity(2, SECOND)` is closed.
+
+**Boundary, pinned by over-strictness:** an integer-valued chain over a non-terminating divisor (`10 km / 3 · 3` read
+in metres is `10000` at runtime) now skips. Modelling indriya's rationals exactly needs the read-out's 34-digit
+rounding and the value's number type tracked along the chain.
+
+**Open:** indriya's `RationalNumber` model (above); a `METRE_PER_SECOND` read-out isn't in the curated table
+(pre-existing).
+
+**Shipped tests:** group `P531 non-name sites and indriya division`, 21 cases: `t.name[0]`, `s.trim()[0]`,
+`(s + t)[0]`, `'abc'[i]` and `t.name.charAt(0)` refused where maybe empty, defined where non-empty or in range, and
+`s.trim().charAt(0)` filtering; `t.a[0]` refused and filtering; a receiver list's and a list literal's subscript
+owing nothing; indriya's `divide(3)` read-outs, a `BigDecimal` value's, a `3 s` quantity divisor and a `2^49`
+reciprocal outside the fragment; `2^48`, `10 km / 4` and `1.5 m / 2 s · 2 s` exact; a wrong value refuted.
+
+Mutation-checked: 7 of 7 killed (the two list cases were added for the survivor): the method `divide` unguarded (5),
+no 34-digit bound (1), the bound at 35 (1), no `getQuantity` closed magnitude (1), non-name String receivers not
+sites (6), a non-String candidate obligated (2), receiver array fields not sites (2).
 
 ## Definition of done, per increment
 

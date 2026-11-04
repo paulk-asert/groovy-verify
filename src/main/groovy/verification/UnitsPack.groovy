@@ -555,6 +555,10 @@ class UnitsPack implements EncodingPack {
                     if (m == 'add')      return api.session.plus(recvM, other)
                     if (m == 'subtract') return api.session.minus(recvM, other)
                     if (m == 'multiply') return api.session.times(recvM, other)
+                    // Phase 531 — Quantity.divide is indriya's, not Groovy's: x · reciprocal(d), exact as a rational but
+                    // rounded to 34 digits once a BigDecimal value meets it (`1.5 m / 3 · 3` is 1.4999…85) and at a
+                    // read-out (`1 m / 3` reads 0.333…3). Exact only for the DSL `/`'s divisor: closed and terminating.
+                    if (!isTerminatingQuantityDivisor(arg)) return null
                     return api.session.realDiv(recvM, other)                                          // divide
                 }
             }
@@ -608,7 +612,18 @@ class UnitsPack implements EncodingPack {
          *  correctly rejected) and test it has only the prime factors 2 and 5; a symbolic divisor (a parameter) → false. */
         private boolean isTerminatingQuantityDivisor(Expression e) {
             BigDecimal m = closedQuantityMagnitude(e)
-            return m != null && isTerminatingDecimal(m)
+            return m != null && isExactIndriyaDivisor(m)
+        }
+
+        /** Phase 531 — indriya divides by multiplying with the divisor's reciprocal, a RationalNumber that a BigDecimal
+         *  value meets as {@code bigDecimalValue()}, rounded to {@code Calculus.MATH_CONTEXT} (DECIMAL128, 34 digits).
+         *  So the quotient is exact iff the divisor terminates AND its reciprocal fits 34 significant digits (measured,
+         *  indriya 2.2.4: {@code 1.5 m / 2^48 · 2^48} is 1.5, {@code / 2^49 · 2^49} is 1.49999…96, reciprocal precisions
+         *  34 and 35). */
+        private static boolean isExactIndriyaDivisor(BigDecimal m) {
+            if (!isTerminatingDecimal(m)) return false
+            BigDecimal recip = BigDecimal.ONE.divide(m.abs())          // exact: m terminates
+            recip.precision() <= 34
         }
 
         /** The SI magnitude of a Quantity (or scalar) expression as a literal {@link BigDecimal}, when it's fully closed
@@ -634,6 +649,18 @@ class UnitsPack implements EncodingPack {
                 BigDecimal v = closedQuantityMagnitude(pe.objectExpression)
                 return v == null ? null : v.multiply(sc)
             }
+            // Phase 531 — the method forms' divisor: `getQuantity(v, U)` is v · scale(U), and `to(U)` keeps the magnitude
+            if (isGetQuantityCall(e)) {
+                List<Expression> a = callArgs(e)
+                if (a.size() != 2) return null
+                BigDecimal sc = scaleOf(a.get(1))
+                BigDecimal v = closedQuantityMagnitude(a.get(0))
+                return sc == null || v == null ? null : v.multiply(sc)
+            }
+            if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'to' &&
+                    argList((MethodCallExpression) e).size() == 1) {
+                return closedQuantityMagnitude(((MethodCallExpression) e).objectExpression)
+            }
             if (e instanceof BinaryExpression) {
                 BinaryExpression be = (BinaryExpression) e
                 String op = be.operation.text
@@ -644,7 +671,7 @@ class UnitsPack implements EncodingPack {
                     case '+': return l.add(r)
                     case '-': return l.subtract(r)
                     case '*': return l.multiply(r)
-                    case '/': return (r.signum() == 0 || !isTerminatingDecimal(r)) ? null : l.divide(r)
+                    case '/': return (r.signum() == 0 || !isExactIndriyaDivisor(r)) ? null : l.divide(r)
                 }
             }
             null

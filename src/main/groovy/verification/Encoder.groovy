@@ -674,6 +674,9 @@ class Encoder implements TheoryApi {
         session.stringSubstring(sH, at, session.intLit(1L))
     }
 
+    /** Phase 531 — {@code e} is read as a String (the receiver test, for a contract's partial-operation sites). */
+    boolean isStringValued(Expression e) { isStringReceiver(e) }
+
     private boolean isStringReceiver(Expression recv) {
         if (recv == null) return false
         if (isStringSubscript(recv)) return true   // Phase 529

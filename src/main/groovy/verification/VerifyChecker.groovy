@@ -7078,7 +7078,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String what          // 'precondition' / 'postcondition' / 'class invariant'
         Expression node      // the operation
         String kind          // 'extremum' / 'index' / 'strindex' / 'charAt' / 'divide' / 'mod'
-        String recv          // the array (extremum, index)
+        String recv          // the array (extremum, index) or the String's name
+        Expression recvExpr  // Phase 531 — a String receiver that isn't a name (`t.name`, `s.trim()`, `(s + t)`)
         Expression arg       // the index (index) or the divisor (divide, mod)
         List<Object[]> guards   // [condition, positive] — the short-circuit and ternary guards it is reached under
         String exception() {
@@ -7101,7 +7102,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private static void contractPartialSites(Expression e, List<Object[]> guards, MethodNode m, String what,
                                              List<ContractPartialSite> out) {
-        partialSitesIn(e, guards, arrayNames(m, true), arrayNames(m, false), stringNames(m), what, out)
+        Set<String> arrays = arrayNames(m, false)
+        arrays.addAll(receiverArraysOf(m))   // Phase 531 — a receiver's array field, `h.arr` as `h$arr` (Phase 413)
+        partialSitesIn(e, guards, arrayNames(m, true), arrays, stringNames(m), what, out)
     }
 
     private static void partialSitesIn(Expression e, List<Object[]> guards, Set<String> primArrays, Set<String> arrays,
@@ -7125,18 +7128,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
             partialSitesIn(be.rightExpression, guards, primArrays, arrays, strings, what, out)
-            if (op == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression &&
-                    arrays.contains(((VariableExpression) be.leftExpression).name) &&
+            if (op == Types.LEFT_SQUARE_BRACKET && contractArrayName(be.leftExpression, arrays) != null &&
                     !(be.rightExpression instanceof RangeExpression) && !(be.rightExpression instanceof ListExpression)) {
                 // a slice (`a[0..<n]`, `a[[0, 2]]`) is a list with its own model (Phases 51b, 323), not a scalar subscript
                 out.add(new ContractPartialSite(what: what, node: be, kind: 'index',
-                    recv: ((VariableExpression) be.leftExpression).name, arg: be.rightExpression, guards: new ArrayList<Object[]>(guards)))
-            } else if (op == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression &&
-                    strings.contains(((VariableExpression) be.leftExpression).name) &&
+                    recv: contractArrayName(be.leftExpression, arrays), arg: be.rightExpression, guards: new ArrayList<Object[]>(guards)))
+            } else if (op == Types.LEFT_SQUARE_BRACKET && contractStringReceiver(be.leftExpression, strings) &&
                     !(be.rightExpression instanceof RangeExpression) && !(be.rightExpression instanceof ListExpression)) {
-                // Phase 529 — a String's subscript throws StringIndexOutOfBoundsException outside [-length, length)
-                out.add(new ContractPartialSite(what: what, node: be, kind: 'strindex',
-                    recv: ((VariableExpression) be.leftExpression).name, arg: be.rightExpression, guards: new ArrayList<Object[]>(guards)))
+                // Phase 529 — a String's subscript throws StringIndexOutOfBoundsException outside [-length, length);
+                // Phase 531 — whatever the String's spelling
+                out.add(new ContractPartialSite(what: what, node: be, kind: 'strindex', recv: stringRecvName(be.leftExpression),
+                    recvExpr: be.leftExpression, arg: be.rightExpression, guards: new ArrayList<Object[]>(guards)))
             } else if (be.operation.text == '/' || be.operation.text == '%') {   // by its text: `%` is REMAINDER, not MOD, in Groovy 6
                 out.add(new ContractPartialSite(what: what, node: be, kind: 'divide', arg: be.rightExpression,
                     guards: new ArrayList<Object[]>(guards)))
@@ -7158,11 +7160,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     primArrays.contains(((VariableExpression) mce.objectExpression).name)) {
                 out.add(new ContractPartialSite(what: what, node: mce, kind: 'extremum',
                     recv: ((VariableExpression) mce.objectExpression).name, guards: new ArrayList<Object[]>(guards)))
-            } else if (mm == 'charAt' && args.size() == 1 && mce.objectExpression instanceof VariableExpression &&
-                    strings.contains(((VariableExpression) mce.objectExpression).name)) {
+            } else if (mm == 'charAt' && args.size() == 1 && contractStringReceiver(mce.objectExpression, strings)) {
                 // Phase 529 — `s.charAt(i)` throws outside [0, length): no counting from the end
-                out.add(new ContractPartialSite(what: what, node: mce, kind: 'charAt',
-                    recv: ((VariableExpression) mce.objectExpression).name, arg: args[0], guards: new ArrayList<Object[]>(guards)))
+                out.add(new ContractPartialSite(what: what, node: mce, kind: 'charAt', recv: stringRecvName(mce.objectExpression),
+                    recvExpr: mce.objectExpression, arg: args[0], guards: new ArrayList<Object[]>(guards)))
             } else if (args.size() == 1 && (mm == 'intdiv' || mm == 'remainder' || mm == 'mod')) {
                 out.add(new ContractPartialSite(what: what, node: mce, kind: mm == 'mod' ? 'mod' : 'divide', arg: args[0],
                     guards: new ArrayList<Object[]>(guards)))
@@ -7174,6 +7175,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 partialSitesIn(a, guards, primArrays, arrays, strings, what, out)
             }
         }
+    }
+
+    /** Phase 529/531 — a contract's String receiver: a String formal or field by name, or a candidate any other
+     *  receiver (`t.name`, `s.trim()`, `(s + t)`, a literal — measured, each proved `x[0] == x[0]` on ""). A contract
+     *  carries no inferred types, so the candidate is a String site only where the encoder reads its receiver as a
+     *  String ({@link Encoder#isStringValued}), which is also where its subscript translates as one. */
+    private static boolean contractStringReceiver(Expression e, Set<String> strings) {
+        if (e instanceof VariableExpression) return strings.contains(((VariableExpression) e).name)
+        e != null && !(e instanceof ClassExpression)
+    }
+
+    /** Phase 528/531 — the array a contract subscripts: a formal or field by name, or a receiver's array field
+     *  {@code h.arr} by its Phase 413 name {@code h$arr}; null otherwise. */
+    private static String contractArrayName(Expression e, Set<String> arrays) {
+        if (e instanceof VariableExpression) return arrays.contains(((VariableExpression) e).name) ? ((VariableExpression) e).name : null
+        if (e instanceof PropertyExpression && ((PropertyExpression) e).objectExpression instanceof VariableExpression) {
+            String k = ((VariableExpression) ((PropertyExpression) e).objectExpression).name + '$' + ((PropertyExpression) e).propertyAsString
+            return arrays.contains(k) ? k : null
+        }
+        null
+    }
+
+    private static String stringRecvName(Expression e) {
+        e instanceof VariableExpression ? ((VariableExpression) e).name : null
     }
 
     private static List<Object[]> withGuard(List<Object[]> guards, Expression cond, boolean positive) {
@@ -7197,10 +7222,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object size = enc.sizeOf(f.recv)
             return s.and([s.le(assumed ? s.neg(size) : s.intLit(0L), i), s.lt(i, size)])
         }
+        if ((f.kind == 'strindex' || f.kind == 'charAt') && f.recvExpr != null && !(f.recvExpr instanceof VariableExpression) &&
+                !enc.isStringValued(f.recvExpr)) {
+            return NO_OBLIGATION   // Phase 531 — not a String (a list's or a map's subscript has its own model)
+        }
         if (f.kind == 'strindex' || f.kind == 'charAt') {
             // Phase 529 — a String's subscript is modelled counting from the end (Encoder.stringSubscript), so it owes
             // exactly where Groovy doesn't throw, `-len <= i < len`; `charAt` doesn't count from the end
-            Object sH = enc.translateInSort(new VariableExpression(f.recv), s.declareSort('String'))
+            Object sH = enc.translateInSort(f.recvExpr ?: new VariableExpression(f.recv), s.declareSort('String'))
             Object i = enc.translate(f.arg)
             if (sH == null || i == null || !s.isInt(i)) return null
             Object len = s.stringLength(sH)
@@ -7219,25 +7248,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String t = asWritten(f.node)
         if (f.kind == 'extremum') return "${t} is reached on an empty array, where Groovy throws UnsupportedOperationException"
         if (f.kind == 'index') {
-            return "${t} is reached with ${asWritten(f.arg)} outside [0, ${f.recv}.length): past either end Groovy throws " +
+            return "${t} is reached with ${asWritten(f.arg)} outside [0, ${shownLocation(f.recv)}.length): past either end Groovy throws " +
                 "ArrayIndexOutOfBoundsException (a negative index within the length counts from the end, which the verifier doesn't model)"
         }
         if (f.kind == 'strindex') {
-            return "${t} is reached with ${asWritten(f.arg)} outside [-${f.recv}.length(), ${f.recv}.length()), where Groovy throws StringIndexOutOfBoundsException"
+            String r = stringRecvShown(f)
+            return "${t} is reached with ${asWritten(f.arg)} outside [-${r}.length(), ${r}.length()), where Groovy throws StringIndexOutOfBoundsException"
         }
         if (f.kind == 'charAt') {
-            return "${t} is reached with ${asWritten(f.arg)} outside [0, ${f.recv}.length()), where it throws StringIndexOutOfBoundsException"
+            return "${t} is reached with ${asWritten(f.arg)} outside [0, ${stringRecvShown(f)}.length()), where it throws StringIndexOutOfBoundsException"
         }
         if (f.kind == 'mod') return "${t} is reached with ${asWritten(f.arg)} <= 0, where mod throws ArithmeticException"
         "${t} is reached with ${asWritten(f.arg)} == 0, where Groovy throws ArithmeticException"
     }
 
+    /** Phase 531 — the String receiver as written: its name, or a compound one parenthesised where it needs it. */
+    private String stringRecvShown(ContractPartialSite f) {
+        if (f.recv != null) return f.recv
+        asWritten(f.recvExpr)   // a compound receiver comes back parenthesised
+    }
+
     private String contractPartialObligation(ContractPartialSite f) {
         if (f.kind == 'extremum') return "0 < ${f.recv}.length"
         String a = asWritten(f.arg)
-        if (f.kind == 'index') return "0 <= ${a} && ${a} < ${f.recv}.length"
-        if (f.kind == 'strindex') return "-${f.recv}.length() <= ${a} && ${a} < ${f.recv}.length()"
-        if (f.kind == 'charAt') return "0 <= ${a} && ${a} < ${f.recv}.length()"
+        if (f.kind == 'index') return "0 <= ${a} && ${a} < ${shownLocation(f.recv)}.length"
+        if (f.kind == 'strindex') return "-${stringRecvShown(f)}.length() <= ${a} && ${a} < ${stringRecvShown(f)}.length()"
+        if (f.kind == 'charAt') return "0 <= ${a} && ${a} < ${stringRecvShown(f)}.length()"
         f.kind == 'mod' ? "${a} > 0" : "${a} != 0"
     }
 

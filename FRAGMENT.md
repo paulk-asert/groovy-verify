@@ -72,8 +72,11 @@ a coverage metric. In expressions the fragment is:
   `0 < a.length` where the call is reached, under the `&&`/`||`/ternary guards before it, refused as "the
   postcondition may throw" rather than as the claim failing. A contract's other partial operations follow the
   same rule (Phase 528): an array's subscript (`0 <= i < a.length` owed, as the body's is; a list's reads null
-  past its end and isn't one) and an integral or decimal `/`, `%`, `intdiv`, `remainder` (divisor non-zero) or
-  `mod` (divisor positive); an IEEE-754 division owes nothing;
+  past its end and isn't one), a receiver's array field's (`t.a[i]`, Phase 531), a String's subscript
+  (`-s.length() <= i < s.length()`) and `charAt` (`0 <= i < s.length()`) on any String the verifier reads, a
+  name or not (`t.name[0]`, `s.trim()[0]`, `(s + t)[0]`, `'abc'[i]`; Phases 529 and 531), and an integral or
+  decimal `/`, `%`, `intdiv`, `remainder` (divisor non-zero) or `mod` (divisor positive); an IEEE-754 division
+  owes nothing;
   `double[]` / `List<Double>` element predicates ride the same FP theory (a hand-written extremum *loop*
   stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
 - aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold
@@ -281,6 +284,10 @@ dimensions compare magnitude — and the area-vs-length `Quantity squareKm() { 1
 magnitudes, quantity-typed locals are aliased to their RHS, and `s` (seconds) joins the vocabulary — so
 `def s = 1.s; def d = 1.m; return d / s` with `@Ensures({ result == 1.m / 1.s })` verifies; a `quantity/quantity` is
 a Quantity op (no divide-by-zero obligation), and a non-terminating divisor (`1.m / 3.s`) skips (exact-Real soundness).
+Indriya's division, in the DSL `/` and the method `q.divide(x)` alike (Phase 531), multiplies by the divisor's exact
+rational reciprocal, which a `BigDecimal` value meets rounded to 34 digits (`1.5 m / 3 · 3` is `1.4999…85`), and a
+read-out rounds a non-terminating rational to 34 digits: so a quotient is exact only for a closed divisor that
+terminates with a reciprocal of at most 34 significant digits (`/ 2^48` is, `/ 2^49` isn't), and skips otherwise.
 A coherent-derived-unit suffix `mps` (Speed, scale 1) lets a contract name a speed directly — `@Ensures({ result ==
 1.mps })` over `d / s` verifies — the statically-checkable form, since `1.m/s` referencing the body local is rejected
 by `@TypeChecked` first (the contract closure is checked in signature scope, not body scope — upstream, not a verifier gap).
