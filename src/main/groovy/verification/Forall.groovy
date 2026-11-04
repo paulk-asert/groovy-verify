@@ -37,8 +37,9 @@ import groovy.transform.CompileStatic
  * {@code lo <= i < hi}, with the closure body as the matrix — rather than
  * iterating.
  *
- * The method-call surface is the spike form; a closer-to-idiom spelling is a
- * Phase 9 question, once the quantifier shape settles.
+ * The method-call surface is the original form; the idiomatic spelling is the
+ * native GDK one ({@code (0..<n).every { ... }}, {@code xs.any { ... }}), which
+ * the encoder reads directly.
  */
 @CompileStatic
 class Forall {

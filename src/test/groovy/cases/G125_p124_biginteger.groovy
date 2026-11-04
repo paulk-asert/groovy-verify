@@ -54,7 +54,7 @@ class G125_p124_biginteger {
         }''')],
         // Honest boundary: a *literal* wider than 64 bits is left to skip loudly (the long-range fold doesn't apply);
         // arbitrary-precision *arithmetic* on values is unaffected — only an out-of-long-range literal constant skips.
-        [group: 'P124 BigInteger', name: 'literal beyond 64 bits skips (boundary)', expect: 'outside the spike',
+        [group: 'P124 BigInteger', name: 'literal beyond 64 bits skips (boundary)', expect: 'outside the verifier',
          src: tc('''class C {
             @Ensures({ result == 100000000000000000000g })
             static BigInteger big() { 100000000000000000000g }

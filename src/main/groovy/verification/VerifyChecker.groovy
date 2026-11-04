@@ -102,7 +102,7 @@ import org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor
 import org.codehaus.groovy.transform.stc.TypeCheckingExtension
 
 /**
- * SMT-backed precondition verifier — the spike entry point.
+ * SMT-backed contract verifier — the type-checking-extension entry point.
  *
  * Usage from consumer code:
  *   {@code @TypeChecked(extensions = 'verification.VerifyChecker')}
@@ -5630,7 +5630,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 node.code.visit(currentFacts)
             } catch (Throwable t) {
                 // Defensive: if precomputation fails, fall back to
-                // "no facts known". The spike prefers continuing
+                // "no facts known". The verifier prefers continuing
                 // verification over hard-failing the build.
                 currentFacts = new PathFacts()
             }
@@ -13172,7 +13172,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * array/list subscripts, integer division/modulo, and instance-method
      * dereferences on a named local/parameter receiver. Static calls, {@code this}
      * receivers, and calls on non-variable receivers are skipped — they are either
-     * provably non-null or out of the spike's reach.
+     * provably non-null or out of the verifier's reach.
      */
     @CompileStatic
     private static class ObligationCollector extends ClassCodeVisitorSupport {
@@ -20659,7 +20659,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         Parameter[] formals = target.parameters
         if (formals.length != argExprs.size()) {
-            // Varargs and default params: out of scope for the spike.
+            // Varargs and default params: outside the fragment, skipped loudly.
             addStaticTypeError(
                 Reporter.formatSkipped(target.name,
                     "formal/actual arity mismatch (varargs not supported yet)"),
@@ -20902,7 +20902,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     taintDropped(session, f.condition, f.inThenBranch)   // Phase 472
                     // A fact we can't encode just becomes an unknown
                     // — drop it. Safe (it weakens our assumption set),
-                    // and the spike stays honest.
+                    // and the verifier stays honest.
                     continue
                 }
                 session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))

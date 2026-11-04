@@ -18,8 +18,8 @@ package verification
 import groovy.transform.CompileStatic
 
 /**
- * Minimal SMT backend surface — just enough for the spike's
- * linear-integer + boolean fragment. The one implementation is
+ * Minimal SMT backend surface — just what the encoder's fragment needs
+ * (Int/Real/FP/String/array/enum sorts, quantifiers). The one implementation is
  * {@link Z3Backend}; the seam exists so {@link Encoder} can be written
  * against an interface rather than Z3 types directly.
  *

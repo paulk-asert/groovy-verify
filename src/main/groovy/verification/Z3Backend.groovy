@@ -50,9 +50,9 @@ import java.util.concurrent.atomic.AtomicLong
  * (tools.aqua:z3-turnkey), which bundles native libraries for
  * linux/mac/windows on amd64 and aarch64. No system Z3 install needed.
  *
- * One Context per call to {@link #session()}; the spike doesn't try
- * to amortise solver state across call sites. Per-method timeouts
- * are configured here (2 seconds — generous for QF_LIA, tight enough
+ * One Context per call to {@link #session()}; solver state isn't amortised
+ * across call sites. The per-check timeout is configured here (default 2 seconds,
+ * {@code VERIFY_Z3_TIMEOUT_MS} to override — generous for QF_LIA, tight enough
  * that NIA blow-ups don't hang the compiler).
  */
 @CompileStatic

@@ -114,9 +114,8 @@ class LoopSpec {
  * so SSA renaming falls out for free, and a fresh {@code Encoder} per
  * verification condition gives havoc-by-default (any name never assigned is an
  * unconstrained fresh variable). The supported region is the same fragment as
- * the rest of the spike: plain assignments, single-variable declarations, and a
- * trailing/explicit return — anything else raises
- * {@link UnsupportedConstructException}.
+ * the rest of the verifier (FRAGMENT.md); anything outside it raises
+ * {@link UnsupportedConstructException}, which surfaces as a loud skip.
  */
 @CompileStatic
 class LoopEncoder {
