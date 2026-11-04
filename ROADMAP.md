@@ -21870,6 +21870,61 @@ Mutation-checked: 6 of 6 killed: no reference field key (every receiver-field ca
 the nullity lookup blind to the field (1), a String field an Int again (2), `b.s` not a String receiver (2), a field's
 literal equality not null-aware (1), the String guard ahead of the field route again (1).
 
+## Phase 527 — a contract's `max()`/`min()` on a primitive array  *(shipped — capability)*
+
+FRAGMENT's one stated exception closed: "a body's `a.max()` carries a non-empty obligation; the same call inside a
+contract isn't yet well-definedness-checked". Measured first (Groovy 6.0.0): an empty `int[]`'s or `double[]`'s
+`max()`/`min()` throws `UnsupportedOperationException`; an empty list's, set's or `Integer[]`'s answers null, and
+`null > 0` is false. So only a primitive array's extremum can make a contract *throw*; a list's is a value Phase 492
+already models as null.
+
+Measured at the parent, 17 probe cases. A precondition's `a.max() > 0` on a maybe-empty `int[]` compiled cleanly — the
+contract throws at the call rather than filter — and gave the body nothing: the body's own `a.max()` was refused
+("possibly empty") under a precondition that had just taken its maximum. A postcondition's `result <= a.max()` on
+a maybe-empty array was refuted with `fails on: f(new int[0])` as if the claim failed there, where the postcondition
+throws; and `@Ensures({ a.max() == a.max() })` on a maybe-empty array **proved** — mint-once makes the unconstrained
+extremum equal to itself, while the runtime throws. That last one is the silent false proof; the rest were
+misattributed refusals. Measured too, and unchanged: a subscript's bounds and a division's divisor in a contract
+aren't checked either (`@Requires({ a[0] > 0 })`, `@Requires({ 10 / n > 1 })` compile cleanly) — the same shape, left
+open below; and `f(new int[0])` as a caller's actual is a loud skip (an array constructor isn't a modelled actual).
+
+**Fix** — one rule in two directions, Phase 414's for a dereference applied to an extremum:
+- **Where the contract filters, assume.** `assumeContractExtremaNonEmpty`: each primitive array (a formal or a field
+  of the class, `primitiveArrayNames`) whose `max()`/`min()` the contract evaluates whenever it is true (`trueExtrema`,
+  Phase 414's `trueDerefs` walk in an *extrema* mode: both sides of an `&&`, an `||` only what both ways evaluate, a
+  negation flips) is `0 < a.length`. Asserted wherever the precondition is assumed (`assumePreconditionNonNullFacts`
+  rides along into checkPath, the implicit-site context and the value-flow replay) and for each class invariant at
+  entry (`assumeClassInvariants`, not for a constructor, not under field copies).
+- **Where the contract is checked, prove.** In `checkPath`, `contractExtremumSites` walks the postcondition and the
+  exit invariants collecting each `a.max()`/`a.min()` on a primitive array with the guards it is reached under (an
+  `&&`'s right where its left is true, an `||`'s where false, a ternary's arms under its condition; a closure body
+  isn't walked). Each becomes `guards ⟹ 0 < a.length`, conjoined into the one exit check so the body replay runs
+  once; an untranslatable guard is a loud skip. A refuting model that breaks one is reported as the contract
+  throwing — `Reporter.formatContractExtremumEmpty`: "The postcondition of f may throw rather than hold or fail:
+  a.max() is reached on an empty array … obligation: 0 < a.length … fails on: f(new int[0])" — and the claim isn't
+  then also reported as failing there.
+- Phase 60's vacuity case ("empty-range max claim refuted") keeps refusing, now for the right reason: its
+  postcondition throws on the always-empty array.
+
+**Open:**
+- a contract's subscript (`a[0]`) and division (`10 / n`) are the same shape — a partial operation the contract
+  itself evaluates — and remain unchecked; the walker and the two hooks are where they would go;
+- a list's `xs.max() + 1` in a precondition NPEs on an empty list; a precondition's dereference of a maybe-null
+  *value* (not a name) is Phase 414's open edge, not an extremum's;
+- an array constructor as a caller's actual (`f(new int[0])`) is outside the fragment at the call site.
+
+**Shipped tests:** group `P527 contract extremum`, 19 cases: a precondition's `max()`/`min()` filtering (the body's
+`max()` verifies, `a[0]` bounded, under a negation, a negated `||` evaluating both sides, a `double[]`), not filtering behind an `||` (the body's `max()`
+refused; a flag's `||` leaves `a.length > 0` unknown), an `Integer[]`'s owing nothing; a postcondition's reached on a
+maybe-empty array (the throw message with `fails on: f(new int[0])`), guarded by its own `||`, by the precondition,
+by a throwing path, by a ternary, mis-guarded by `&&` (refused), the tautology refused; the class invariant filtering
+at entry (`a.length > 0` provable) and owed at exit (emptying refused, a non-empty replacement verifies); a list's
+`max()` as a value. Phase 60's vacuity case now expects the throw message.
+
+Mutation-checked: 6 of 6 killed: no precondition filter (4), no invariant entry filter (1), the exit obligation
+dropped (2, the tautology and the emptying write), an `&&`'s guard polarity flipped (2), any array taken as primitive
+(the `Integer[]` case), a negation not flipping in the extrema walk (the negated `||`, added for it).
+
 ## Definition of done, per increment
 
 An increment is done when:

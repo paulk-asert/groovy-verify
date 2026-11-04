@@ -56,9 +56,14 @@ a coverage metric. In expressions the fragment is:
 - `xs.max()` / `xs.min()` as the witnessed-extremum spec — `r` bounds every element and is achieved by one
   of them, so `result == a.max()` means what you'd write by hand — over Int (Phase 60), `BigDecimal`/Real
   (Phase 76) **and** `double` lists/arrays (Phase 77, guarded all-non-NaN since FP isn't totally ordered); a
-  body `a.max()`/`a.min()` carries an implicit **non-empty obligation** (`[].max()` throws
-  `UnsupportedOperationException`, the same `0 < size` shape as `first()`/`pop()`), so it's refused unless the
-  receiver is provably non-empty — *in the body; the same call inside a contract isn't yet well-definedness-checked*;
+  body `a.max()`/`a.min()` carries an implicit **non-empty obligation** (an empty primitive array's throws
+  `UnsupportedOperationException`, the same `0 < size` shape as `first()`/`pop()`; an empty list's answers
+  null, which the nullity model carries), so it's refused unless the receiver is provably non-empty; the same
+  call in a contract (Phase 527) is a filter where the contract filters — a `@Requires` or an entry invariant
+  that held was evaluated without throwing, so its array is non-empty for the body, as a dereferenced
+  reference is non-null — and an obligation where the contract is checked: an `@Ensures` or exit invariant owes
+  `0 < a.length` where the call is reached, under the `&&`/`||`/ternary guards before it, refused as "the
+  postcondition may throw" rather than as the claim failing;
   `double[]` / `List<Double>` element predicates ride the same FP theory (a hand-written extremum *loop*
   stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
 - aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold

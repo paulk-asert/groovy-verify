@@ -6916,6 +6916,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Set<String> known = entryReferenceNames(currentMethod)
         for (String n : derefed) if (known.contains(n)) s.assertExpr(s.not(enc.nullityOf(n)))
+        assumeContractExtremaNonEmpty(s, enc, reqAst)   // Phase 527 — and what its evaluation took the extremum of
     }
 
     /** Phase 414 — the calls that throw on a null receiver however dispatched (measured, Groovy 6); `every`/`any`/
@@ -6956,76 +6957,92 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 414 — the names {@code e} dereferences whenever it's evaluated and true: both sides of an {@code &&};
      *  for an {@code ||}, what its left does when true and also does when false and the right true. */
-    private static Set<String> trueDerefs(Expression e) {
+    private static Set<String> trueDerefs(Expression e, boolean extrema = false) {
         // Phase 512 — a NotExpression IS-A BooleanExpression: `!(p && q)` is true where `q` was never evaluated
-        if (e instanceof NotExpression) return falseDerefs(((NotExpression) e).expression)
-        if (e instanceof BooleanExpression) return trueDerefs(((BooleanExpression) e).expression)   // Phase 415 — an if's
+        if (e instanceof NotExpression) return falseDerefs(((NotExpression) e).expression, extrema)
+        if (e instanceof BooleanExpression) return trueDerefs(((BooleanExpression) e).expression, extrema)   // Phase 415 — an if's
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
             BinaryExpression be = (BinaryExpression) e
-            Set<String> l = trueDerefs(be.leftExpression), r = trueDerefs(be.rightExpression)
+            Set<String> l = trueDerefs(be.leftExpression, extrema), r = trueDerefs(be.rightExpression, extrema)
             if (be.operation.type == Types.LOGICAL_AND) { l.addAll(r); return l }
             Set<String> other = new LinkedHashSet<String>()
-            evaluatedDerefs(be.leftExpression, other)
+            evaluatedDerefs(be.leftExpression, other, extrema)
             other.addAll(r)
             l.retainAll(other)
             return l
         }
         Set<String> out = new LinkedHashSet<String>()
-        evaluatedDerefs(e, out)
+        evaluatedDerefs(e, out, extrema)
         out
     }
 
+    /** Phase 527 — the primitive arrays whose {@code max()}/{@code min()} {@code e} evaluates whenever it's evaluated
+     *  and true: the call throws on an empty array, so a contract that held was evaluated on non-empty ones. */
+    private static Set<String> trueExtrema(Expression e) { trueDerefs(e, true) }
+
     /** Phase 512 — the names {@code e} dereferences whenever it's evaluated and false: an {@code ||}'s sides both;
      *  for an {@code &&}, what its left does when false and also does when true and the right false. */
-    private static Set<String> falseDerefs(Expression e) {
-        if (e instanceof NotExpression) return trueDerefs(((NotExpression) e).expression)
+    private static Set<String> falseDerefs(Expression e, boolean extrema = false) {
+        if (e instanceof NotExpression) return trueDerefs(((NotExpression) e).expression, extrema)
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type in [Types.LOGICAL_AND, Types.LOGICAL_OR]) {
             BinaryExpression be = (BinaryExpression) e
-            Set<String> l = falseDerefs(be.leftExpression), r = falseDerefs(be.rightExpression)
+            Set<String> l = falseDerefs(be.leftExpression, extrema), r = falseDerefs(be.rightExpression, extrema)
             if (be.operation.type == Types.LOGICAL_OR) { l.addAll(r); return l }
-            Set<String> other = trueDerefs(be.leftExpression)
+            Set<String> other = trueDerefs(be.leftExpression, extrema)
             other.addAll(r)
             l.retainAll(other)
             return l
         }
         Set<String> out = new LinkedHashSet<String>()
-        evaluatedDerefs(e, out)
+        evaluatedDerefs(e, out, extrema)
         out
     }
 
     /** Phase 414 — the names {@code e} dereferences whenever it's evaluated: a subscript's, a property read's
      *  (`h.arr` read through is `h$arr`) or a {@link #NULL_THROWING_CALLS} call's receiver, through the operands
      *  always evaluated — not an {@code &&}/{@code ||}'s right, a ternary's arms or a closure's body. */
-    private static void evaluatedDerefs(Expression e, Set<String> out) {
-        if (e instanceof BooleanExpression) { evaluatedDerefs(((BooleanExpression) e).expression, out); return }
+    private static void evaluatedDerefs(Expression e, Set<String> out, boolean extrema = false) {
+        if (e instanceof BooleanExpression) { evaluatedDerefs(((BooleanExpression) e).expression, out, extrema); return }
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             int op = be.operation.type
-            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) { evaluatedDerefs(be.leftExpression, out); return }
+            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) { evaluatedDerefs(be.leftExpression, out, extrema); return }
             if (op == Types.LEFT_SQUARE_BRACKET || op == Types.LEFT_SHIFT) {   // Phase 419 — `xs << v` throws on null too
-                String n = derefName(be.leftExpression)
+                String n = extrema ? null : derefName(be.leftExpression)
                 if (n != null) out.add(n)
             } else if (!(op in [Types.COMPARE_EQUAL, Types.COMPARE_NOT_EQUAL, Types.COMPARE_LESS_THAN,
                                 Types.COMPARE_LESS_THAN_EQUAL, Types.COMPARE_GREATER_THAN, Types.COMPARE_GREATER_THAN_EQUAL,
                                 Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.DIVIDE, Types.MOD])) {
                 return
             }
-            evaluatedDerefs(be.leftExpression, out)
-            evaluatedDerefs(be.rightExpression, out)
+            evaluatedDerefs(be.leftExpression, out, extrema)
+            evaluatedDerefs(be.rightExpression, out, extrema)
         } else if (e instanceof NotExpression) {
-            evaluatedDerefs(((NotExpression) e).expression, out)
+            evaluatedDerefs(((NotExpression) e).expression, out, extrema)
         } else if (e instanceof UnaryMinusExpression) {
-            evaluatedDerefs(((UnaryMinusExpression) e).expression, out)
+            evaluatedDerefs(((UnaryMinusExpression) e).expression, out, extrema)
         } else if (e instanceof CastExpression) {
-            evaluatedDerefs(((CastExpression) e).expression, out)
+            evaluatedDerefs(((CastExpression) e).expression, out, extrema)
         } else if (e instanceof PropertyExpression) {
             PropertyExpression pe = (PropertyExpression) e
             if (pe.safe || pe.propertyAsString in [null, 'class', 'metaClass']) return
-            String n = derefName(pe.objectExpression)
+            String n = extrema ? null : derefName(pe.objectExpression)
             if (n != null) out.add(n)
-            evaluatedDerefs(pe.objectExpression, out)
+            evaluatedDerefs(pe.objectExpression, out, extrema)
         } else if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
+            if (extrema) {
+                // Phase 527 — `a.max()` / `a.min()` on a named array (the caller keeps the primitive ones); its receiver and
+                // arguments are evaluated whatever the call
+                if (!mce.safe && !mce.implicitThis && isExtremumCall(mce) && mce.objectExpression instanceof VariableExpression) {
+                    out.add(((VariableExpression) mce.objectExpression).name)
+                }
+                evaluatedDerefs(mce.objectExpression, out, true)
+                if (mce.arguments instanceof TupleExpression) {
+                    for (Expression a : ((TupleExpression) mce.arguments).expressions) evaluatedDerefs(a, out, true)
+                }
+                return
+            }
             if (mce.safe || mce.implicitThis || !throwsOnNull(mce.methodAsString)) return   // Phase 418 — any that throws
             String n = derefName(mce.objectExpression)
             if (n != null) out.add(n)
@@ -7033,6 +7050,97 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (mce.arguments instanceof TupleExpression) {
                 for (Expression a : ((TupleExpression) mce.arguments).expressions) evaluatedDerefs(a, out)
             }
+        }
+    }
+
+    /** Phase 527 — a zero-argument {@code max()} / {@code min()} call. */
+    private static boolean isExtremumCall(MethodCallExpression mce) {
+        String m = mce.methodAsString
+        (m == 'max' || m == 'min') && mce.arguments instanceof TupleExpression &&
+            ((TupleExpression) mce.arguments).expressions.isEmpty()
+    }
+
+    /**
+     * Phase 527 — the names whose {@code max()}/{@code min()} throws on an empty receiver: the method's formals and its
+     * class's fields of a primitive array type (measured, Groovy 6: an empty {@code int[]}/{@code double[]} throws
+     * {@code UnsupportedOperationException}; an empty list, set or {@code Integer[]} answers null, which Phase 492 models).
+     */
+    private static Set<String> primitiveArrayNames(MethodNode m) {
+        Set<String> out = new LinkedHashSet<String>()
+        if (m == null) return out
+        for (Parameter p : m.parameters) if (isPrimitiveArray(p.type)) out.add(p.name)
+        if (m.declaringClass?.fields != null) for (FieldNode f : m.declaringClass.fields) if (isPrimitiveArray(f.type)) out.add(f.name)
+        out
+    }
+
+    private static boolean isPrimitiveArray(ClassNode t) {
+        t != null && t.isArray() && ClassHelper.isPrimitiveType(t.componentType)
+    }
+
+    /**
+     * Phase 527 — each {@code a.max()} / {@code a.min()} in a contract on a primitive array {@code a} of {@code arrays},
+     * with the guards under which it is evaluated: an {@code &&}'s right runs where its left is true, an {@code ||}'s
+     * where its left is false, a ternary's arms under its condition either way. A closure's body isn't walked (it runs
+     * where the call runs it, not where the contract is evaluated). Each entry: [what, call, receiver, guards], a
+     * guard being [condition, positive].
+     */
+    private static void contractExtremumSites(Expression e, List<Object[]> guards, Set<String> arrays, String what,
+                                              List<Object[]> out) {
+        if (e == null || e instanceof ClosureExpression) return
+        if (e instanceof BooleanExpression) { contractExtremumSites(((BooleanExpression) e).expression, guards, arrays, what, out); return }
+        if (e instanceof NotExpression) { contractExtremumSites(((NotExpression) e).expression, guards, arrays, what, out); return }
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            contractExtremumSites(te.booleanExpression, guards, arrays, what, out)
+            contractExtremumSites(te.trueExpression, withGuard(guards, te.booleanExpression, true), arrays, what, out)
+            contractExtremumSites(te.falseExpression, withGuard(guards, te.booleanExpression, false), arrays, what, out)
+            return
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            int op = be.operation.type
+            contractExtremumSites(be.leftExpression, guards, arrays, what, out)
+            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+                contractExtremumSites(be.rightExpression, withGuard(guards, be.leftExpression, op == Types.LOGICAL_AND), arrays, what, out)
+            } else {
+                contractExtremumSites(be.rightExpression, guards, arrays, what, out)
+            }
+            return
+        }
+        if (e instanceof UnaryMinusExpression) { contractExtremumSites(((UnaryMinusExpression) e).expression, guards, arrays, what, out); return }
+        if (e instanceof CastExpression) { contractExtremumSites(((CastExpression) e).expression, guards, arrays, what, out); return }
+        if (e instanceof PropertyExpression) { contractExtremumSites(((PropertyExpression) e).objectExpression, guards, arrays, what, out); return }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (!mce.safe && !mce.implicitThis && isExtremumCall(mce) && mce.objectExpression instanceof VariableExpression &&
+                    arrays.contains(((VariableExpression) mce.objectExpression).name)) {
+                out.add([what, mce, ((VariableExpression) mce.objectExpression).name, new ArrayList<Object[]>(guards)] as Object[])
+            }
+            contractExtremumSites(mce.objectExpression, guards, arrays, what, out)
+            if (mce.arguments instanceof TupleExpression) {
+                for (Expression a : ((TupleExpression) mce.arguments).expressions) contractExtremumSites(a, guards, arrays, what, out)
+            }
+            return
+        }
+        if (e instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) e).arguments instanceof TupleExpression) {
+            for (Expression a : ((TupleExpression) ((StaticMethodCallExpression) e).arguments).expressions) contractExtremumSites(a, guards, arrays, what, out)
+        }
+    }
+
+    private static List<Object[]> withGuard(List<Object[]> guards, Expression cond, boolean positive) {
+        List<Object[]> r = new ArrayList<Object[]>(guards)
+        r.add([cond, positive] as Object[])
+        r
+    }
+
+    /** Phase 527 — a contract that held was evaluated without throwing: each primitive array whose extremum it took is
+     *  non-empty ({@code 0 < a.length}), as Phase 414 takes a dereferenced reference as non-null. */
+    private void assumeContractExtremaNonEmpty(SmtSession s, Encoder enc, Expression contract) {
+        if (contract == null || currentMethod == null) return
+        Set<String> arrays = primitiveArrayNames(currentMethod)
+        if (arrays.isEmpty()) return
+        for (String n : trueExtrema(contract)) {
+            if (arrays.contains(n)) s.assertExpr(s.lt(s.intLit(0L), enc.sizeOf(n)))
         }
     }
 
@@ -15944,10 +16052,37 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
 
+            // Phase 527 — the exit contracts' own evaluation: a primitive array's max()/min() throws on an empty array,
+            // so each such call in the postcondition or a class invariant owes `0 < a.length` where it is reached (under
+            // the `&&` / `||` / ternary guards before it). Conjoined into the one check; a model breaking one is reported
+            // as the contract throwing, not as the claim failing
+            List<Object[]> wdSites = new ArrayList<Object[]>()   // [what, callText, recv, handle]
+            Set<String> primArrays = primitiveArrayNames(node)
+            if (!primArrays.isEmpty()) {
+                List<Object[]> found = new ArrayList<Object[]>()
+                if (postAst != null) contractExtremumSites(postAst, new ArrayList<Object[]>(), primArrays, 'postcondition', found)
+                for (Expression inv : classInvs) contractExtremumSites(inv, new ArrayList<Object[]>(), primArrays, 'class invariant', found)
+                for (Object[] f : found) {
+                    List<Object> gs = new ArrayList<Object>()
+                    for (Object[] g : (List<Object[]>) f[3]) {
+                        Expression cond = (Expression) g[0]
+                        Object c = enc.translateGoal(cond) ?: enc.translate(cond)
+                        if (c == null) {
+                            throw new UnsupportedConstructException(
+                                "the guard '${cond.text}' before ${((Expression) f[1]).text} in the ${f[0]} is outside fragment")
+                        }
+                        gs.add(((Boolean) g[1]) ? c : session.not(c))
+                    }
+                    Object obl = session.lt(session.intLit(0L), enc.sizeOf((String) f[2]))
+                    Object h = gs.isEmpty() ? obl : session.implies(gs.size() == 1 ? gs.get(0) : session.and(gs), obl)
+                    wdSites.add([f[0], ((Expression) f[1]).text, f[2], h] as Object[])
+                }
+            }
             // Exit obligation: postcondition (if any) AND each class invariant. A single
             // combined check keeps the body-replay cost flat; refutation diagnostic picks
             // the message based on which obligations are in play.
             List<Object> conjuncts = new ArrayList<Object>()
+            for (Object[] w : wdSites) conjuncts.add(w[3])
             // Phase 435 — a conjunction's parts, to name the ones a refuting model breaks
             List<Object[]> postParts = new ArrayList<Object[]>()
             if (postAst != null) {
@@ -16011,6 +16146,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             CheckResult witnessed = node.getNodeMetaData(REDUCER_LAW_KEY) != null ?
                 refuteAtFpWitnesses(session, enc, node) : null
             CheckResult r = witnessed != null ? witnessed : session.check()
+            // Phase 527 — the model reaches an extremum call in a contract on an empty array: the contract throws there
+            if (r.status == CheckResult.Status.REFUTED && !wdSites.isEmpty()) {
+                Object[] thrown = wdSites.find { session.evalDisplay(it[3]) == 'false' }
+                if (thrown != null) {
+                    boolean prevExactWd = exactWitness
+                    exactWitness = auxPathCheck
+                    try { r = shown(r) } finally { exactWitness = prevExactWd }
+                    if (auxPathCheck) auxPathCall = r.failingCall
+                    ASTNode wdAnchor = p.result != null && p.result.lineNumber > 0 ? (ASTNode) p.result : (ASTNode) node
+                    addStaticTypeError(withRepro(Reporter.formatContractExtremumEmpty((String) thrown[0], node.name,
+                        (String) thrown[1], (String) thrown[2], r), r, 'UnsupportedOperationException'), wdAnchor)
+                    return
+                }
+            }
             // Phase 433 — the parameter invariants the model breaks, when the method's own goal holds in it: reported
             // as theirs (an UNKNOWN with no goal of the method's own is theirs too)
             List<Object[]> brokenParamInvs = new ArrayList<Object[]>()
@@ -19822,6 +19971,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (h != null) {
                 s.assertExpr(h)
                 if (Reporter.EXPLAIN) s.explainNoteFact('@Invariant ' + shownText(inv), h)
+                if (currentFieldCopies.isEmpty()) assumeContractExtremaNonEmpty(s, enc, inv)   // Phase 527 — it was evaluated at the last exit
             }
         }
         // Phase 45 — for each class-typed parameter, assume the parameter's class invariants under

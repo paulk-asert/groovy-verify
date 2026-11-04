@@ -877,6 +877,15 @@ class Reporter {
 
     // ---- Implicit safety obligations (array bounds, division, null deref) ----
 
+    /** Phase 527 — a contract's own evaluation would throw: a primitive array's {@code max()}/{@code min()} is reached
+     *  on an empty array (measured, Groovy 6: {@code UnsupportedOperationException}; a list's answers null instead). */
+    static String formatContractExtremumEmpty(String what, String methodName, String callText, String recv, CheckResult result) {
+        implicit("The ${what} of ${methodName} may throw rather than hold or fail: ${callText} is reached on an empty array, " +
+                 "where Groovy throws UnsupportedOperationException",
+            "0 < ${recv}.length",
+            "Could not decide whether ${callText} in the ${what} of ${methodName} is reached on a non-empty array", result)
+    }
+
     static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result, boolean listSubscript = false,
                                     boolean insert = false) {
         // Refuted heads mirror the exception a developer would actually hit (Phase 9). The general

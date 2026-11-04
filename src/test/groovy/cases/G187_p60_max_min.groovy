@@ -86,10 +86,11 @@ class G187_p60_max_min {
          src: tc('class C { @Requires({ a != null && a.length > 0 }) @Ensures({ result == a.max() }) static int f(int[] a) { a.max() } }')],
         [group: 'P60 max/min', name: 'min() on a possibly-empty array is refused', expect: 'IndexOutOfBoundsException',
          src: tc('class C { @Requires({ a != null }) @Ensures({ result == a.min() }) static int f(int[] a) { a.min() } }')],
-        // Vacuity guard: on an empty array the extremum is unconstrained (Groovy's [].max() is
-        // undefined), so a claim about it is NOT provable — the existential can't fire vacuously.
+        // Vacuity guard: on an empty array the extremum is unconstrained (an empty int[]'s max() throws), so a claim
+        // about it is NOT provable — the existential can't fire vacuously. Phase 527 — and the refusal now says what
+        // happens there: the postcondition itself throws, reached on an empty array.
         [group: 'P60 max/min', name: 'empty-range max claim refuted (no vacuous pass)',
-         expect: 'Cannot prove postcondition',
+         expect: ['may throw rather than hold or fail', 'fails on: f(new int[0])'],
          src: tc('class C { @Requires({ a != null && a.length == 0 }) @Ensures({ a.max() == 5 }) static int f(int[] a) { 0 } }')],
     ]
 }
