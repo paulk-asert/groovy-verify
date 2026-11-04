@@ -668,6 +668,9 @@ class Encoder implements TheoryApi {
             ClassNode t = scalarTypes.get(n)
             return t != null && t.name == 'java.lang.String'
         }
+        // Phase 526 — a receiver's String field (`b.s`), the String-sorted `b$s`
+        String rf = receiverRefFieldKey(recv)
+        if (rf != null) return receiverFieldType(rf)?.name == 'java.lang.String'
         // {@code xs[i].startsWith(...)} where {@code xs} is a {@code List<String>} — the GDK
         // {@code getAt} shape and the bracketed binary form both reach here. Routing on element
         // type lets the user filter strings without first assigning to a String-typed local
@@ -2060,7 +2063,7 @@ class Encoder implements TheoryApi {
 
     /** Phase 431 — an object parameter's field {@code c$f}: Bool when the field is a boolean, Int otherwise. */
     private Object fieldVar(String name) {
-        Object en = receiverEnumField(name)   // Phase 522
+        Object en = receiverSortedField(name)   // Phase 522, 526
         if (en != null) return en
         if (!booleanLocals.contains(name)) return varForRaw(name)
         Object cached = env.get(name)
@@ -2071,10 +2074,12 @@ class Encoder implements TheoryApi {
     }
 
     /** Phase 522 — a receiver's enum field ({@code b$level}): a value of the enum's sort, not an Int, under the domain
-     *  closure tied to its null flag (Phase 521's, which {@link #isEnumFieldName} takes for a receiver's field too) */
-    private Object receiverEnumField(String name) {
+     *  closure tied to its null flag (Phase 521's, which {@link #isEnumFieldName} takes for a receiver's field too).
+     *  Phase 526 — a String field too ({@code b$s}), a value of the String sort, so {@code b.s == 'x'} and
+     *  {@code b.s.length()} are the string theory's */
+    private Object receiverSortedField(String name) {
         ClassNode ft = receiverFieldType(name)
-        if (ft == null || !(ft.isEnum() || isEnumLikeType(ft))) return null
+        if (ft == null || !(ft.isEnum() || isEnumLikeType(ft) || ft.name == 'java.lang.String')) return null
         scalarTypes.putIfAbsent(name, ft)
         varForOfSort(name, sortForType(ft))
     }
@@ -2173,11 +2178,12 @@ class Encoder implements TheoryApi {
             // doesn't collide).
             PropertyExpression pe = (PropertyExpression) e
             Expression obj = pe.objectExpression
+            // Phase 522 — not an object parameter's field (`m[b.level]`): that's the field's value, not a constant `level`;
+            // Phase 526 — before the String guard below, so a String field `b.s` is the String-sorted `b$s`
+            if (obj instanceof VariableExpression && objectParams?.containsKey(((VariableExpression) obj).name)) return translate(e)
             // Phase 417 — never in the String sort: a string-valued `t.name` isn't an enum constant, and was read as
             // the literal "name"
             if (expectedSort == session.declareSort('String')) return null
-            // Phase 522 — not an object parameter's field (`m[b.level]`): that's the field's value, not a constant `level`
-            if (obj instanceof VariableExpression && objectParams?.containsKey(((VariableExpression) obj).name)) return translate(e)
             if (obj instanceof ClassExpression || obj instanceof VariableExpression) {
                 return session.litOfSort(expectedSort, pe.propertyAsString)
             }
@@ -5172,7 +5178,7 @@ class Encoder implements TheoryApi {
         if (e == null) return null
         String rl = receiverFieldList(e)   // Phase 500 — `b.xs` is the list `b$xs`, and its element reads read that
         if (rl != null) return nullityOf(rl)
-        String ef = receiverEnumFieldKey(e)   // Phase 525 — `b.level`'s flag, `b$level` (Phase 522's, as `b.level == null` reads it)
+        String ef = receiverRefFieldKey(e)   // Phase 525 — `b.level`'s flag, `b$level` (Phase 522's, as `b.level == null` reads it); Phase 526 — any reference field's
         if (ef != null) return nullityOf(ef)
         Expression named = asNamedLists(e)
         if (!named.is(e)) return nullityOfExpr(named)
@@ -5402,10 +5408,22 @@ class Encoder implements TheoryApi {
     /** Phase 525 — {@code b.f}'s key {@code b$f} when {@code b} is an object parameter whose field {@code f} is an
      *  enum (Phase 522's receiver enum field), else null */
     private String receiverEnumFieldKey(Expression e) {
-        if (!(e instanceof PropertyExpression) || !(((PropertyExpression) e).objectExpression instanceof VariableExpression)) return null
-        String key = ((VariableExpression) ((PropertyExpression) e).objectExpression).name + '$' + ((PropertyExpression) e).propertyAsString
-        ClassNode ft = receiverFieldType(key)
+        String key = receiverRefFieldKey(e)
+        ClassNode ft = key == null ? null : receiverFieldType(key)
         ft != null && (ft.isEnum() || isEnumLikeType(ft)) ? key : null
+    }
+
+    /** Phase 526 — {@code b.f}'s key {@code b$f} when {@code b} is an object parameter whose field {@code f} is a
+     *  reference scalar (an enum, a String, a boxed primitive, an object): the fields whose null flag is {@code b$f}'s
+     *  own. Not a primitive, nor a list, array or map (Phases 500 and 413 model those as containers), else null */
+    private String receiverRefFieldKey(Expression e) {
+        if (!(e instanceof PropertyExpression) || !(((PropertyExpression) e).objectExpression instanceof VariableExpression)) return null
+        PropertyExpression pe = (PropertyExpression) e
+        if (pe.isSafe() || pe.isSpreadSafe() || pe.propertyAsString == null) return null
+        String key = ((VariableExpression) pe.objectExpression).name + '$' + pe.propertyAsString
+        ClassNode ft = receiverFieldType(key)
+        if (ft == null || ClassHelper.isPrimitiveType(ft) || ft.isArray() || isCollectionOrMapType(ft)) return null
+        key
     }
 
     /** Phase 524 — the enum type of an enum parameter, an enum constant or (Phase 525) a receiver's enum field, else null */
@@ -7138,7 +7156,8 @@ class Encoder implements TheoryApi {
             // an element or a parameter: names whose nullity a contract states. A computed value's (`result` of
             // `s.reverse()`) isn't tied to its value, and would make `result == 'cba'` unprovable
             boolean stated = indexedAccessTarget(other) != null || (other instanceof VariableExpression &&
-                vcMethod?.parameters?.any { it.name == ((VariableExpression) other).name })
+                vcMethod?.parameters?.any { it.name == ((VariableExpression) other).name }) ||
+                receiverRefFieldKey(other) != null   // Phase 526 — a receiver's field: its flag is a contract's to state
             // Phase 487 — and a list's or a boxed array's element equal to a number literal (`null == 7` is false), so
             // `xs[1] == 7` makes it non-null; a map's read is Phase 486's. A parameter's or a field's only: a computed
             // list's flags (a channel's `toList()`, `result`) aren't tied to what was put in it
@@ -7202,9 +7221,9 @@ class Encoder implements TheoryApi {
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
             }
             // Phase 522 — `b.level == null` for a receiver's enum field: its flag, `b$level`, which the receiver's invariant
-            // states (`level != null`, Phase 496) and the domain closure ties to its value
+            // states (`level != null`, Phase 496) and the domain closure ties to its value; Phase 526 — any reference field's
             Expression rf = isNullLiteral(be.rightExpression) ? be.leftExpression : isNullLiteral(be.leftExpression) ? be.rightExpression : null
-            String fname = receiverEnumFieldKey(rf)
+            String fname = receiverRefFieldKey(rf)
             if (fname != null) {
                 Object isNull = nullityOf(fname)
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)

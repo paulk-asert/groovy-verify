@@ -21698,7 +21698,7 @@ The full suite at the first gate: nothing else moved.
 - a nested enum spelled through its outer class in a contract (`B.L.A`, a property of a property) isn't read as a
   constant: outside the fragment, said so;
 - `b.f == null` for a receiver's field of another reference type (`String`, a list Phase 500 doesn't model) isn't
-  translated.
+  translated — Phase 526.
 
 **Shipped tests:** group `P522 receiver enum field`, 7 cases. 6 fail at the parent commit, each a loud skip where
 the method now verifies or is refuted for its own reason: a null field equal to no constant, every constant refuted
@@ -21828,6 +21828,47 @@ against its own type's constant is still refuted with `f(new B(`.
 
 Mutation-checked: 3 of 3 killed: the type lookup blind to a receiver's field (7), the nullity lookup blind to it (7),
 no receiver enum field key at all (10, two of them Phase 522's `b.level == null` cases: one helper, one path).
+
+## Phase 526 — a receiver's reference field compared with null  *(shipped — capability)*
+
+Phase 522's open item. A receiver's field of a reference type other than an enum (`b.s`, a String; `b.n`, a boxed
+`Integer`; `b.next`, an object) compared with null wasn't translated. Measured at the parent with `final class B {
+String s; Integer n; B next }`: 10 of 10 cases were loud skips, the contract or the return expression outside the
+fragment (`b.s == null` in a precondition, `b.s != null` ensured, under the invariant `s != null`, `b.n == null`,
+`b.next == null`, `b.s == 'x'`, a body's `b.s == null ? 0 : b.s.length()`). Nothing was silent.
+
+Measured too, and left as it is: `static int f(B b) { b.s.length() }` with `b.s` maybe null compiles cleanly, with no
+obligation — Phase 520's recorded policy question (a field dereference's NPE obligation), not this slice's. The
+case isn't pinned: a known hole isn't an expectation. This slice gives every such field the flag that question
+needs.
+
+**Fix.**
+- **The flag.** `receiverRefFieldKey`: `b.f` is `b$f` when `b` is an object parameter and `f` an instance field of a
+  reference scalar type (an enum, a String, a boxed primitive, an object), and not a list, array or map (Phases 500
+  and 413 model those as containers, with their own flags). Phase 525's enum key is this key filtered to enums.
+  `nullityOfExpr(b.f)` and `b.f == null` read `b$f`'s flag, the one the receiver's invariant constrains (`s != null`
+  under Phase 496's receiver scope).
+- **A String field's value.** `b$s` is a value of the String sort (`receiverSortedField`, Phase 522's enum route
+  widened), `b.s` is a String receiver (`isStringReceiver`), and `translateInSort` routes an object parameter's
+  property to the field before the Phase 417 String guard. So `b.s == 'x'` is the string theory's, null-aware as a
+  parameter's is (Phase 445's `stated` takes a receiver's field), and `b.s.length()` is its length.
+- **The repro.** A refuted `b.s != null` builds the receiver: `fails on: f(new B())`, whose fields are null.
+
+**Open:**
+- the field dereference obligation (Phase 520's), now measurable as a knob: every reference field has a flag;
+- a boxed field's value is still an Int (`b.n == 3` compares values; the null flag is separate), as a boxed parameter's
+  is;
+- a receiver's field through an alias (`def c = b; c.s == null`) isn't read: the key is the parameter's name.
+
+**Shipped tests:** group `P526 null receiver field`, 10 cases. All 10 fail at the parent commit, each a loud skip where
+the method now verifies or is refuted for its own reason: a null String field in a body, non-null refuted on a fresh
+receiver (`f(new B())`), non-null by the invariant, by the precondition, a boxed field null and non-null refuted, an
+object field null and non-null by its invariant, a String field equal to a literal non-null, the field's null in a
+body's guard.
+
+Mutation-checked: 6 of 6 killed: no reference field key (every receiver-field case of Phases 522, 525 and 526 falls),
+the nullity lookup blind to the field (1), a String field an Int again (2), `b.s` not a String receiver (2), a field's
+literal equality not null-aware (1), the String guard ahead of the field route again (1).
 
 ## Definition of done, per increment
 
