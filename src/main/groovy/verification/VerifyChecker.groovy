@@ -3345,18 +3345,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private CheckResult shown(CheckResult r) {
         if (r == null) return r
         if (r.status == CheckResult.Status.REFUTED) sawRefutation = true
+        // Phase 534 — a regex match is modelled exactly over ASCII subjects (with \b) or non-surrogate BMP ones (with a
+        // code-point atom), and outside that as an unknown: the model's guard values (hidden keys) say whether this
+        // failure rests on a subject outside, and then it names no known run
+        String outsideKind = null
+        if (r.counterexample != null) {
+            for (String k : new ArrayList<String>(r.counterexample.keySet())) {
+                if (!k.startsWith('regex$outside$')) continue
+                if (r.counterexample.get(k) == 0L && outsideKind != 'ascii') outsideKind = k.contains('$ascii#') ? 'ascii' : 'bmp'
+                r.counterexample.remove(k)
+                r.booleanKeys?.remove(k)
+            }
+        }
+        if (outsideKind != null) {
+            String note = outsideKind == 'ascii' ?
+                'no failing call: the failure rests on a string with a non-ASCII character, where \\b and \\B aren\'t modelled (which characters are word characters depends on the JDK), so no run is known to reach it' :
+                'no failing call: the failure rests on a string with a surrogate or supplementary character, where a code-point atom (., [^…], \\D, \\W, \\S) isn\'t modelled, so no run is known to reach it'
+            if (!r.notes.contains(note)) r.notes.add(note)
+        }
         boolean intEmpty = r.counterexample == null || r.counterexample.isEmpty()
         boolean sortedEmpty = r.sortedCounterexample == null || r.sortedCounterexample.isEmpty()
         if (intEmpty && sortedEmpty) {
             // Phase 374 — an exact witness whose model is empty depends on nothing: every call fails, `f()` among them
-            if (exactWitness && closureCallNote == null && currentMethod != null && currentMethod.parameters.length == 0) {
+            if (outsideKind == null && exactWitness && closureCallNote == null && currentMethod != null && currentMethod.parameters.length == 0) {
                 r.failingCall = currentMethod.name + '()'
             }
             return r
         }
         reproBreaksRequires = false
         reproMapShown = false
-        r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
+        r.failingCall = outsideKind != null ? null : buildFailingCall(r.counterexample, r.sortedCounterexample)
         String breaks = reproBreaksRequires && reproMapShown ? REPRO_MAP_BREAKS_REQUIRES : REPRO_BREAKS_REQUIRES   // Phase 483
         if (reproBreaksRequires && !r.notes.contains(breaks)) r.notes.add(breaks)
         // Phase 380 — a range this model runs backwards: Groovy iterates `lo..<hi` with hi < lo downwards (`0..<-1` is

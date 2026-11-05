@@ -817,32 +817,56 @@ class Encoder implements TheoryApi {
     }
 
     /**
-     * Phase 47c — translate a Groovy regex literal to a Z3 {@code ReExpr}. Recursive-descent
-     * parser supporting the most common features: literal characters, escapes, alternation
-     * ({@code re1 | re2}), concatenation ({@code re1 re2}), quantifiers ({@code re*},
-     * {@code re+}, {@code re?}), groups ({@code (re)}), and character classes
-     * ({@code [abc]}, {@code [a-z]}). Returns null on any unsupported feature (anchors
-     * {@code ^}/{@code $}, predefined classes {@code \d}/{@code \w}/{@code \s},
-     * quantified-ranges {@code {n,m}}, negated classes {@code [^…]}, lookahead/lookbehind,
-     * backreferences) — the caller surfaces the null as an honest skip.
+     * Phase 47c / 534 — {@code s.matches(regex)} (and {@code s ==~ regex}) for a regex literal, as Java's
+     * {@code Pattern.matches} decides it, or null (an honest skip). The pattern must compile under
+     * {@code java.util.regex} (a malformed one throws at runtime, so nothing is claimed) and contain no surrogate,
+     * and {@link RegexParser} must translate all of it exactly; anything else it can't is a skip.
      *
-     * <p>Argument must be a String literal {@code ConstantExpression} — dynamic regex
-     * strings can't be statically parsed. The dispatch already returns null for those.
+     * <p>Phase 534: Java matches by code point, and {@code \b} reads a word character JDK-dependently (ASCII
+     * {@code [A-Za-z0-9_]} from JDK 19, {@code isLetterOrDigit} before). A pattern with a code-point atom
+     * ({@code .}, a negated class, {@code \D}/{@code \W}/{@code \S}) is exact over a subject of non-surrogate BMP
+     * characters, and one with {@code \b}/{@code \B} over an ASCII subject; outside that the match is an unknown
+     * uninterpreted predicate of the subject, one per pattern.
      */
-    private Object parseRegexLiteral(Expression arg) {
-        if (!(arg instanceof ConstantExpression)) return null
+    private Object regexMatch(Object sH, Expression arg, Expression subject) {
+        if (sH == null || !(arg instanceof ConstantExpression)) return null
         Object v = ((ConstantExpression) arg).value
         if (!(v instanceof String)) return null
         String pattern = (String) v
+        for (char ch : pattern.toCharArray()) if (Character.isSurrogate(ch)) return null
         try {
-            RegexParser p = new RegexParser(pattern, session)
-            Object re = p.parseAlt()
-            if (p.pos != pattern.length()) return null   // didn't consume all — malformed or unsupported
-            return re
+            java.util.regex.Pattern.compile(pattern)
         } catch (Throwable t) {
-            return null   // any parse error or unsupported-feature trap → honest skip
+            return null   // a malformed regex throws at runtime: claim nothing
         }
+        RegexParser p
+        Object re
+        try {
+            p = new RegexParser(pattern, session)
+            re = p.parseAlt()
+            if (p.pos != pattern.length()) return null   // didn't consume all — unsupported
+        } catch (Throwable t) {
+            return null   // any unsupported feature → honest skip
+        }
+        Object inRe = session.stringInRegex(sH, re)
+        Object guard = p.usesBoundary ? session.stringInRegex(sH, session.reStar(p.asciiChar())) :
+            p.usesCodePoint ? session.stringInRegex(sH, session.reStar(p.bmpChar())) : null
+        if (guard == null) return inRe
+        // a literal subject: Java's own answer, exact wherever it is JDK-independent (all but \b over non-ASCII)
+        String lit = constStr(subject)
+        if (lit != null && (!p.usesBoundary || lit.chars().allMatch { int c -> c < 0x80 })) {
+            return session.boolLit(java.util.regex.Pattern.matches(pattern, lit))
+        }
+        // the model's value of the guard is shown under a hidden name: a failing call whose subject is outside it is no
+        // run Java is known to fail on, and VerifyChecker withholds it
+        session.displayAs('regex$outside$' + (p.usesBoundary ? 'ascii' : 'bmp') + '#' + (havocCounter++), guard)
+        // outside the guard, Java's answer is some fixed function of the subject: one uninterpreted predicate per
+        // pattern (so the same match in a precondition and a postcondition agrees), sound inside a quantifier too
+        Integer id = REGEX_IDS.computeIfAbsent(pattern) { String k -> REGEX_NEXT_ID.getAndIncrement() }
+        session.ite(guard, inRe, session.applyUF('regex$java#' + id, [sH], session.boolSort()))
     }
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> REGEX_IDS = new java.util.concurrent.ConcurrentHashMap<>()
+    private static final java.util.concurrent.atomic.AtomicInteger REGEX_NEXT_ID = new java.util.concurrent.atomic.AtomicInteger()
 
     /** The String value of a {@code ConstantExpression}, or null if {@code e} isn't a compile-time string. */
     private static String constStr(Expression e) {
@@ -861,16 +885,28 @@ class Encoder implements TheoryApi {
     }
 
     /**
-     * Phase 47c — small recursive-descent regex parser. Builds a Z3 {@code ReExpr} bottom-up
-     * via the {@link SmtSession} regex constructors. Grammar:
+     * Phase 47c / 47d / 534 — a recursive-descent translator from a Java regex to a Z3 {@code ReExpr} with the same
+     * whole-string language. Grammar:
      * <pre>
      *   regex  ::= alt
      *   alt    ::= concat ( '|' concat )*
-     *   concat ::= quant *                              -- empty concat = empty-string regex
-     *   quant  ::= atom ( '*' | '+' | '?' )?
-     *   atom   ::= LIT | '.' | '\' ANY | '(' regex ')' | '[' charclass ']'
-     *   charclass ::= ( LIT | LIT '-' LIT )+            -- no negation, no \d/\w/\s
+     *   concat ::= ( quant | '\b' | '\B' )*             -- an empty concat is the empty-string regex
+     *   quant  ::= atom ( ( '*' | '+' | '?' | '{n}' | '{n,}' | '{n,m}' ) '?'? )?
+     *   atom   ::= LIT | '.' | ESC | '\Q' … '\E' | '(' regex ')' | '(?:' regex ')' | '(?&lt;name&gt;' regex ')'
+     *            | '(?' FLAGS ')' | '(?' FLAGS ':' regex ')' | '[' '^'? class ']' | '^' | '$'
      * </pre>
+     * Exact, Java's way (each measured against {@code Pattern.matches}): {@code .} is any character but a line
+     * terminator ({@code \n \r \u0085    }) unless {@code (?s)}; {@code \t \n \r \f \a \e},
+     * {@code \0ooo}, {@code \xhh}, {@code \x{h…}}, {@code \uhhhh} and {@code \cX} are their characters; a backslash
+     * before a non-letter is that character; {@code \d \w \s} and their negations are ASCII; {@code \Q…\E} is
+     * literal; a lazy quantifier has its greedy twin's language; {@code (?i)} folds ASCII letters (a range by
+     * Java's rule: a character matches if it, its ASCII upper or its ASCII lower case is in the range), scoped to
+     * its group or the rest of the enclosing one. {@code ^} only at the start and {@code $} only at the end of a
+     * top-level alternative (no-ops under {@code matches}). {@code \b}/{@code \B} only at the top level of an
+     * alternative, as a constraint on the characters either side (the start and end read as non-word).
+     * Everything else throws (a skip): back-references, lookaround, atomic groups, possessive quantifiers,
+     * {@code \p}, {@code \h}, {@code \v}, {@code \R}, {@code \X}, {@code \N}, {@code \A}, {@code \z}, {@code \Z},
+     * {@code \G}, class intersection or nesting, and flags other than {@code i} and {@code s}.
      */
     @CompileStatic
     private static class RegexParser {
@@ -878,6 +914,24 @@ class Encoder implements TheoryApi {
         int pos = 0
         final SmtSession session
         final Object strSort
+        /** The current {@code (?i)} / {@code (?s)} flags, saved and restored around each group. */
+        boolean ci = false
+        boolean dotall = false
+        /** Group nesting: {@code ^}, {@code $} and {@code \b} are translated only at depth 0. */
+        int depth = 0
+        /** A code-point atom was used: the match is exact only over non-surrogate BMP subjects. */
+        boolean usesCodePoint = false
+        /** A word boundary was used: the match is exact only over ASCII subjects. */
+        boolean usesBoundary = false
+
+        /** A single-character set over the BMP, and whether it reaches the supplementary code points
+         *  (true exactly for a complemented set, as a positive one names only BMP non-surrogates). */
+        static final class CharSet {
+            final Object re; final boolean supp
+            CharSet(Object re, boolean supp) { this.re = re; this.supp = supp }
+        }
+        /** Markers in a concat's piece list. */
+        static final Object BOUNDARY = new Object(), NOT_BOUNDARY = new Object(), FLAGS = new Object()
 
         RegexParser(String src, SmtSession session) {
             this.src = src
@@ -887,78 +941,181 @@ class Encoder implements TheoryApi {
 
         private char peek() { src.charAt(pos) }
         private boolean done() { pos >= src.length() }
-        private Object reLit(char c) {
-            session.reToRe(session.litOfSort(strSort, String.valueOf(c)))
-        }
-        private Object reLitStr(String s) {
-            session.reToRe(session.litOfSort(strSort, s))
-        }
+        private Object str(String s) { session.litOfSort(strSort, s) }
+        private Object reLitStr(String s) { session.reToRe(str(s)) }
+        private Object range(int lo, int hi) { session.reRange(str(String.valueOf((char) lo)), str(String.valueOf((char) hi))) }
+        private Object union(Object a, Object b) { a == null ? b : session.reUnion(a, b) }
+        private Object notSingle(Object re) { session.reIntersect(session.reAllChar(), session.reComplement(re)) }
+        Object bmpChar() { session.reUnion(range(0, 0xD7FF), range(0xE000, 0xFFFF)) }
+        Object asciiChar() { range(0, 0x7F) }
+        private Object empty() { reLitStr('') }
 
-        /** Phase 47d — {@code \d} → range {@code '0'..'9'}. */
-        private Object reDigit() {
-            session.reRange(
-                session.litOfSort(strSort, '0'),
-                session.litOfSort(strSort, '9'))
+        private CharSet posSet(Object re) { new CharSet(re, false) }
+        private CharSet neg(CharSet s) { new CharSet(notSingle(s.re), !s.supp) }
+        private CharSet digit() { posSet(range((int) ('0' as char), (int) ('9' as char))) }
+        private CharSet word() {
+            posSet(union(union(union(range(0x61, 0x7A), range(0x41, 0x5A)), range(0x30, 0x39)), reLitStr('_')))
         }
-
-        /** Phase 47d — {@code \w} → {@code [a-zA-Z0-9_]}. */
-        private Object reWordChar() {
-            Object lower = session.reRange(session.litOfSort(strSort, 'a'), session.litOfSort(strSort, 'z'))
-            Object upper = session.reRange(session.litOfSort(strSort, 'A'), session.litOfSort(strSort, 'Z'))
-            Object digit = reDigit()
-            Object underscore = reLitStr('_')
-            session.reUnion(session.reUnion(session.reUnion(lower, upper), digit), underscore)
+        private CharSet space() {   // Java's \s: [ \t\n\x0B\f\r]
+            Object acc = null
+            for (int c : [0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D]) acc = union(acc, reLitStr(String.valueOf((char) c)))
+            posSet(acc)
         }
-
-        /** Phase 47d — {@code \s} → ASCII whitespace set (space, tab, LF, CR, FF, VT). */
-        private Object reSpace() {
-            Object[] chars = [
-                reLitStr(' '),
-                reLitStr('\t'),
-                reLitStr('\n'),
-                reLitStr('\r'),
-                reLitStr('\f'),
-                reLitStr(''),   // vertical tab
-            ]
-            Object acc = chars[0]
-            for (int i = 1; i < chars.length; i++) acc = session.reUnion(acc, chars[i])
+        /** One character {@code c}, folded under {@code (?i)} when it is an ASCII letter. */
+        private Object ch(int c) {
+            Object one = reLitStr(String.valueOf((char) c))
+            if (ci && c < 0x80 && Character.isLetter(c)) {
+                int other = Character.isUpperCase(c) ? Character.toLowerCase(c) : Character.toUpperCase(c)
+                return session.reUnion(one, reLitStr(String.valueOf((char) other)))
+            }
+            one
+        }
+        /** The range {@code lo-hi}, with Java's {@code (?i)} rule: c matches if c, its ASCII upper or its ASCII
+         *  lower case is in range — so the extra members are the ASCII letters whose other case is in range. */
+        private Object rangeFolded(int lo, int hi) {
+            Object acc = range(lo, hi)
+            if (!ci) return acc
+            int runStart = -1
+            for (int c = 0x41; c <= 0x7B; c++) {   // the extra letters, coalesced into runs (one range each)
+                boolean extra = false
+                if (c <= 0x7A && Character.isLetter(c) && !(c >= lo && c <= hi)) {
+                    int other = Character.isUpperCase(c) ? Character.toLowerCase(c) : Character.toUpperCase(c)
+                    extra = other >= lo && other <= hi
+                }
+                if (extra && runStart < 0) runStart = c
+                if (!extra && runStart >= 0) { acc = session.reUnion(acc, range(runStart, c - 1)); runStart = -1 }
+            }
             acc
         }
-
-        /** Phase 47d — single-char complement: any one character not in {@code re}. */
-        private Object reNotSingle(Object re) {
-            session.reIntersect(session.reAllChar(), session.reComplement(re))
+        /** A set as one code point's atom: its BMP non-surrogate members (a supplementary member reaches only
+         *  subjects the caller's guard leaves unknown). */
+        private Object atomOf(CharSet s) {
+            if (!s.supp) return s.re
+            usesCodePoint = true
+            session.reIntersect(s.re, bmpChar())
         }
 
         Object parseAlt() {
             Object first = parseConcat()
             while (!done() && peek() == '|' as char) {
                 pos++
-                Object next = parseConcat()
-                first = session.reUnion(first, next)
+                first = session.reUnion(first, parseConcat())
             }
             first
         }
 
         Object parseConcat() {
-            Object acc = null
+            List<Object> pieces = []
+            boolean atStart = true
             while (!done() && peek() != ')' as char && peek() != '|' as char) {
+                char c = peek()
+                if (c == '^' as char) {
+                    if (depth != 0 || !atStart) throw new IllegalStateException('^ not at the start')
+                    pos++
+                    continue
+                }
+                if (c == '$' as char) {
+                    pos++
+                    if (depth != 0 || !(done() || peek() == '|' as char)) throw new IllegalStateException('$ not at the end')
+                    continue
+                }
+                if (c == '\\' as char && pos + 1 < src.length() && (src.charAt(pos + 1) == 'b' as char || src.charAt(pos + 1) == 'B' as char)) {
+                    if (depth != 0) throw new IllegalStateException('word boundary inside a group')
+                    pieces << (src.charAt(pos + 1) == 'b' as char ? BOUNDARY : NOT_BOUNDARY)
+                    pos += 2
+                    usesBoundary = true
+                    atStart = false
+                    continue
+                }
                 Object q = parseQuantified()
-                acc = (acc == null) ? q : session.reConcat(acc, q)
+                if (q.is(FLAGS)) continue   // an inline flag group: no characters, the flags now set
+                pieces << q
+                atStart = false
             }
-            // Empty concat → the empty-string regex (matches only "").
-            acc == null ? reLitStr('') : acc
+            if (!pieces.any { it.is(BOUNDARY) || it.is(NOT_BOUNDARY) }) {
+                Object acc = null
+                for (Object q : pieces) acc = acc == null ? q : session.reConcat(acc, q)
+                return acc == null ? empty() : acc
+            }
+            withBoundaries(pieces)
+        }
+
+        /**
+         * Phase 534 — a concat with word boundaries. A boundary constrains the characters either side of its
+         * position ({@code \b}: one word, one not; {@code \B}: both or neither; the start and end read as
+         * non-word). Pieces between boundaries may match empty, so two boundaries can share a position: the
+         * state carries the last character's class and the classes still allowed for the next one.
+         */
+        private Object withBoundaries(List<Object> pieces) {
+            Object w = word().re
+            Object nw = notSingle(w)
+            Object any = session.reStar(session.reAllChar())
+            // state key: (last is word) × (next may be word) × (next may be non-word) → the language so far
+            Map<List<Boolean>, Object> states = [:]
+            states.put([false, true, true], empty())
+            List<Object> seg = []
+            Closure<Void> applySegment = { List<Object> parts ->
+                Object s = null
+                for (Object q : parts) s = s == null ? q : session.reConcat(s, q)
+                if (s == null) s = empty()
+                Map<List<Boolean>, Object> next = [:]
+                states.each { List<Boolean> k, Object lang ->
+                    // the segment matches empty: the state carries over, its pending constraint too
+                    Object e = session.reConcat(lang, session.reIntersect(s, empty()))
+                    next.put(k, next.containsKey(k) ? session.reUnion(next.get(k), e) : e)
+                    for (boolean firstWord : [true, false]) {
+                        if (firstWord ? !k[1] : !k[2]) continue
+                        for (boolean lastWord : [true, false]) {
+                            Object shaped = session.reIntersect(s, session.reIntersect(
+                                session.reConcat(firstWord ? w : nw, any), session.reConcat(any, lastWord ? w : nw)))
+                            Object l = session.reConcat(lang, shaped)
+                            List<Boolean> nk = [lastWord, true, true]
+                            next.put(nk, next.containsKey(nk) ? session.reUnion(next.get(nk), l) : l)
+                        }
+                    }
+                }
+                states = next
+                return null
+            }
+            for (Object q : pieces) {
+                if (q.is(BOUNDARY) || q.is(NOT_BOUNDARY)) {
+                    applySegment(seg)
+                    seg = []
+                    boolean b = q.is(BOUNDARY)
+                    Map<List<Boolean>, Object> next = [:]
+                    states.each { List<Boolean> k, Object lang ->
+                        // \b: the next is word iff the last isn't; \B: iff it is
+                        boolean nextWord = b ? !k[0] : k[0]
+                        List<Boolean> nk = [k[0], k[1] && nextWord, k[2] && !nextWord]
+                        if (!nk[1] && !nk[2]) return
+                        next.put(nk, next.containsKey(nk) ? session.reUnion(next.get(nk), lang) : lang)
+                    }
+                    states = next
+                } else {
+                    seg << q
+                }
+            }
+            applySegment(seg)
+            Object acc = null
+            states.each { List<Boolean> k, Object lang -> if (k[2]) acc = union(acc, lang) }   // the end reads non-word
+            acc == null ? session.reIntersect(empty(), session.reComplement(empty())) : acc
         }
 
         Object parseQuantified() {
             Object atom = parseAtom()
+            if (atom.is(FLAGS)) return atom
             if (!done()) {
                 char c = peek()
-                if (c == '*' as char) { pos++; return session.reStar(atom) }
-                if (c == '+' as char) { pos++; return session.rePlus(atom) }
-                if (c == '?' as char) { pos++; return session.reOption(atom) }
-                // Phase 47d — {@code {n}}, {@code {n,m}}, {@code {n,}} quantified ranges.
-                if (c == '{' as char) return parseBraceQuantified(atom)
+                Object q = null
+                if (c == '*' as char) { pos++; q = session.reStar(atom) }
+                else if (c == '+' as char) { pos++; q = session.rePlus(atom) }
+                else if (c == '?' as char) { pos++; q = session.reOption(atom) }
+                else if (c == '{' as char) q = parseBraceQuantified(atom)
+                if (q != null) {
+                    if (!done() && peek() == '?' as char) pos++   // lazy: the same language under matches()
+                    else if (!done() && peek() == '+' as char) throw new IllegalStateException('possessive quantifier')
+                    return q
+                }
             }
             atom
         }
@@ -982,104 +1139,210 @@ class Encoder implements TheoryApi {
             if (done() || peek() != '}' as char) throw new IllegalStateException('expected }')
             pos++
             if (openUpper) return session.reLoopAtLeast(atom, lo)
+            if (hi < lo) throw new IllegalStateException('bad range')
             return session.reLoop(atom, lo, hasHi ? hi : lo)
         }
 
         private int parseInt() {
             int start = pos
             while (!done() && Character.isDigit(peek())) pos++
-            if (start == pos) throw new IllegalStateException('expected digits')
+            if (start == pos || pos - start > 6) throw new IllegalStateException('expected digits')
             Integer.parseInt(src.substring(start, pos))
         }
 
         Object parseAtom() {
             if (done()) throw new IllegalStateException('unexpected end')
             char c = peek()
-            if (c == '(' as char) {
-                pos++
-                Object inner = parseAlt()
-                if (done() || peek() != ')' as char) throw new IllegalStateException('expected )')
-                pos++
-                return inner
-            }
+            if (c == '(' as char) return parseGroup()
             if (c == '[' as char) {
                 pos++
-                return parseCharClass()
+                return atomOf(parseCharClass())
             }
             if (c == '.' as char) {
                 pos++
-                return session.reAllChar()
+                Object terms = null
+                if (!dotall) for (int t : [0x0A, 0x0D, 0x85, 0x2028, 0x2029]) terms = union(terms, reLitStr(String.valueOf((char) t)))
+                return atomOf(terms == null ? new CharSet(session.reAllChar(), true) : neg(posSet(terms)))
             }
             if (c == '\\' as char) {
-                pos++
-                if (done()) throw new IllegalStateException('dangling backslash')
-                char esc = src.charAt(pos)
-                pos++
-                // Phase 47d — predefined character classes. Each is a one-character regex; the
-                // capital-letter variants are single-char complements.
-                if (esc == 'd' as char) return reDigit()
-                if (esc == 'D' as char) return reNotSingle(reDigit())
-                if (esc == 'w' as char) return reWordChar()
-                if (esc == 'W' as char) return reNotSingle(reWordChar())
-                if (esc == 's' as char) return reSpace()
-                if (esc == 'S' as char) return reNotSingle(reSpace())
-                // Word-boundary anchors aren't a single-character regex; honest skip.
-                if (esc == 'b' as char || esc == 'B' as char) {
-                    throw new IllegalStateException('word boundary not supported')
-                }
-                return reLit(esc)
-            }
-            // Phase 47d — anchors. {@code String.matches} is whole-string-anchored, so a top-
-            // level {@code ^}/{@code $} is redundant. Translate as the empty-string regex
-            // (matches only ""), which composes correctly with concat: {@code ^foo} becomes
-            // empty + foo = foo.
-            if (c == '^' as char || c == '$' as char) {
-                pos++
-                return reLitStr('')
+                if (pos + 1 < src.length() && src.charAt(pos + 1) == 'Q' as char) return parseQuoted()
+                Object e = parseEscape()
+                return e instanceof CharSet ? atomOf((CharSet) e) : ch((Integer) e)
             }
             if (c == ')' as char || c == ']' as char || c == '|' as char || c == '*' as char ||
-                c == '+' as char || c == '?' as char) {
+                c == '+' as char || c == '?' as char || c == '{' as char || c == '^' as char || c == '$' as char) {
                 throw new IllegalStateException('unexpected metacharacter')
             }
-            if (c == '{' as char) {
-                throw new IllegalStateException('quantified range without preceding atom')
-            }
             pos++
-            reLit(c)
+            ch((int) c)
         }
 
-        Object parseCharClass() {
-            // Phase 47d — negated character class {@code [^…]}: parse the positive class
-            // inside, then complement-and-intersect with allchar to get "any single character
-            // that isn't in the class".
+        /** {@code \Q…\E} (or to the end): its characters, literally. A quantifier after it applies, in Java, to the
+         *  last character only, so one following it is a skip. */
+        private Object parseQuoted() {
+            pos += 2
+            int end = src.indexOf('\\E', pos)
+            String lit = end < 0 ? src.substring(pos) : src.substring(pos, end)
+            pos = end < 0 ? src.length() : end + 2
+            if (!done() && '*+?{'.indexOf((int) peek()) >= 0) throw new IllegalStateException('quantified \\Q…\\E')
+            Object acc = null
+            for (char x : lit.toCharArray()) { Object one = ch((int) x); acc = acc == null ? one : session.reConcat(acc, one) }
+            acc == null ? empty() : acc
+        }
+
+        /** {@code (…)}, {@code (?:…)}, {@code (?<name>…)}, and the flag groups {@code (?is-is)} / {@code (?is-is:…)}. */
+        private Object parseGroup() {
+            pos++
+            boolean saveCi = ci, saveDot = dotall
+            if (!done() && peek() == '?' as char) {
+                pos++
+                if (done()) throw new IllegalStateException('bad group')
+                char k = peek()
+                if (k == ':' as char) {
+                    pos++
+                } else if (k == '<' as char && pos + 1 < src.length() && Character.isLetter(src.charAt(pos + 1))) {
+                    int close = src.indexOf('>', pos)
+                    if (close < 0) throw new IllegalStateException('bad name')
+                    pos = close + 1
+                } else {
+                    boolean on = true
+                    boolean newCi = ci, newDot = dotall
+                    while (!done() && peek() != ')' as char && peek() != ':' as char) {
+                        char f = peek()
+                        pos++
+                        if (f == '-' as char) on = false
+                        else if (f == 'i' as char) newCi = on
+                        else if (f == 's' as char) newDot = on
+                        else throw new IllegalStateException('unsupported group or flag ' + f)
+                    }
+                    if (done()) throw new IllegalStateException('bad flags')
+                    if (peek() == ')' as char) {   // inline: applies to the rest of the enclosing group
+                        pos++
+                        ci = newCi; dotall = newDot
+                        return FLAGS
+                    }
+                    pos++   // ':' — scoped to this group
+                    ci = newCi; dotall = newDot
+                }
+            }
+            depth++
+            Object inner = parseAlt()
+            depth--
+            if (done() || peek() != ')' as char) throw new IllegalStateException('expected )')
+            pos++
+            ci = saveCi; dotall = saveDot
+            inner
+        }
+
+        /** An escape at {@code pos} (the backslash): a character's code (Integer) or a predefined set (CharSet). */
+        private Object parseEscape() {
+            pos++
+            if (done()) throw new IllegalStateException('dangling backslash')
+            char e = src.charAt(pos)
+            pos++
+            switch (e) {
+                case 't' as char: return 0x09
+                case 'n' as char: return 0x0A
+                case 'r' as char: return 0x0D
+                case 'f' as char: return 0x0C
+                case 'a' as char: return 0x07
+                case 'e' as char: return 0x1B
+                case 'd' as char: return digit()
+                case 'D' as char: return neg(digit())
+                case 'w' as char: return word()
+                case 'W' as char: return neg(word())
+                case 's' as char: return space()
+                case 'S' as char: return neg(space())
+                case '0' as char:
+                    int v = 0, n = 0
+                    while (!done() && n < 3 && peek() >= ('0' as char) && peek() <= ('7' as char) && (n < 2 || v <= 31)) {
+                        v = v * 8 + (((int) peek()) - 0x30); pos++; n++
+                    }
+                    if (n == 0) throw new IllegalStateException('bad octal')
+                    return v
+                case 'x' as char:
+                    int x
+                    if (!done() && peek() == '{' as char) {
+                        int close = src.indexOf('}', pos)
+                        if (close < 0) throw new IllegalStateException('bad \\x{}')
+                        x = Integer.parseInt(src.substring(pos + 1, close), 16)
+                        pos = close + 1
+                    } else {
+                        x = Integer.parseInt(src.substring(pos, pos + 2), 16)
+                        pos += 2
+                    }
+                    if (x > 0xFFFF || Character.isSurrogate((char) x)) throw new IllegalStateException('non-BMP escape')
+                    return x
+                case 'u' as char:
+                    int u = Integer.parseInt(src.substring(pos, pos + 4), 16)
+                    pos += 4
+                    if (Character.isSurrogate((char) u)) throw new IllegalStateException('surrogate escape')
+                    return u
+                case 'c' as char:
+                    if (done()) throw new IllegalStateException('bad \\c')
+                    int cx = ((int) peek()) ^ 64
+                    pos++
+                    return cx
+            }
+            if (Character.isLetterOrDigit(e)) throw new IllegalStateException('unsupported escape \\' + e)
+            (int) e   // a backslash before a non-alphanumeric is that character
+        }
+
+        CharSet parseCharClass() {
+            // A negated class [^…]: the complement of the positive set, one code point wide.
             boolean negated = false
             if (!done() && peek() == '^' as char) {
                 negated = true
                 pos++
             }
             Object acc = null
-            while (!done() && peek() != ']' as char) {
-                char c = peek()
-                pos++
+            boolean supp = false
+            boolean first = true
+            while (!done() && (peek() != ']' as char || first)) {
+                if (peek() == ']' as char || peek() == '[' as char) throw new IllegalStateException('nested or leading ] class')
+                if (peek() == '&' as char && pos + 1 < src.length() && src.charAt(pos + 1) == '&' as char) {
+                    throw new IllegalStateException('class intersection')
+                }
+                first = false
+                Object lo = classChar()
+                if (lo instanceof CharSet) {
+                    CharSet s = (CharSet) lo
+                    acc = union(acc, s.re)
+                    supp = supp || s.supp
+                    continue
+                }
+                int loC = (Integer) lo
                 // {@code c-c} range, but only if the dash isn't the last char of the class.
-                if (!done() && peek() == '-' as char && pos + 1 < src.length() &&
-                    src.charAt(pos + 1) != ']' as char) {
+                if (!done() && peek() == '-' as char && pos + 1 < src.length() && src.charAt(pos + 1) != ']' as char) {
                     pos++   // consume '-'
-                    char hi = peek()
-                    pos++
-                    Object lo = session.litOfSort(strSort, String.valueOf(c))
-                    Object hiStr = session.litOfSort(strSort, String.valueOf(hi))
-                    Object range = session.reRange(lo, hiStr)
-                    acc = (acc == null) ? range : session.reUnion(acc, range)
+                    if (peek() == '[' as char) throw new IllegalStateException('range to a class')
+                    Object hi = classChar()
+                    if (hi instanceof CharSet) throw new IllegalStateException('range to a class')
+                    int hiC = (Integer) hi
+                    if (hiC < loC) throw new IllegalStateException('bad range')
+                    acc = union(acc, rangeFolded(loC, hiC))
                 } else {
-                    Object single = reLit(c)
-                    acc = (acc == null) ? single : session.reUnion(acc, single)
+                    acc = union(acc, ch(loC))
                 }
             }
             if (done() || peek() != ']' as char) throw new IllegalStateException('expected ]')
             pos++
             if (acc == null) throw new IllegalStateException('empty character class')
-            negated ? reNotSingle(acc) : acc
+            CharSet s = new CharSet(acc, supp)
+            negated ? neg(s) : s
+        }
+
+        /** One class member: a character's code or, for {@code \d}-style escapes, a set. */
+        private Object classChar() {
+            char c = peek()
+            if (c == '\\' as char) {
+                if (pos + 1 < src.length() && 'bBQE'.indexOf((int) src.charAt(pos + 1)) >= 0) {
+                    throw new IllegalStateException('unsupported class escape')
+                }
+                return parseEscape()
+            }
+            pos++
+            (int) c
         }
     }
 
@@ -7419,9 +7682,7 @@ class Encoder implements TheoryApi {
         // the inline parser handles. (`=~`, the *find* operator, returns a Matcher and stays out.)
         if (op == Types.MATCH_REGEX) {
             Object strSort = session.declareSort('String')
-            Object lH = translateInSort(be.leftExpression, strSort)
-            Object re = parseRegexLiteral(be.rightExpression)
-            return (lH != null && re != null) ? session.stringInRegex(lH, re) : null
+            return regexMatch(translateInSort(be.leftExpression, strSort), be.rightExpression, be.leftExpression)
         }
 
         // Phase 61 — BigDecimal arithmetic & comparison via Z3's exact Real sort. Fires when an
@@ -9023,9 +9284,7 @@ class Encoder implements TheoryApi {
             // character classes {@code [a-z]}/{@code [abc]}, groups). Unsupported features
             // return null and surface as honest skips.
             if (m == 'matches' && args.size() == 1) {
-                Object re = parseRegexLiteral(args.get(0))
-                if (re == null) return null
-                return session.stringInRegex(sH, re)
+                return regexMatch(sH, args.get(0), recv)
             }
             // Phase 47f — {@code s.lastIndexOf(sub)} as uninterpreted with weak axioms.
             // Groovy's no-arg default for fromIndex is {@code length(s)} (search the whole string).

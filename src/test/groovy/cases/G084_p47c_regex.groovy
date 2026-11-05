@@ -86,13 +86,13 @@ class G084_p47c_regex {
                         @Ensures({ result == 1 })
                         static int f(String s) { s.matches("[0-9]+") ? 1 : 0 }
                     }''')],
-        // Unsupported feature: word-boundary {@code \b} isn't a single-character regex; the
-        // parser bails out and the verifier emits an honest skip diagnostic.
+        // Unsupported feature: a back-reference isn't regular; the parser bails out and the verifier
+        // emits an honest skip diagnostic. (It was {@code \b} until Phase 534 modelled it.)
         [group: 'P47c regex', name: 'unsupported regex feature honest-skips',
          expect: 'Skipped verification of postcondition',
          src: tc('''class C {
                         @Ensures({ result == 1 })
-                        static int f() { "abc".matches("\\\\babc\\\\b") ? 1 : 0 }
+                        static int f() { "aa".matches("(a)\\\\1") ? 1 : 0 }
                     }''')],
     ]
 }

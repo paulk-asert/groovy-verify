@@ -110,7 +110,8 @@ a coverage metric. In expressions the fragment is:
   `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/56/87);
 - `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /
-  regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion. The
+  regex `matches` / `==~` with a literal pattern, as `java.util.regex` decides it, Phase 534) and GString
+  interpolation, plus `Integer.toString` / `parseInt` conversion. The
   string-*rewriting* ops are uninterpreted (literal-pinned / weak-axiom) — `toUpperCase` / `toLowerCase` /
   `reverse` (Phase 47i — `"abc".reverse() == "cba"` and literal involution fold; symbolic algebra
   stays out). The three substitution methods (Phase 47b/47f) are sound by construction: an **all-constant**
@@ -120,7 +121,15 @@ a coverage metric. In expressions the fragment is:
   *absent ⇒ no-op* and *equal-length ⇒ length-preserving*; `replaceFirst` with a **plain-literal** regex
   lowers to Z3's first-occurrence `str.replace`; `replaceAll` with a plain-literal regex keeps the same weak
   axioms. A *real* regex (metacharacters) over a symbolic receiver **skips loudly** rather than be mis-modelled
-  as a literal substring;
+  as a literal substring. A regex `matches` (Phase 534) translates a pattern that compiles, exactly as Java matches
+  it: the escapes (`\t`, `\x41`, `\u0041`, `\0101`, `\cA`, …), `.` excluding the line terminators, `\d`/`\w`/`\s` and
+  their negations, classes and ranges, `\Q…\E`, lazy quantifiers, `(?:…)` and named groups, `(?i)` (ASCII case
+  folding) and `(?s)`, scoped as Java scopes them, `^` / `$` at an alternative's edge, and `\b` / `\B` at an
+  alternative's top level. A code-point atom (`.`, `[^…]`, `\D`, `\W`, `\S`) is exact over non-surrogate BMP
+  strings, and `\b` over ASCII ones (its word characters depend on the JDK); outside that the match is an unknown
+  predicate, and a failure resting on one names no call. Back-references, lookaround, atomic groups, possessive
+  quantifiers, `\p{…}`, `\h`, `\v`, `\R`, `\A`/`\z`/`\Z`/`\G`, class intersection or nesting, other flags, a
+  malformed pattern and a non-literal one **skip loudly**;
   plus **read-only per-character loops** — a quantified loop invariant over `s.charAt(i)` (the string analogue
   of the array ∀-element proofs), with the char literal spelled `('a' as char)` (Phase 105). *Building* a
   string char-by-char times out on the seq theory, so a constructed buffer goes through `char[]` (an

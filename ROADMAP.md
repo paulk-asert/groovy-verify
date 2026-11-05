@@ -22228,6 +22228,70 @@ ignoring a BigDecimal's factor (3), `add` ignoring the SI round trip (1), scalar
 quotient ignoring a BigDecimal's reciprocal (1), a BigDecimal literal integer-typed (11), a divisor not closed
 non-zero (1).
 
+## Phase 534 — regex as Java decides it  *(shipped — soundness + capability)*
+
+The `\b` and `(?i)` backlog item (Phase 47d's deferred list). Measured first: 84 literal `s.matches(re)` forms, each
+checked both ways against `Pattern.matches` on JDK 17, with every claim the opposite of Java's answer expected not to
+verify. **53 proved** — the Phase 47c/47d parser read Java's regex syntax loosely:
+
+- an escape it didn't know was its letter: `\t \n \r \f \a \e \cA \x41 \u0041` (`'t'.matches('\\t')` proved), and
+  `\pL \A \z \Z \G \h \v \R` and the back-reference `\1`;
+- `.` matched a line terminator (`\n \r \u0085 \u2028 \u2029`), and a supplementary character's two UTF-16 units as two;
+- inside a class, `\d` and `\w` were a backslash and a letter (`'d'.matches('[\\d]')`), and `&&` two ampersands;
+- `^` and `$` anywhere were no-ops (`'ab'.matches('a^b')`); `\Q…\E` was letters;
+- a malformed pattern, which throws at runtime (`[z-a]`, `a{2,1}`, `a\Eb`, `\k`, `\y`), proved a result.
+
+And over a parameter: `s.matches('.')` proved `s.length() == 1` (an emoji has 2), and `[^a]` the same.
+
+**Shipped:** `Encoder.regexMatch` and a rewritten `RegexParser`. A pattern must compile under `java.util.regex` and
+hold no surrogate. Exact, each form measured: Java's escapes; `.` without the line terminators, unless `(?s)`; ASCII
+`\d \w \s` and negations; classes with escapes, ranges and negation (a class's `[` or `&&`, and a leading `]`, skip);
+`\Q…\E` (a quantifier after it skips: it applies to the last character only); lazy quantifiers (the same language
+under `matches`; possessive skips); `(?:…)` and named groups; `(?i)`, `(?-i)`, `(?i:…)` with Java's ASCII folding
+(a range by Java's rule: `c`, its ASCII upper or lower case in range) and scoping (to the end of the enclosing group,
+across `|`); `(?s)`; `^` only at an alternative's start and `$` only at its end, both at the top level (no-ops under
+`matches`). `\b` / `\B` at an alternative's top level: a small state machine over the pieces between boundaries
+carries the last character's class and the classes still allowed for the next, so two boundaries at one position
+(`\b\Ba`) and pieces that match empty are exact; the start and end read as non-word.
+
+Two guards. A code-point atom (`.`, `[^…]`, `\D`, `\W`, `\S`) is exact over strings of non-surrogate BMP characters,
+and `\b` over ASCII ones, because which characters are word characters depends on the JDK (JDK 19 made `\b` agree
+with ASCII `\w`; before, `isLetterOrDigit`, so `'é'.matches('\\b.\\b')` is true on JDK 17). Outside the guard the
+match is an uninterpreted predicate of the subject, one per pattern (so it agrees between a precondition and a
+postcondition, and works under a quantifier). The guard's model value is shown under a hidden key, and a refutation
+whose model puts a subject outside names no call, with a note. A literal subject is decided by `Pattern.matches`
+itself, except `\b` over a non-ASCII literal.
+
+**Boundary:** back-references, lookaround, atomic groups, possessive quantifiers, `\p{…}`, `\h`, `\v`, `\R`, `\X`,
+`\N{…}`, `\A`/`\z`/`\Z`/`\G`, class intersection and nesting, flags other than `i` and `s`, `\b` in a group or
+quantified, `^`/`$` elsewhere and a non-literal pattern skip loudly; a true claim needing `\b` past ASCII, or a code
+point past the BMP, isn't proved; and Z3 times out on some regex-and-`contains` combinations (`[a-zA-Z]+` with
+`!s.contains('1')`, also before this phase).
+
+**Shipped tests:** group `P534 regex as Java decides it`, 233 cases. 141 literal forms, each claim Java's answer or its
+opposite: line terminators and code points, escapes (and `\0477`, octal's two-digit case), classes, quoting, lazy
+quantifiers and groups, anchors, word boundaries (`é` both ways, JDK-dependent), flags, and the forms outside the
+fragment (`(\bcat)`, `\Qab\E*`, and `(?<a-b>a)b`, which the parser would take and Java rejects). 82 of the same forms
+over a parameter pinned by `@Requires`, since a literal subject is decided by `Pattern.matches` and the translation
+isn't exercised. And 10 over a free parameter: `.` and a length, `a.b` and a newline, `\t`, `(?i)yes` right and
+wrong with its run, `(?i)[a-c]{2}`, `\bcat\b` not proved past ASCII, a word-bounded `cat` in a lower-case ASCII string,
+`.` under `every`, and two code-point patterns outside the guard staying independent. A withheld call is asserted
+absent (`refute: 'fails on'`).
+
+Mutation-checked: 30 of 30 killed (12 survivors on the first run, all for want of cases: the parameter-pinned forms,
+both claims for `é`, `\0477`, the three skips and the two-pattern case were added): no `Pattern.compile` prefilter (2),
+`.` matching the terminators (1) or missing U+2028 (2), no code-point guard (3), no ASCII guard for `\b` (1), `\t` as
+`t` (4), `\e` wrong (1), `\cX` without the xor (1), octal's third digit always taken (2), an unknown letter escape
+literal (9), `^` (2) or `$` (2) anywhere, `\b` in a group (4), `\B` as `\b` (8), a pending boundary dropped over an
+empty piece (8), the end not non-word (2), the start a word (10), no case folding (10), a range unfolded (3), `(?i)` not
+restored after a group (2), a scoped flag leaking (1), `(?-i)` ignored (1), a possessive quantifier as greedy (1), a
+quantified `\Q…\E` (2), a class's `\d` literal (5), `&&` taken (1), a negated set not reaching the supplementary
+characters (5), a literal subject ignoring `\b`'s JDK dependence (4), one predicate for every pattern (1), and no
+withholding (13).
+
+Also: Phase 47c's `unsupported regex feature honest-skips` case used `\b`, which now verifies; it uses a
+back-reference.
+
 ## Definition of done, per increment
 
 An increment is done when:
