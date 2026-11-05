@@ -178,11 +178,15 @@ class VerifyHarness {
             String all = errors?.join('\n') ?: ''
             // `expect:` — one substring or a list of them — every one must appear (Phase 291: a list, e.g. a
             // diagnostic AND the `@ line L, column C.` position it must be anchored at)
-            List<String> wants = c.expect instanceof List ? (List<String>) c.expect : [(String) c.expect]
+            List<String> wants = c.expect == null ? [] : (c.expect instanceof List ? (List<String>) c.expect : [(String) c.expect])
             String missing = wants.find { String w -> !all.contains(w) }
+            // `expectAny:` — a list of substrings, at least one of which must appear: a verdict the solver may reach
+            // either way within its budget (a true claim the model can't prove, refuted on a spurious model or undecided)
+            List<String> anyOf = (List<String>) c.expectAny
+            if (missing == null && anyOf && !anyOf.any { String w -> all.contains(w) }) missing = "one of ${anyOf}"
             ok = errors != null && missing == null
             detail = ok ? '' : (errors == null
-                ? "expected error containing '${c.expect}', but compiled cleanly"
+                ? "expected error containing '${c.expect ?: c.expectAny}', but compiled cleanly"
                 : "expected '${missing}', got:\n      ${all.replaceAll('\n', '\n      ')}")
             // Optional `refute`: assert a substring is ABSENT from the diagnostic (e.g. an
             // internal/synthetic name that must not leak into a user-facing counterexample).

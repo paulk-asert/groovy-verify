@@ -28,6 +28,9 @@ class G501_p460_list_minus_order {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = "Phase 460: a removal from a list (`xs - n`, `xs - ys`) keeps every other element, in order — a kept element is still contained, a kept head stays in front, a sorted list stays sorted — where only what was removed and the size were modelled."
 
+    /** Not proved, by either verdict the solver's budget allows: refuted (on a model of the abstraction) or undecided. */
+    static final List<String> NOT_PROVED = ['Cannot prove postcondition', 'Could not decide postcondition']
+
     static final List<Map> CASES = [
 
         // ---------- every other element is kept ----------
@@ -39,16 +42,18 @@ class G501_p460_list_minus_order {
                     }''')],
 
         // Not modelled for a list removed: with it, a false claim about `xs - ys` (P458's "removing a list may empty it")
-        // couldn't be refuted in any time. Undecided, not passed
-        [group: "P460 a removal keeps the rest, in order", name: "an element not in a removed list isn't known kept", expect: 'Could not decide postcondition',
+        // couldn't be refuted in any time. Not proved: undecided locally, refuted on a model of the weaker abstraction on
+        // CI (the claim is true at runtime, so that counterexample is spurious) — either verdict, never a proof or a skip
+        [group: "P460 a removal keeps the rest, in order", name: "an element not in a removed list isn't known kept", expectAny: NOT_PROVED,
          src: tc('''class A {
                         @Requires({ xs != null && ys != null && xs.contains(m) && !ys.contains(m) })
                         @Ensures({ result.contains(m) })
                         static List<Integer> f(List<Integer> xs, List<Integer> ys, int m) { xs - ys }
                     }''')],
 
-        // (Phase 492 — refuted until `contains` read a null element as Groovy does; the solver now runs out of time on it)
-        [group: "P460 a removal keeps the rest, in order", name: "an element removed isn't kept for being there", expect: 'Could not decide postcondition',
+        // (Phase 492 — refuted until `contains` read a null element as Groovy does; the solver now runs out of time on
+        // it, and may find a model in a faster budget: either verdict, never a proof or a skip)
+        [group: "P460 a removal keeps the rest, in order", name: "an element removed isn't kept for being there", expectAny: NOT_PROVED,
          src: tc('''class A {
                         @Requires({ xs != null && xs.contains(m) })
                         @Ensures({ result.contains(m) })
