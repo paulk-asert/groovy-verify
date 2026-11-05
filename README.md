@@ -471,9 +471,13 @@ class Maybe {                                              // a hand-rolled Some
 }
 ```
 
-Each extension does a *distinct* job on the one class: **MonadicChecker** shape-checks the `DO` comprehension,
-**PurityChecker** the side-effect freedom of the `@Pure` `some` / `none`, **NullChecker** the nullness, and
-**groovy-verify** proves the five monad/functor laws from `@Monadic` alone — all four compile quietly because this
+Each extension does a *distinct* job on the one class:
+* **MonadicChecker** shape-checks the `DO` comprehension
+* **PurityChecker** the side-effect freedom of the `@Pure` `some` / `none`
+* **NullChecker** the nullness
+* **groovy-verify** proves the five monad/functor laws from `@Monadic` alone
+
+All four compile quietly because this
 `Maybe` *is* lawful. How groovy-verify relates to Groovy's null tooling, and how it pairs orthogonally with the
 regex, combiner, monadic, and purity checkers — each owning *shape* or *syntax* while groovy-verify owns the
 *laws* — is in **[examples/checkers.md](examples/checkers.md)**.
