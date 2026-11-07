@@ -136,6 +136,12 @@ dependencies {
     testImplementation 'systems.uom:systems-common:2.2.1.1'
     testImplementation 'si.uom:si-quantity:2.2.3'   // systems-common 2.2.1.1 still uses si.uom.quantity but no longer depends on it
 
+    // Test-only: Apache Pekko typed actors, so snippets written against the Pekko API (AbstractBehavior,
+    // Behaviors, ActorRef.tell) resolve at compile time — the measurement for a possible Pekko encoding pack.
+    // The engine has no Pekko model yet; it stays out of the published POM like the units jars above.
+    testImplementation platform('org.apache.pekko:pekko-bom_2.13:2.0.0')
+    testImplementation 'org.apache.pekko:pekko-actor-typed_2.13'
+
     // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
     // PurityChecker / ModifiesChecker). Test-only: a consumer supplies these themselves when they
     // combine checkers — groovy-verify neither compiles nor runs against them — so they never reach
