@@ -336,6 +336,37 @@ void sort(int n, int hi, int v) {
 }
 ```
 
+**And past sequential code.** Two processes over Groovy 6's `groovy.concurrent` channels, each waiting for the
+other before it sends. Every compiler accepts this, and at runtime it simply hangs. Here it doesn't compile:
+
+<!-- doclint:case p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
+```groovy
+static int deadlockExercise() {
+    AsyncChannel<Integer> aToB = AsyncChannel.create(1)
+    AsyncChannel<Integer> bToA = AsyncChannel.create(1)
+    async { int x = bToA.first(); aToB.send(x) }
+    async { int y = aToB.first(); bToA.send(y) }
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
+```
+[Static type checking] - Process-network deadlock in 'deadlockExercise': circular wait: the receive on
+'bToA' (line 7 in the task forked at line 7), which waits for the send on 'bToA' (line 8 in the task
+forked at line 8), which waits for the receive on 'aToB' (line 8 in the task forked at line 8), which
+waits for the send on 'aToB' (line 7 in the task forked at line 7), which waits for the first. A one-shot
+channel network is deadlock-free exactly when its wait-for order is well-founded; this one blocks forever.
+Move the send before the blocking receive, fork the producer before awaiting its consumer, or let a
+concurrent task serve the channel.
+```
+
+The error names the cycle, states the theorem the verdict rests on, and lists the ways out. (Its line numbers are
+the compiled file's.) Actors get the same treatment: a `sendAndGet` whose message sits in the actor's stash, so
+the caller blocks forever on a reply that is never produced, is a compile error too. See
+[Concurrency](examples/concurrency.md#sendandget--the-reply-and-the-deadlock-it-can-hide) and
+[the Kerridge gallery](examples/kerridge.md#the-student-mistakes-are-named-compile-errors).
+
 **The full tour** builds from a single proof to that algorithm in five acts, covering every kind of data Groovy
 touches (arrays, lists, sets, maps, `BigDecimal`, IEEE-754 floats, objects, graphs) in the idiom you'd already write:
 
