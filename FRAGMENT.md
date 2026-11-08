@@ -208,7 +208,10 @@ a coverage metric. In expressions the fragment is:
 - a receiver's state through an object parameter: its arrays (Phase 413), lists (Phases 500–506, with writes,
   removals and insertions), boolean and enum fields (Phases 431, 522), and the nullity of any reference
   field (`b.s == null`, a String field a String value — Phases 521, 526), under the receiver's class
-  invariant in Phase 496's receiver scope;
+  invariant in Phase 496's receiver scope. A call on such an object with no body or contract to read havocs its
+  fields only when its class is compiled here; on an object of a **library** type (`Random`, `java.sql.Connection`)
+  it is unmodelled, loudly (Phase 536), since the object may be a subclass compiled anywhere whose method writes
+  anything it reaches; a skeleton gives such a method its frame;
 - `src.findAll { t -> p(t) }` over an `Int`-element list or array (Phase 320): a fresh non-null list with
   `0 <= size <= src.size()` whose every element passes `p` and is drawn from `src`, so `result.every { … }`
   claims and size bounds prove. Not modelled: completeness (every passing element is kept), order and

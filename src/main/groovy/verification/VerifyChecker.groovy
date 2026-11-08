@@ -16728,6 +16728,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // takes the conservative all-fields havoc below.
         if (node != null && assumeCalleeEnsures(s, enc, call, node, null, false)) return true
 
+        // Phase 536 — the havoc below covers the receiver's own fields, which bounds what the callee writes only when
+        // the receiver's class is compiled here: its overrides are then the unit's (Phase 359) or the closed-world
+        // question (Phase 362). An object of a library type may be any subclass compiled anywhere, and even a final
+        // one runs whatever it holds, so a method of it with no body or contract to read may write anything it reaches,
+        // this object's fields or a static among them (`rnd.setSeed(1L)` proved `total` unchanged, and an override
+        // setting `total = 0` broke it). Unmodelled, loudly; a skeleton gives such a method its frame.
+        if (!recvType.isPrimaryClassNode()) {
+            throw new UnsupportedConstructException(
+                "call '${clip(mce.text)}' resolves to no body or contract the verifier can read, and '${recvName}' is a " +
+                "${recvType.nameWithoutPackage}, a library type: the method run may be an override compiled anywhere, which " +
+                "may write anything it reaches — supply a skeleton for it (META-INF/groovy-verify/specs)")
+        }
+
         // Phase 363 — the havoc below covers the RECEIVER's fields only. A callee it couldn't resolve may write what it
         // is handed too (`n.wrap(a)`, whose body stores into `a`): an argument of a mutable type makes the call
         // unmodelled, loudly, rather than framing it by the receiver alone

@@ -215,7 +215,7 @@ class G577_p535_logging {
 
         // ---------- what stays outside: loud skips ----------
         [group: 'P535 logging calls', name: 'an object argument (its toString may run program code) skips',
-         expect: ['Skipped verification of postcondition for inc', "is passed 'this', which it may write"],
+         expect: ['Skipped verification of postcondition for inc', "call 'log.info(state {}, this)' resolves to no body or contract"],
          src: t(SLF, '''class C {
                         private static final Logger log = LoggerFactory.getLogger(C)
                         int count

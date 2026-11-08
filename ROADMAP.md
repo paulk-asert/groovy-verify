@@ -22323,13 +22323,12 @@ call (`xs.isEmpty()`, `log.isDebugEnabled()`) skipped.
 program code) leaves the call to the general rules, which skip it loudly; the fluent slf4j API (`atInfo().log(…)`) and
 log4j2's lambda forms aren't recognised; two level checks are independent unknowns.
 
-**Found, not fixed (next):** Phase 45/363's rule for an unresolved call on a **parameter** receiver havocs only the
-receiver's fields, so a library interface call that dispatches to code writing a **static** proves falsely:
-`static void inc(Appendable sink) { total++; sink.append('x') }` verifies `total == old.total + 1`, with or without a
-class of the unit implementing `Appendable` (and `inc(new Evil())`, whose `append` sets `total = 0`, breaks it). A
-field receiver skips; instance state reached through the receiver is caught. Separately, an abstract unit class
-implementing a library interface makes a call through that interface take Phase 347's trusted "a bodiless method
-writes nothing" reading.
+**Found, not fixed (next):** a logger type with a constant field (slf4j's `Logger` has `ROOT_LOGGER_NAME`) counts
+as an object type, so a call the recogniser declines takes Phase 45/363's fallback for an unresolved callee: havoc
+the receiver's fields, nothing else. That fallback is unsound for any library type (Phase 536). *(Corrected after
+commit: this entry first reported `static void inc(Appendable sink) { total++; sink.append('x') }` as a false proof.
+It wasn't: groovy-contracts rejects `old.total` in a static method's postcondition, a compile error the probe misread
+as a clean compile. A call on a field-less library type like `Appendable` skips loudly.)*
 
 **Shipped tests:** group `P535 logging calls`, 28 cases: an slf4j field; a placeholder; `@Slf4j` and `@Log` GStrings;
 an explicit level check; Pekko's `getContext().getLog()`; in a loop (plain and `@Slf4j`), in an inner loop, after a
@@ -22347,6 +22346,40 @@ the unit's loggers ignored (1), a receiver calling the unit (1), any ternary arm
 always on (2), always off (3), or not marked unmodelled (1), `EvalOrder` casting boolean calls (2), no logging in a
 loop body (3), after a loop (1), or in an inner loop's frame (1), no logging step in a method body (3), no
 logging-ternary shortcut (1), no ternary rewrite (3), its arms swapped (2).
+
+## Phase 536 — a library object's unknown method writes anything  *(shipped — soundness)*
+
+Found in Phase 535: a logger type with a constant field counted as an object type, so a declined logging call took
+Phase 45/363's fallback for an unresolved callee. Measured first, 9 shapes, with an override in the unit where one
+applies. The fallback (havoc the receiver's instance fields, re-assume its class invariants; Phase 363 refuses a mutable
+argument) fires for any receiver whose type has fields, and assumes the receiver's class is the unit's. On a library
+type it isn't: **4 false proofs** — `void inc(Random rnd) { total++; rnd.setSeed(1L) }` proved `total == old.total + 1`
+with an override in the unit setting `total = 0`, and with none (open world); the same reaching `this.count` through a
+reference the override holds; and `conn.commit()` on a `java.sql.Connection`, whose fields are constants. A field-less
+library type (`Appendable`, `Flushable`) already skipped, as "no usable @Ensures".
+
+**Shipped:** `applyCrossClassCall` takes the fallback only when the receiver's class is compiled here
+(`isPrimaryClassNode`): its overrides are then the unit's (Phase 359) or the closed-world question (Phase 362).
+Otherwise the call is unmodelled, loudly: "call 'rnd.setSeed(1)' resolves to no body or contract the verifier can
+read, and 'rnd' is a Random, a library type: the method run may be an override compiled anywhere, which may write
+anything it reaches — supply a skeleton for it". A final library type is no exception: it runs whatever it holds (a
+`Scanner` reads a user `InputStream`). A registry skeleton is still consulted first, so a skeleton-framed method is
+unaffected. No other case in the corpus leaned on the fallback for a library type; one message changed (Phase 535's
+object-argument case, now reported by this rule).
+
+**Boundary:** the remedy for a library method that really writes only its object is a skeleton giving its frame;
+none is shipped here.
+
+**Shipped tests:** group `P536 library receivers`, 9 cases: the four false proofs (`Random` with and without an override
+in the unit, through a held reference, and `Connection`), a library object in a field, a logger the Phase 535
+recogniser declines, a field-less library interface still skipping as before, and two controls (a call on an object of
+a class compiled here framed by its body, and a wrong claim past it refuting with its call).
+
+Mutation-checked: disabling the guard fails the six cases that verified before.
+
+**Also:** the Phase 535 entry's "found, not fixed" paragraph was corrected. It reported a static method's
+`old.total` as a false proof; groovy-contracts rejects `old` of a field in a static postcondition, a compile error the
+probe misread.
 
 ## Definition of done, per increment
 
