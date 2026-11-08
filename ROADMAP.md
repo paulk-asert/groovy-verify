@@ -22546,6 +22546,49 @@ private-helper case was added for it), any marker (1), `stopped` with arguments 
 methods counted (4), statics counted (1), public methods ignored (1), signals ignored (1), fields ignored (1), parameters
 ignored (1), the invariant kept beside a postcondition (1), the release not ledgered (2).
 
+## Phase 541 — the Pekko pack, slice 4: a reply on every path  *(shipped — capability)*
+
+Measured first, beside Phase 537's "an unanswered `ask` fails at its timeout": `PekkoSemanticsTest` gains
+`anAskIsAnsweredByWhoeverItsReplyToIsHandedTo` (a handler that passes the `replyTo` to a helper actor, which replies:
+the ask completes with the helper's answer) and `aSecondReplyIsDroppedWithoutFailingTheReplier` (two tells to the
+reply ref: the ask completes with the first, the handler goes on to its next message).
+
+- **New SPI hooks, `EncodingPack.exitObligation(MethodNode)` / `meetsExitObligation(MethodNode, steps, returned)`**:
+  what every normal exit of a method owes by the pack's knowledge of its library, in words, and whether one exit
+  path meets it. `verifyPostcondition` asks each path, before the contracts; a path that doesn't meet it is checked by
+  `checkPath` with the goal `false` (`exitOwed` set), so a model is a feasible run of it (entry assumptions, guards,
+  steps), reported as `Reporter.formatExitObligationUnmet` at the path's return. A method with no contracts is walked
+  for it all the same; a throwing path owes nothing. A check, not a trust: nothing is ledgered.
+- **PekkoPack answers** for a registered handler (Phase 539) whose message type declares an `ActorRef` named `replyTo`
+  (field, property or record component; by name, as the user chose, so the blog's `from` owes nothing): "a reply on
+  `message.replyTo`". A path meets it with a `tell` on `message.replyTo` / `message.replyTo()` / `getReplyTo()` or a
+  local holding it, or by handing it on: an argument of a call or constructor (a message to another actor, the
+  behaviour it becomes, in a step or the returned expression) or a field of the actor it is kept in. A closure is never
+  looked into.
+
+So `onAdd may return without a reply on message.replyTo (pekko pack)`, anchored at the `return` that misses it — on a
+`stopped()` exit too (the asker would time out all the same).
+
+**Boundary:** by name only; a hand-off is taken as meeting it, without following the ref; a closure that replies
+(`xs.each { … }`) doesn't count, and a call with no contract (`xs.each`, `pipeToSelf`) skips the method loudly, as any
+does; a message typed by an interface, a public handler and the functional style owe nothing; a store of the ref
+through another object is outside the fragment (a loud skip); a parameter record's fields don't show in the
+counterexample (a display gap that predates this slice), so the anchor names the path.
+
+**Shipped tests:** group `P541 Pekko reply` (G582), 19 cases: replies on two exits; the rejection path missing its
+reply (line and column pinned) with and without a class invariant; two guards whose neither-path is infeasible;
+replying twice; `stopped()` still owing it; a throw owing nothing; the record accessor; a local alias told and one
+never told; handed on in a message, kept in a field (`pending =` and `this.pending =`), handed to the next behaviour;
+a closure never called; a closure given to `each` (the loud skip); no obligation for `from`, for a non-`ActorRef`
+`replyTo`, or a public handler. Every refuting diagnostic read in full.
+
+Mutation-checked: 15 of 15 killed — no obligation (5), any method owes (1), any `ActorRef` field (1), any `replyTo`
+type (1), field store not a hand-off (2), an alias a hand-off (1), aliases not tracked (1), accessor not a reference
+(1), `tell` not a reply (6), arguments not a hand-off (2), closures looked into (1), the return not looked at (1),
+guards dropped from the feasibility check (1), nothing to decide (5), not run without contracts (1). A sixteenth, the
+branch for a store through another object, survived because it was unreachable (such a store is outside the
+fragment), so it was removed.
+
 ## Definition of done, per increment
 
 An increment is done when:

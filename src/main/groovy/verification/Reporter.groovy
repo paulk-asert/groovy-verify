@@ -286,6 +286,24 @@ class Reporter {
         sb.toString()
     }
 
+    /** Phase 541 — a feasible exit path that doesn't meet a pack's exit obligation ({@code EncodingPack.exitObligation}). */
+    static String formatExitObligationUnmet(String methodName, String owed, String pack, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append(methodName).append(" may return without ").append(owed).append(" (").append(pack).append(" pack)")
+                appendModel(sb, result)
+                break
+            case CheckResult.Status.UNKNOWN:
+                sb.append("Could not decide whether ").append(methodName).append(" may return without ").append(owed)
+                  .append(" (").append(pack).append(" pack; solver: ").append(result.reason).append(")")
+                break
+            default:
+                sb.append("Exit obligation met — no error to report")
+        }
+        sb.toString()
+    }
+
     static String formatClassInvariantViolation(String methodName,
                                                 String invariantText,
                                                 CheckResult result) {

@@ -51,7 +51,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue
  *   <li>{@code AbstractBehavior}'s constructor runs no subclass code ({@code createReceive} is called later);</li>
  *   <li>a full bounded mailbox drops, without blocking the sender;</li>
  *   <li>a stash past its capacity throws at the {@code stash} call;</li>
- *   <li>an {@code ask} nobody answers completes exceptionally at its timeout;</li>
+ *   <li>an {@code ask} nobody answers completes exceptionally at its timeout — but one answered by whichever actor
+ *       its {@code replyTo} was handed on to completes, and a second reply is dropped without failing the replier;</li>
  *   <li>an exception in a handler stops the actor (no restart, unless supervised).</li>
  * </ul>
  */
@@ -281,6 +282,45 @@ class PekkoSemanticsTest {
         assertTrue(failure != null, 'an unanswered ask completed normally')
         assertTrue(failure instanceof java.util.concurrent.TimeoutException,
             "an unanswered ask failed with ${failure?.class?.name}, not a TimeoutException")
+    }
+
+    @Test
+    void anAskIsAnsweredByWhoeverItsReplyToIsHandedTo() {
+        CompletableFuture<ActorRef<ActorRef<String>>> helper = new CompletableFuture<ActorRef<ActorRef<String>>>()
+        ActorSystem<ActorRef<String>> s = system(Behaviors.setup { ctx ->
+            helper.complete(ctx.spawn(Behaviors.receiveMessage { ActorRef<String> r -> r.tell('from the helper'); Behaviors.same() },
+                'helper'))
+            Behaviors.receiveMessage { ActorRef<String> r -> helper.getNow(null).tell(r); Behaviors.same() }   // hands it on
+        })
+        helper.get(5, TimeUnit.SECONDS)
+        String answer = AskPattern.ask(s, { ActorRef<String> replyTo -> replyTo }, Duration.ofSeconds(3), s.scheduler())
+            .toCompletableFuture().get(5, TimeUnit.SECONDS)
+        println "  [runtime] an ask whose replyTo the handler hands to another actor completed with '${answer}'"
+        assertEquals('from the helper', answer, 'an ask answered by the actor its replyTo was handed to did not complete')
+    }
+
+    @Test
+    void aSecondReplyIsDroppedWithoutFailingTheReplier() {
+        ConcurrentLinkedQueue<String> trace = new ConcurrentLinkedQueue<String>()
+        CountDownLatch done = new CountDownLatch(2)
+        ActorSystem<Object> s = system(Behaviors.receiveMessage { Object m ->
+            if (m instanceof ActorRef) {
+                ActorRef<String> r = (ActorRef<String>) m
+                r.tell('first'); r.tell('second')
+                trace << 'replied twice'
+            } else {
+                trace << ('then ' + m)
+            }
+            done.countDown()
+            Behaviors.same()
+        })
+        String answer = AskPattern.ask(s, { ActorRef<String> replyTo -> replyTo }, Duration.ofSeconds(3), s.scheduler())
+            .toCompletableFuture().get(5, TimeUnit.SECONDS)
+        s.tell('next')
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        println "  [runtime] a handler that replies twice: the ask completed with '${answer}'; the handler went on: ${trace.toList()}"
+        assertEquals('first', answer)
+        assertEquals(['replied twice', 'then next'], trace.toList(), 'a second reply failed or stopped the replier')
     }
 
     @Test

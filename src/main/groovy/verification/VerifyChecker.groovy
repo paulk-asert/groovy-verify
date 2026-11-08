@@ -13987,8 +13987,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 363 — an @Ensures this method only INHERITS (a source ancestor's, Phase 123, or a precompiled one's
         // skeleton) is its postcondition too: callers assume it through the ancestor, so the override must prove it
         boolean inheritedEns = ens == null && node.code != null && findContractText(node, 'ensures') != null
-        if (ens == null && !inheritedEns && classInvs.isEmpty() && !nnReturn && !writesThroughInvariantParam(node)) return
         if (node.code == null) return
+        Object[] owedBy = packExitObligation(node)   // Phase 541 — [pack, words] or null
+        boolean contractsOwed = ens != null || inheritedEns || !classInvs.isEmpty() || nnReturn || writesThroughInvariantParam(node)
+        if (!contractsOwed && owedBy == null) return
 
         Expression postAst = (ens != null || inheritedEns) ? contractAstFor(node, 'ensures') : null
         if (ens != null && postAst == null) {
@@ -14020,11 +14022,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod() || node instanceof ConstructorNode)
             if (isListType(node.returnType)) paths = splitTernaryReturns(paths)   // Phase 456
             for (Path p : paths) {
+                if (owedBy != null && !((EncodingPack) owedBy[0]).meetsExitObligation(node, p.steps, p.result)) {
+                    checkExitOwed(node, p, reqAst, (EncodingPack) owedBy[0], (String) owedBy[1])   // Phase 541
+                }
                 List<Expression> invs = classInvs
                 if (!classInvs.isEmpty() && p.result != null && packReleasesInvariant(node, p.result)) {
                     if (postAst == null) continue   // Phase 540 — this exit owes nothing else
                     invs = Collections.<Expression> emptyList()
                 }
+                if (!contractsOwed) continue   // Phase 541 — only the pack's exit obligation brought it here
                 checkPath(node, p, postAst, reqAst, invs)
             }
         } catch (RecursionNeedsDecreasesException e) {
@@ -14032,6 +14038,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
+        }
+    }
+
+    /** Phase 541 — the first pack owing something on every exit of {@code node}: [pack, its words], or null */
+    private static Object[] packExitObligation(MethodNode node) {
+        for (EncodingPack pack : PackRegistry.packs()) {
+            String owed = pack.exitObligation(node)
+            if (owed != null) return [pack, owed] as Object[]
+        }
+        null
+    }
+
+    /** Phase 541 — set while {@link #checkPath} asks only whether its path is feasible: the exit obligation it misses */
+    private String exitOwed = null
+    private EncodingPack exitOwedBy = null
+
+    /** Phase 541 — a path that doesn't meet a pack's exit obligation is an error where it can run: checked with the goal
+     *  {@code false}, so a model is a run of it (the entry assumptions, the guards and the steps all in play) */
+    private void checkExitOwed(MethodNode node, Path p, Expression reqAst, EncodingPack pack, String owed) {
+        exitOwed = owed
+        exitOwedBy = pack
+        try {
+            checkPath(node, p, null, reqAst, Collections.<Expression> emptyList())
+        } finally {
+            exitOwed = null
+            exitOwedBy = null
         }
     }
 
@@ -16319,6 +16351,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object h = enc.translate(inv)
                 if (h != null) conjuncts.add(h)
             }
+            if (exitOwed != null) conjuncts.add(session.boolLit(false))   // Phase 541 — is the path feasible?
             Object ownGoal = conjuncts.isEmpty() ? null : conjuncts.size() == 1 ? conjuncts.get(0) : session.and(conjuncts)
             // Phase 433 — an object parameter written through owes its class invariant at the exit (assumed at entry,
             // Phase 45, and by every later method handed it)
@@ -16491,6 +16524,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String[] rgConf = (String[]) node.getNodeMetaData(RG_CONF_KEY)
             if (rgConf != null) {
                 addStaticTypeError(Reporter.formatGuaranteeConformanceFailure(rgConf[0], rgConf[1], rgConf[2], r), anchor)
+                return
+            }
+            if (exitOwed != null) {
+                addStaticTypeError(Reporter.formatExitObligationUnmet(node.name, exitOwed, exitOwedBy.name(), r), anchor)
                 return
             }
             if (!brokenParamInvs.isEmpty()) {

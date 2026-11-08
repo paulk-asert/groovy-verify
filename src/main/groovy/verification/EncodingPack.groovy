@@ -147,6 +147,14 @@ interface EncodingPack {
      *  returning {@code Behaviors.stopped()}, measured to get no further message). The entry assumption stands;
      *  each use is recorded in the trust ledger as a {@code pack fact}. */
     default boolean releasesInvariantAt(MethodNode m, Expression returned) { false }
+    /** Phase 541 — what every normal exit of {@code m} owes by this pack's knowledge of its library, beyond the
+     *  method's contracts, in words for the diagnostic (e.g. {@code "a reply on message.replyTo"}: a Pekko handler
+     *  given an {@code ask}'s reply ref); null when nothing. The checker then asks {@link #meetsExitObligation} of
+     *  each exit path, and reports one that doesn't meet it where the path is feasible, with its counterexample. */
+    default String exitObligation(MethodNode m) { null }
+    /** Phase 541 — true iff the exit path made of {@code steps} (the body walk's {@code Guard} / {@code Assign} /
+     *  {@code LemmaCall} … steps) and returning {@code returned} meets {@link #exitObligation}. */
+    default boolean meetsExitObligation(MethodNode m, List<Object> steps, Expression returned) { true }
 
     /**
      * A per-method <b>checker pass</b> — pure AST analysis with diagnostics, no SMT (e.g. UnitsPack's C₀

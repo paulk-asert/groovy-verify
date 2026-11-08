@@ -535,7 +535,7 @@ Three reference packs ship in tree: the number-theory spec helpers (`Fib.of`/`Gc
 the Bézout coefficients, through which Gauss's lemma proves), the whole JSR 385 units domain, and a
 combinatorics pack (`Fact.of`, Pascal-rule `Binom.of(n, k)` — the first two-argument spec primitive), and the
 beginnings of an Apache Pekko typed-actor pack (a handler's returned behaviour, `tell`, `super(context)`, its
-message never null, nothing delivered after `stopped()`); each
+message never null, nothing delivered after `stopped()`, a reply on every path); each
 is pinned by its own verify/refute case groups (attributed in the generated `catalog.json`). The SPI, the soundness obligations, and a worked minimum pack are in
 **[PACKS.md](PACKS.md)**.
 

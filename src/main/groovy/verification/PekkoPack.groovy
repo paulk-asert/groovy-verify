@@ -62,6 +62,11 @@ import org.codehaus.groovy.transform.stc.StaticTypesMarker
  *       observe: a Groovy property (a public getter), an instance method other than the private ones and
  *       {@code createReceive()}, or a parameter or field of its type anywhere in the source (a parameter's class
  *       invariant is assumed).</li>
+ *   <li>Phase 541 — a registered handler whose message carries an {@code ActorRef} named {@code replyTo} owes a reply
+ *       on every normal exit: an {@code ask} nobody answers fails at its timeout (measured). Telling it, or a local
+ *       holding it, meets it; so does handing it on (an argument of a call or constructor, a field it is kept in),
+ *       measured to complete the ask when whoever gets it replies. A second reply is dropped harmlessly (measured).
+ *       A closure is never looked into: it may not run.</li>
  * </ul>
  */
 @CompileStatic
@@ -82,6 +87,9 @@ class PekkoPack implements EncodingPack {
     /** The builder steps whose method-reference arguments the runtime calls with a delivered message or signal. */
     static final Set<String> DELIVERING_STEPS = ['onMessage', 'onAnyMessage', 'onSignal'] as Set<String>
 
+    static final String ACTOR_REF = 'org.apache.pekko.actor.typed.ActorRef'
+    static final String REPLY_TO = 'replyTo'
+
     private static final String HANDLER_KEY = 'verification.PekkoPack.handler'
     private static final String UNOBSERVED_KEY = 'verification.PekkoPack.unobservedAfterStop'
 
@@ -89,7 +97,7 @@ class PekkoPack implements EncodingPack {
     String name() { 'pekko' }
 
     @Override
-    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped'] }
+    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply'] }
 
     @Override
     List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef'] }
@@ -113,6 +121,100 @@ class PekkoPack implements EncodingPack {
     @Override
     boolean releasesInvariantAt(MethodNode m, Expression returned) {
         isStoppedMarker(returned) && isRegisteredHandler(m) && unobservedAfterStop(m.declaringClass)
+    }
+
+    @Override
+    String exitObligation(MethodNode m) {
+        if (m == null || m.parameters.length != 1 || !hasReplyTo(m.parameters[0].type) || !isRegisteredHandler(m)) return null
+        "a reply on ${m.parameters[0].name}.${REPLY_TO}".toString()
+    }
+
+    @Override
+    boolean meetsExitObligation(MethodNode m, List<Object> steps, Expression returned) {
+        Set<String> aliases = new HashSet<String>()
+        String msg = m.parameters[0].name
+        for (Object step : steps) {
+            if (step instanceof Assign) {
+                Assign a = (Assign) step
+                boolean ref = isReplyRef(a.rhs, msg, aliases)
+                if (ref && m.declaringClass.getField(a.name) != null) return true   // kept in a field: handed on
+                if (!ref && repliesOrHandsOn(a.rhs, msg, aliases)) return true
+                if (ref) aliases.add(a.name) else aliases.remove(a.name)
+            } else if (step instanceof LemmaCall) {
+                if (repliesOrHandsOn(((LemmaCall) step).call, msg, aliases)) return true
+            }   // a store of a reference through another object is outside the fragment (the method skips)
+        }
+        returned != null && repliesOrHandsOn(returned, msg, aliases)
+    }
+
+    /** The message type declares an {@code ActorRef} named {@code replyTo} (field, property or record component). */
+    static boolean hasReplyTo(ClassNode t) {
+        if (t == null) return false
+        FieldNode f = t.getField(REPLY_TO)
+        if (f != null) return f.type?.name == ACTOR_REF
+        org.codehaus.groovy.ast.PropertyNode pn = t.getProperty(REPLY_TO)
+        pn != null && pn.type?.name == ACTOR_REF
+    }
+
+    /** {@code msg.replyTo}, {@code msg.getReplyTo()}, {@code msg.replyTo()} (a record), or a local holding it. */
+    static boolean isReplyRef(Expression e, String msg, Set<String> aliases) {
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name in aliases
+        if (e instanceof org.codehaus.groovy.ast.expr.PropertyExpression) {
+            org.codehaus.groovy.ast.expr.PropertyExpression pe = (org.codehaus.groovy.ast.expr.PropertyExpression) e
+            return isNamed(pe.objectExpression, msg) && pe.propertyAsString == REPLY_TO
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression c = (MethodCallExpression) e
+            return isNamed(c.objectExpression, msg) && c.methodAsString in [REPLY_TO, 'getReplyTo'] && noArgs(c.arguments)
+        }
+        false
+    }
+
+    private static boolean isNamed(Expression e, String name) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == name
+    }
+
+    /** {@code e} tells the reply ref, or passes it on as an argument of a call or a constructor. A closure is not
+     *  looked into: it may never run ({@code xs.each { … }} over an empty list). */
+    static boolean repliesOrHandsOn(Expression e, String msg, Set<String> aliases) {
+        ReplySeen v = new ReplySeen(msg, aliases)
+        e.visit(v)
+        v.seen
+    }
+
+    private static class ReplySeen extends CodeVisitorSupport {
+        final String msg
+        final Set<String> aliases
+        boolean seen
+
+        ReplySeen(String msg, Set<String> aliases) { this.msg = msg; this.aliases = aliases }
+
+        private void args(Expression a) {
+            List<Expression> as = a instanceof TupleExpression ? ((TupleExpression) a).expressions : [a]
+            for (Expression x : as) if (isReplyRef(x, msg, aliases)) seen = true
+        }
+
+        @Override
+        void visitMethodCallExpression(MethodCallExpression c) {
+            if (c.methodAsString == 'tell' && isReplyRef(c.objectExpression, msg, aliases)) seen = true
+            args(c.arguments)
+            super.visitMethodCallExpression(c)
+        }
+
+        @Override
+        void visitStaticMethodCallExpression(StaticMethodCallExpression c) {
+            args(c.arguments)
+            super.visitStaticMethodCallExpression(c)
+        }
+
+        @Override
+        void visitConstructorCallExpression(ConstructorCallExpression c) {
+            args(c.arguments)
+            super.visitConstructorCallExpression(c)
+        }
+
+        @Override
+        void visitClosureExpression(ClosureExpression c) { }   // not run here
     }
 
     /** {@code Behaviors.stopped()}, argument-free (the overload taking a post-stop callback runs code after). */
