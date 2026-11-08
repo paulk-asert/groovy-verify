@@ -8118,7 +8118,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (at == null || currentMethod == null) return Collections.<Expression> emptyList()
         Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
         if (body == null) return Collections.<Expression> emptyList()
-        if (!body.is(closureFactsBody)) { closureFactsBody = body; closureFactsMap = closureParamFacts(body, currentMethod.declaringClass) }
+        if (!body.is(closureFactsBody)) { closureFactsBody = body; closureFactsMap = closureParamFacts(body, currentMethod.declaringClass, "${currentMethod.declaringClass.name}#${currentMethod.name}".toString()) }
         closureFactsMap.get(at) ?: Collections.<Expression> emptyList()
     }
 
@@ -8133,7 +8133,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * `b <= p && p <= a`. A nested closure keeps its outer facts, except those over a name its own parameter (or
      * implicit `it`) shadows.
      */
-    private static IdentityHashMap<ASTNode, List<Expression>> closureParamFacts(Statement body, ClassNode owner = null) {
+    private static IdentityHashMap<ASTNode, List<Expression>> closureParamFacts(Statement body, ClassNode owner = null, String where = null) {
         IdentityHashMap<ASTNode, List<Expression>> out = new IdentityHashMap<ASTNode, List<Expression>>()
         List<List<Expression>> stack = new ArrayList<List<Expression>>()
         stack.add(new ArrayList<Expression>())
@@ -8166,11 +8166,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Expression a = as.get(i)
                     if (a instanceof ClosureExpression) {
                         Expression it = iterationFact(mce, (ClosureExpression) a)
-                        enter((ClosureExpression) a, it != null ? [it] :
-                            helper != null ? helperParamFacts(helper, i, as, (ClosureExpression) a) : Collections.<Expression> emptyList())
-                    } else if (helper != null && stripCasts(a) instanceof ClosureExpression) {
+                        enter((ClosureExpression) a, withPackClosureFacts(it != null ? [it] :
+                            helper != null ? helperParamFacts(helper, i, as, (ClosureExpression) a) : Collections.<Expression> emptyList(),
+                            mce, i, (ClosureExpression) a, where))
+                    } else if (stripCasts(a) instanceof ClosureExpression &&
+                            (helper != null || packClaimsClosure(mce, i, (ClosureExpression) stripCasts(a)))) {
                         mark(a)   // a coerced literal (`{ x -> … } as Function`)
-                        enter((ClosureExpression) stripCasts(a), helperParamFacts(helper, i, as, (ClosureExpression) stripCasts(a)))
+                        ClosureExpression c = (ClosureExpression) stripCasts(a)
+                        enter(c, withPackClosureFacts(helper != null ? helperParamFacts(helper, i, as, c) : Collections.<Expression> emptyList(),
+                            mce, i, c, where))
                     }
                     else a.visit(this)
                 }
@@ -8183,8 +8187,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Expression> as = e.arguments instanceof TupleExpression ? ((TupleExpression) e.arguments).expressions : [e.arguments]
                 for (int i = 0; i < as.size(); i++) {
                     Expression a = as.get(i)
-                    if (stripCasts(a) instanceof ClosureExpression && helper != null) {
-                        enter((ClosureExpression) stripCasts(a), helperParamFacts(helper, i, as, (ClosureExpression) stripCasts(a)))
+                    if (stripCasts(a) instanceof ClosureExpression && (helper != null || packClaimsClosure(e, i, (ClosureExpression) stripCasts(a)))) {
+                        ClosureExpression c = (ClosureExpression) stripCasts(a)
+                        enter(c, withPackClosureFacts(helper != null ? helperParamFacts(helper, i, as, c) : Collections.<Expression> emptyList(),
+                            e, i, c, where))
                     }
                     else a.visit(this)
                 }
@@ -8197,6 +8203,35 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         body.visit(v)
         out
+    }
+
+    /** Phase 545 — true iff a pack names a parameter of {@code ce}, argument {@code at} of {@code call}, never null. */
+    private static boolean packClaimsClosure(Expression call, int at, ClosureExpression ce) {
+        PackRegistry.packs().any { EncodingPack pk -> !pk.nonNullClosureParams(call, at, ce).isEmpty() }
+    }
+
+    /**
+     * Phase 545 — {@code facts} plus, for each parameter of {@code ce} a pack knows its library never calls it with
+     * as null ({@link EncodingPack#nonNullClosureParams}), {@code p != null}: a fact of the closure's entry, like a
+     * range fact, so the closure's own path (Phase 544) follows it. Not for a parameter the closure assigns, since the
+     * fact would outlive the value. Ledgered as a pack fact at the parameter.
+     */
+    private static List<Expression> withPackClosureFacts(List<Expression> facts, Expression call, int at, ClosureExpression ce, String where) {
+        List<Expression> out = null
+        Set<String> assigned = null
+        for (EncodingPack pk : PackRegistry.packs()) {
+            for (String n : pk.nonNullClosureParams(call, at, ce)) {
+                if (assigned == null) assigned = ce.code == null ? Collections.<String> emptySet() : ChannelDesugar.assignedNames(ce.code)
+                if (assigned.contains(n)) continue
+                if (out == null) out = new ArrayList<Expression>(facts)
+                out.add(new BinaryExpression(new VariableExpression(n), Token.newSymbol(Types.COMPARE_NOT_EQUAL, -1, -1),
+                    ConstantExpression.NULL))
+                Parameter p = ce.parameters?.find { Parameter q -> q.name == n }
+                TrustLedger.record(TrustLedger.PACK_FACT, where ?: '<closure>',
+                    "closure parameter ${n} is never null (${pk.name()} pack)".toString(), p ?: ce)
+            }
+        }
+        out == null ? facts : out
     }
 
     /** Phase 393 — the method a call runs when it is a same-class helper with a body no override replaces (static,

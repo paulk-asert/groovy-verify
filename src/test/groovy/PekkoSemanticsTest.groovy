@@ -18,11 +18,14 @@ import org.apache.pekko.actor.typed.ActorSystem
 import org.apache.pekko.actor.typed.Behavior
 import org.apache.pekko.actor.typed.MailboxSelector
 import org.apache.pekko.actor.typed.PostStop
+import org.apache.pekko.actor.typed.Signal
 import org.apache.pekko.actor.typed.javadsl.AbstractBehavior
 import org.apache.pekko.actor.typed.javadsl.ActorContext
 import org.apache.pekko.actor.typed.javadsl.AskPattern
 import org.apache.pekko.actor.typed.javadsl.Behaviors
 import org.apache.pekko.actor.typed.javadsl.Receive
+import org.apache.pekko.japi.function.Function2
+import org.apache.pekko.japi.function.Predicate
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 
@@ -54,6 +57,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue
  *   <li>an {@code ask} nobody answers completes exceptionally at its timeout — but one answered by whichever actor
  *       its {@code replyTo} was handed on to completes, and a second reply is dropped without failing the replier;</li>
  *   <li>an exception in a handler stops the actor (no restart, unless supervised).</li>
+ *   <li>Phase 545 — the functional style: a closure handed to {@code Behaviors.setup}, {@code receiveMessage},
+ *       {@code receive}, {@code receiveSignal}, or to a {@code BehaviorBuilder} / {@code ReceiveBuilder} step
+ *       ({@code onMessage}, its predicate too, {@code onAnyMessage}, {@code onSignal}) is never handed {@code null}
+ *       for any of its parameters.</li>
  * </ul>
  */
 class PekkoSemanticsTest {
@@ -365,5 +372,74 @@ class PekkoSemanticsTest {
         assertTrue(done.await(5, TimeUnit.SECONDS))
         println "  [runtime] Behaviors.same() then this: ${trace.toList()}"
         assertEquals(['same:1', 'this:2'], trace.toList(), 'Behaviors.same() did not keep the actor and its state')
+    }
+
+    /** Phase 545 — what each functional-style handler closure was handed: {@code where:ok}, or {@code where:null}. */
+    private static final ConcurrentLinkedQueue<String> HANDED = new ConcurrentLinkedQueue<String>()
+
+    private static void handed(String where, Object... args) {
+        HANDED << (where + (args.any { it == null } ? ':null' : ':ok'))
+    }
+
+    /** A message, a refused {@code tell(null)}, then {@code 'stop'}; waits for the system to stop. */
+    private void drive(ActorSystem s, Object... extra) {
+        s.tell('a')
+        try { s.tell(null) } catch (Throwable ignored) { }
+        for (Object e : extra) s.tell(e)
+        s.tell('stop')
+        s.getWhenTerminated().toCompletableFuture().get(10, TimeUnit.SECONDS)
+    }
+
+    private static Behavior<String> next(String m) { m == 'stop' ? Behaviors.<String> stopped() : Behaviors.<String> same() }
+
+    static class ClosureHandlers extends AbstractBehavior<String> {
+        ClosureHandlers(ActorContext<String> c) { super(c) }
+        @Override
+        Receive<String> createReceive() {
+            newReceiveBuilder()
+                .onMessage(String, { String m -> handed('ReceiveBuilder.onMessage predicate', m); m.startsWith('z') } as Predicate<String>,
+                    { String m -> handed('ReceiveBuilder.onMessage (with predicate)', m); Behaviors.<String> same() })
+                .onMessage(String, { String m -> handed('ReceiveBuilder.onMessage', m); next(m) })
+                .onSignal(PostStop, { PostStop sig -> handed('ReceiveBuilder.onSignal', sig); Behaviors.<String> same() })
+                .build()
+        }
+    }
+
+    @Test
+    void aFunctionalHandlerClosureIsNeverHandedNull() {
+        HANDED.clear()
+        drive(system(Behaviors.<String> setup { ActorContext<String> ctx ->
+            handed('setup', ctx)
+            Behaviors.receiveMessage { String m -> handed('receiveMessage', m); next(m) }
+        }))
+        drive(system(Behaviors.<String> receive(
+            { ActorContext<String> c, String m -> handed('receive', c, m); next(m) } as Function2<ActorContext<String>, String, Behavior<String>>,
+            { ActorContext<String> c, Signal sig -> handed('receive signal', c, sig); Behaviors.<String> same() } as Function2<ActorContext<String>, Signal, Behavior<String>>)))
+        drive(system(Behaviors.<String> receive(
+            { ActorContext<String> c, String m -> handed('receive (one function)', c, m); next(m) } as Function2<ActorContext<String>, String, Behavior<String>>)))
+        drive(system(Behaviors.receive(Object)
+            .onMessage(String, { String m -> handed('BehaviorBuilder.onMessage predicate', m); m == 'a' } as Predicate<String>,
+                { String m -> handed('BehaviorBuilder.onMessage (with predicate)', m); Behaviors.same() })
+            .onMessage(String, { String m -> handed('BehaviorBuilder.onMessage', m); m == 'stop' ? Behaviors.stopped() : Behaviors.same() })
+            .onAnyMessage { Object m -> handed('BehaviorBuilder.onAnyMessage', m); Behaviors.same() }
+            .onSignal(PostStop, { PostStop sig -> handed('BehaviorBuilder.onSignal', sig); Behaviors.same() })
+            .build()), 1)
+        drive(system(Behaviors.<String> setup { ActorContext<String> ctx -> new ClosureHandlers(ctx) }))
+        ActorSystem<String> sig = system(Behaviors.<String> receiveSignal { ActorContext<String> c, Signal s ->
+            handed('receiveSignal', c, s); Behaviors.<String> same() })
+        sig.tell('a')
+        sig.terminate()
+        sig.getWhenTerminated().toCompletableFuture().get(10, TimeUnit.SECONDS)
+        Thread.sleep(200)
+        List<String> seen = HANDED.toList()
+        println "  [runtime] functional handler closures were handed: ${seen.countBy { it }}"
+        assertTrue(seen.every { it.endsWith(':ok') }, "a handler closure was handed null: ${seen.findAll { !it.endsWith(':ok') }}")
+        for (String w : ['setup', 'receiveMessage', 'receive', 'receive signal', 'receive (one function)', 'receiveSignal',
+                         'BehaviorBuilder.onMessage predicate', 'BehaviorBuilder.onMessage (with predicate)',
+                         'BehaviorBuilder.onMessage', 'BehaviorBuilder.onAnyMessage',
+                         'BehaviorBuilder.onSignal', 'ReceiveBuilder.onMessage predicate', 'ReceiveBuilder.onMessage',
+                         'ReceiveBuilder.onSignal']) {
+            assertTrue(seen.contains(w + ':ok'), "${w} never ran: the measurement doesn't cover it")
+        }
     }
 }

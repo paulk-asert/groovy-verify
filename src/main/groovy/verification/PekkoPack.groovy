@@ -21,6 +21,7 @@ import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
@@ -67,6 +68,11 @@ import org.codehaus.groovy.transform.stc.StaticTypesMarker
  *       holding it, meets it; so does handing it on (an argument of a call or constructor, a field it is kept in),
  *       measured to complete the ask when whoever gets it replies. A second reply is dropped harmlessly (measured).
  *       A closure is never looked into: it may not run.</li>
+ *   <li>Phase 545 — the functional style: a closure literal handed to {@code Behaviors.setup}, {@code receiveMessage},
+ *       {@code receive}, {@code receiveSignal}, or to an {@code onMessage} (its predicate too) / {@code onAnyMessage} /
+ *       {@code onSignal} step of a {@code BehaviorBuilder} or {@code ReceiveBuilder}, is called only by the runtime,
+ *       and measured never to be handed {@code null}: its reference parameters (or its implicit {@code it}) are
+ *       non-null where it runs ({@code nonNullClosureParams}), unless it assigns one.</li>
  * </ul>
  */
 @CompileStatic
@@ -98,7 +104,7 @@ class PekkoPack implements EncodingPack {
     String name() { 'pekko' }
 
     @Override
-    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply', 'P542 Pekko PostStop'] }
+    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply', 'P542 Pekko PostStop', 'P545 Pekko functional'] }
 
     @Override
     List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef'] }
@@ -117,6 +123,36 @@ class PekkoPack implements EncodingPack {
     @Override
     List<String> nonNullOnEntry(MethodNode m) {
         isRegisteredHandler(m) ? [m.parameters[0].name] : Collections.<String> emptyList()
+    }
+
+    /** Phase 545 — the functional style: {@code Behaviors.setup}'s context, {@code receiveMessage}'s message,
+     *  {@code receive}'s and {@code receiveSignal}'s context and message or signal, and the message or signal of a
+     *  {@code BehaviorBuilder} / {@code ReceiveBuilder} step's handler and predicate. Measured: never null. */
+    @Override
+    List<String> nonNullClosureParams(Expression call, int at, ClosureExpression ce) {
+        if (!isFunctionalHandlerCall(call)) return Collections.<String> emptyList()
+        Parameter[] ps = ce.parameters
+        if (ps == null || ps.length == 0) return ce.isParameterSpecified() ? Collections.<String> emptyList() : ['it']
+        List<String> out = new ArrayList<String>()
+        for (Parameter p : ps) if (!ClassHelper.isPrimitiveType(p.type)) out.add(p.name)
+        out
+    }
+
+    static final Set<String> FUNCTIONAL_FACTORIES = ['setup', 'receiveMessage', 'receive', 'receiveSignal'] as Set<String>
+    static final String BEHAVIOR_BUILDER = JAVADSL + 'BehaviorBuilder'
+
+    /** A call of one of {@link #FUNCTIONAL_FACTORIES} on {@code Behaviors}, or a delivering step of a behaviour or
+     *  receive builder: every closure it is handed runs only as the runtime calls it. */
+    static boolean isFunctionalHandlerCall(Expression call) {
+        if (call instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression s = (StaticMethodCallExpression) call
+            return s.ownerType?.name == BEHAVIORS && s.method in FUNCTIONAL_FACTORIES
+        }
+        if (!(call instanceof MethodCallExpression)) return false
+        MethodCallExpression c = (MethodCallExpression) call
+        String m = c.methodAsString
+        (m in FUNCTIONAL_FACTORIES && declaredBy(c, BEHAVIORS)) ||
+            (m in DELIVERING_STEPS && (declaredBy(c, BEHAVIOR_BUILDER) || declaredBy(c, RECEIVE_BUILDER)))
     }
 
     @Override

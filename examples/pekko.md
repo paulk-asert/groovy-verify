@@ -23,8 +23,8 @@ groovy-verify's `PekkoPack` answers those questions from what Pekko is **measure
 itself with the usual machinery: `@Invariant`, `@Ensures`, `assert`, and counterexamples.
 
 The pack is in tree and matched by name: Pekko is never compiled against, so a build without Pekko pays nothing.
-It covers the Java DSL's `AbstractBehavior` style (Phases 538–542); the functional style (`Behaviors.setup` /
-`receive`) isn't modelled yet.
+It covers the Java DSL's `AbstractBehavior` style (Phases 538–542) and its functional style, `Behaviors.setup` /
+`receive` (Phase 545).
 
 ## Measured first
 
@@ -42,6 +42,7 @@ before a proof is built on the old one.
 | an `ask` nobody answers fails at its timeout | `TimeoutException` after ~320 ms (300 ms timeout) | a reply is owed on every path |
 | …one answered by whoever its `replyTo` was handed to completes | the helper's answer arrives | handing the reply ref on meets the obligation |
 | a second reply is dropped harmlessly | the ask completes with the first; the handler goes on | replying twice is no error |
+| a functional handler closure is never handed `null` | `setup`, `receiveMessage`, `receive`, `receiveSignal`, and a builder's `onMessage` (with its predicate), `onAnyMessage` and `onSignal`, each sent a message, a refused `tell(null)` and a stop: every argument non-null | a handler closure's parameters are non-null |
 
 ## The blog's bot, as written
 
@@ -103,6 +104,44 @@ of every state the program reaches, but it isn't inductive: a step from a state 
 
 `greetingCounter = 1, max = 1` can't be reached: the bot would have stopped. The counterexample is the solver's
 honest answer to the question asked, and the fix is the sharper invariant above.
+
+## The functional style
+
+The same bot without a class: its count is a parameter of a recursive `bot`, and the handler is a closure handed to
+`Behaviors.receive`. What the class invariant says in the `AbstractBehavior` style, `bot`'s precondition says here:
+
+<!-- doclint:case p545-pekko-functional/the-blog-s-functional-bot-verifies-as-written -->
+```groovy
+class FunctionalBot {
+    @Requires({ max >= 1 })
+    static Behavior<Greeted> create(int max) { bot(0, max) }
+
+    @Requires({ max >= 1 && 0 <= greetingCounter && greetingCounter < max })
+    private static Behavior<Greeted> bot(int greetingCounter, int max) {
+        Behaviors.receive { ActorContext<Greeted> context, Greeted message ->
+            int n = greetingCounter + 1
+            context.getLog().info("Greeting $n for ${message.whom}")
+            if (n == max) {
+                return Behaviors.<Greeted> stopped()
+            } else {
+                message.from.tell(new Greet(message.whom, context.getSelf()))
+                return bot(n, max)
+            }
+        }
+    }
+}
+```
+
+It verifies. Two things make that possible:
+
+- **The closure's body is a path of its own** (Phase 544): it is checked from the state where the closure is written,
+  so `n` is `greetingCounter + 1` at `bot(n, max)`, and `n == max` was ruled out on that branch. Drop the `if` and
+  the recursive call refutes inside the handler, at `greetingCounter = 0, max = 1`.
+- **The closure's parameters are never null.** The runtime is the only caller of a closure handed to `setup`,
+  `receiveMessage`, `receive`, `receiveSignal`, or to an `onMessage` (its predicate too), `onAnyMessage` or `onSignal`
+  step of a builder, and it never passes null (measured). A parameter the closure reassigns loses the fact.
+
+Under `@TypeChecked`, give the closure's parameters their types: Groovy 6.0.0 doesn't infer them from the target.
 
 ## A reply on every path
 
@@ -207,20 +246,27 @@ handler:
 [pack fact] HelloWorldBot#onPostStop — the class invariant is neither assumed nor owed in onPostStop: it runs after the actor stops (pekko pack)
 ```
 
+For the functional bot, one line per closure parameter:
+
+```
+[pack fact] FunctionalBot#bot — closure parameter context is never null (pekko pack)
+[pack fact] FunctionalBot#bot — closure parameter message is never null (pekko pack)
+```
+
 The reply obligation is a check, not an assumption, so it isn't listed.
 
 ## Not yet
 
-- **The functional style.** `Behaviors.setup(ctx -> …)` / `Behaviors.receive(…)` aren't modelled. A handler
-  closure's body is checked like any closure's (Phase 544): an `assert` in it, or a call whose precondition it
-  breaks, such as a recursive `bot(ctx, count + 1, max)` past `max`, is refuted. But the facts above aren't given
-  to it, so its `message` and `ctx` may still be reported possibly null. Under
-  `@TypeChecked` on Groovy 6.0.0, `Behaviors.setup(ctx -> new Bot(ctx, max))` also needs `Behaviors.<T>setup(…)`:
-  the lambda's parameter isn't inferred from the return-type target.
-- **Closures as handlers.** `onMessage(T, { m -> … })` isn't verified as a handler, and a closure that replies isn't
-  counted as a reply.
+- **The rest of the functional style.** `withTimers` and `withStash` closures aren't measured, so their scheduler or
+  buffer is possibly null. A closure stored in a variable before it is passed gets nothing. The reply obligation and
+  the stopped release are the `AbstractBehavior` style's only. Under `@TypeChecked` on Groovy 6.0.0,
+  `Behaviors.setup(ctx -> new Bot(ctx, max))` also needs `Behaviors.<T>setup(…)`: the lambda's parameter isn't
+  inferred from the return-type target.
+- **Closures as handlers.** `onMessage(T, { m -> … })` on an `AbstractBehavior`'s builder gets a non-null message and
+  its body checked, but isn't a registered handler: the stopped release and the reply obligation don't apply to it,
+  and a closure that replies isn't counted as a reply.
 - **Calls without contracts.** `pipeToSelf`, `ask` from inside a handler, timers and stash have no skeletons yet, so
   a handler using one skips verification, loudly.
 
-The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–542),
+The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–545),
 and the capability rows in [CAPABILITIES.md](../CAPABILITIES.md).

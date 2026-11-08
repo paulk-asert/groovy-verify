@@ -22701,6 +22701,48 @@ Mutation-checked: 8 of 8 killed — value-flow walk off (4), no skipped-assert r
 steps not replayed (1), no call-site closure marker (6), the marker havocking nothing (2), the call not withheld (3), no
 enclosing guards (1).
 
+## Phase 545 — the Pekko pack, slice 6: the functional style  *(shipped — capability)*
+
+The blog's bot in the functional style (`Behaviors.receive { context, message -> … }`, its count a parameter of a
+recursive `bot(n, max)`) reported a possible NullPointerException at each use of `message` and `context`.
+Phase 544 made a closure's body a path of its own; this slice gives that path its entry.
+
+- **Measured first** (`PekkoSemanticsTest.aFunctionalHandlerClosureIsNeverHandedNull`): each form driven with a
+  message, a refused `tell(null)` and a stop, recording every argument its closures were handed: `setup`,
+  `receiveMessage`, `receive` (one function, and with a signal function), `receiveSignal`, and on both
+  `BehaviorBuilder` and `ReceiveBuilder` `onMessage` (its handler and its predicate), `onAnyMessage` and `onSignal`.
+  Fourteen closures, every argument non-null.
+- **A new SPI hook, `EncodingPack.nonNullClosureParams(call, at, closure)`**: the parameters of a closure literal,
+  passed as argument `at` of a type-checked call, that the library never calls it with as null. The checker adds
+  `p != null` to the closure's entry facts beside Phase 380's ranges and Phase 393's helper facts, so the closure's own
+  path follows it, and ledgers each as a `pack fact` at the parameter. Not for a parameter the closure assigns: the
+  fact would outlive the value. A literal coerced to the parameter's type (`{ … } as Predicate<T>`, needed for a
+  two-function `receive`) counts; so does a static-imported `receiveMessage { … }`.
+- **PekkoPack answers** for a call resolved to `Behaviors` (`setup`, `receiveMessage`, `receive`, `receiveSignal`) or a
+  delivering step of `BehaviorBuilder` / `ReceiveBuilder`: every reference parameter, or the implicit `it`. The
+  literal is the runtime's alone: nothing else can call it.
+
+So the blog's functional bot verifies as written, `bot`'s precondition (`0 <= greetingCounter < max`) carrying what the
+class invariant carries in the `AbstractBehavior` style, and recursing past `max` refutes inside the handler.
+
+**Boundary:** `withTimers` / `withStash` closures aren't measured, so their scheduler or buffer is possibly null; a
+closure stored in a variable first and passed later isn't a literal argument and gets nothing; under `@TypeChecked`
+the closure's parameters need their types (`{ ActorContext<Greeted> context, Greeted message -> … }`); the reply
+obligation (Phase 541) and the stopped release (Phase 540) remain the `AbstractBehavior` style's.
+
+**Shipped tests:** group `P545 Pekko functional` (G586), 15 cases: the blog's functional bot (proved, both facts
+asserted via `trusted:`) and recursing past `max` (refuted, no failing call); `setup` with `receiveMessage`, the
+implicit `it`, a behaviour builder's `onMessage` with its predicate and `onSignal`, a two-function `receive`, a
+static-imported `receiveMessage`, a closure on an `AbstractBehavior`'s receive builder (all proved); withheld for a
+reassigned parameter, at the top level and in a handler nested in `setup`'s closure, for a same-named method of another
+class and of the user's own, and for `withTimers`; `VERIFY_TRUST=deny` failing at the parameter (line and column
+pinned).
+
+Mutation-checked: 9 of 9 killed — the pack gives nothing (9), any method of the name (1, after the call through another
+class was added), no static-call form (1), no builder steps (2), no implicit `it` (1), a reassigned parameter kept (1,
+after the nested-handler case was added: at the top level Phase 544's walk already follows the reassignment), no
+coerced literals (2), not ledgered (5), the checker's static-call branch off (1).
+
 ## Perf ceilings re-based (after Phase 542)
 
 The JUnit `test` run (the only place `PerfBudget` is asserted) passed at Phase 542 at 20,961 solver checks / 13,171
