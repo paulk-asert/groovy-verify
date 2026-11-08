@@ -99,9 +99,8 @@ ${opts.after ?: ''}""")
          src: helloBot(LIVE, AS_WRITTEN, [ensures: '    @Ensures({ greetingCounter < max })'])],
 
         // ---------- anything that could see the stopped state withdraws the release ----------
-        [group: 'P540 Pekko stopped', name: 'an onSignal(PostStop) handler runs after stopped(): no release', expect: BROKEN_AT_STOP,
-         src: helloBot(LIVE, AS_WRITTEN, [receive: 'newReceiveBuilder().onMessage(Greeted, this::onGreeted).onSignal(PostStop, this::onPostStop).build()',
-                                          extra: '    private Behavior<Greeted> onPostStop(PostStop s) { this }\n'])],
+        [group: 'P540 Pekko stopped', name: 'an onSignal(PostStop) closure runs after stopped(), unverified: no release (a PostStop method is Phase 542\'s)', expect: BROKEN_AT_STOP,
+         src: helloBot(LIVE, AS_WRITTEN, [receive: 'newReceiveBuilder().onMessage(Greeted, this::onGreeted).onSignal(PostStop, { PostStop s -> this }).build()'])],
         [group: 'P540 Pekko stopped', name: 'a public method could read the stopped state: no release', expect: BROKEN_AT_STOP,
          src: helloBot(LIVE, AS_WRITTEN, [extra: '    int greetings() { greetingCounter }\n'])],
         [group: 'P540 Pekko stopped', name: 'a Groovy property is a public getter: no release', expect: BROKEN_AT_STOP,

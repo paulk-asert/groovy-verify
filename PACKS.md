@@ -32,12 +32,13 @@ properties, operators, expression claims, value-source aliasing, a checker pass,
 [`CombinatoricsPack`](src/main/groovy/verification/CombinatoricsPack.groovy) (factorial and the Pascal-rule
 binomial — the first **two-argument** primitive, and a worked warning about axiom domain guards: its refute
 twins caught an unguarded-base inconsistency during development). [`PekkoPack`](src/main/groovy/verification/PekkoPack.groovy)
-(Phase 538) is the first pack for a **concurrency library**: Apache Pekko typed actors, matched by name, every
+(Phase 538) is the first pack for a **concurrency library** (worked examples: [examples/pekko.md](examples/pekko.md)): Apache Pekko typed actors, matched by name, every
 fact it uses measured first (`PekkoSemanticsTest`) — returned behaviours as claimed value sources, a pack-shipped
 `ActorRef.tell` skeleton, and `super(context)` through `claimsNoEffect`; and (Phase 539) a registered handler's
 message non-null on entry through `nonNullOnEntry`, ledgered as a `pack fact`; and (Phase 540) no class invariant
 owed where a handler returns `Behaviors.stopped()`, through `releasesInvariantAt`, also a `pack fact`; and (Phase 541)
-a reply owed on every exit of a handler given a `replyTo`, through `exitObligation` / `meetsExitObligation`.
+a reply owed on every exit of a handler given a `replyTo`, through `exitObligation` / `meetsExitObligation`; and
+(Phase 542) a `PostStop` handler run outside the class invariant, through `runsOutsideInvariant`, a `pack fact`.
 
 ## The shape of a pack
 
@@ -69,6 +70,7 @@ value you know is yours (that is what `claimsExpression` exists to prevent — s
 | `claimsNoEffect(e)` *(static context)* | the body walk meeting a statement the core would refuse as "no modelled effect" — true when the pack knows it changes nothing the program reads (Phase 538) | Pekko's `super(context)` in an `AbstractBehavior` subclass (PekkoPack) |
 | `nonNullOnEntry(m)` | assuming a method's entry facts, beside `@NonNull` and the validation constraints — the reference parameters the pack's library never passes as `null`; each is assumed non-null and ledgered as a `pack fact` (Phase 539). Answer only for a method nothing but the library can call: the fact puts no obligation on any caller | a private Pekko handler referenced only as `this::h` in an `onMessage` / `onAnyMessage` / `onSignal` step (PekkoPack) |
 | `releasesInvariantAt(m, returned)` | each exit path of a method that owes the class invariant, with the path's returned expression — true when the pack's library lets nothing observe the object's state after that exit, so the invariant isn't owed there (an `@Ensures` still is; the entry assumption stands). Ledgered as a `pack fact` at the return (Phase 540) | a registered Pekko handler's `return Behaviors.stopped()`, in a class with no `onSignal` step and nothing else that could read its state (PekkoPack) |
+| `runsOutsideInvariant(m)` | setting up a method's class invariants — true when the method may run on a state where the invariant no longer holds and nothing observes the object after it: the invariant is then neither assumed on entry nor owed on exit. Ledgered as a `pack fact` at its first parameter (Phase 542) | a registered Pekko `PostStop` handler, in a class whose stopped state nothing else can read (PekkoPack) |
 | `exitObligation(m)` / `meetsExitObligation(m, steps, returned)` | a method's exit paths — `exitObligation` names, in words, what every normal exit owes by the pack's knowledge of its library (null: nothing), and `meetsExitObligation` says whether one path, its body-walk steps and returned expression, meets it. A path that doesn't is an error where the solver finds it feasible (its guards, the entry assumptions), with the counterexample, anchored at its return; a throwing path owes nothing. It is a check, not a trust, so nothing is ledgered; a method with no contracts is checked for it all the same (Phase 541) | a registered Pekko handler whose message has an `ActorRef replyTo`: each exit tells it or hands it on (PekkoPack) |
 | `claimsValueSource(api, e)` | the checker deciding whether to alias a scalar-handle-less name to its construction expression (read it back via `api.sourceAlias(name)`) | a Quantity-typed local / `result` |
 | `checkMethod(api, node)` | once per method: a pure-AST **checker pass** with diagnostics — no SMT (programs against `CheckerApi`: `reportError`, `cleanBody`, `inferredTypeOf`); best-effort, contained per pack | the C₀ kind-vector check of `as Quantity<K>` casts |

@@ -67,7 +67,7 @@ gets reviewed.
 The ledger has five kinds: in-place `@ThrowsIf`, external spec, opaque `Monoid`/`Semigroup` carrier (Phase
 291), closed world (Phase 362, below), and pack fact (Phase 539: an entry fact an encoding pack assumes from its
 library's measured behaviour, such as a Pekko handler's message being non-null, or no class invariant owed where a
-handler returns `Behaviors.stopped()`). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
+handler returns `Behaviors.stopped()`, or none assumed or owed in a `PostStop` handler). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
 Gradle daemon captures environment variables when it starts, so pass the knob as a system property of the
 compiler JVM:
 

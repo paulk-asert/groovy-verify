@@ -147,6 +147,11 @@ interface EncodingPack {
      *  returning {@code Behaviors.stopped()}, measured to get no further message). The entry assumption stands;
      *  each use is recorded in the trust ledger as a {@code pack fact}. */
     default boolean releasesInvariantAt(MethodNode m, Expression returned) { false }
+    /** Phase 542 — true iff {@code m} may run on a state where the class invariant no longer holds, and nothing
+     *  observes the object after it (e.g. a Pekko {@code PostStop} handler: it runs once after a handler returned
+     *  {@code Behaviors.stopped()}, measured). The invariant is then neither assumed on entry nor owed on exit; the
+     *  release of the exit obligation is recorded in the trust ledger as a {@code pack fact}. */
+    default boolean runsOutsideInvariant(MethodNode m) { false }
     /** Phase 541 — what every normal exit of {@code m} owes by this pack's knowledge of its library, beyond the
      *  method's contracts, in words for the diagnostic (e.g. {@code "a reply on message.replyTo"}: a Pekko handler
      *  given an {@code ask}'s reply ref); null when nothing. The checker then asks {@link #meetsExitObligation} of

@@ -5643,6 +5643,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Expression> rawInvs = (!node.isStatic() && node.declaringClass != null) ?
             classInvariantTexts(node.declaringClass) : Collections.<Expression> emptyList()
         currentClassInvariants = filterEncodableInvariants(rawInvs, node)
+        if (!currentClassInvariants.isEmpty() && packRunsOutsideInvariant(node)) {
+            currentClassInvariants = Collections.<Expression> emptyList()   // Phase 542 — neither assumed nor owed
+        }
         if (node.code != null) {
             try {
                 node.code.visit(currentFacts)
@@ -14039,6 +14042,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
         }
+    }
+
+    /** Phase 542 — a pack knows {@code node} runs where the class invariant needn't hold ({@link
+     *  EncodingPack#runsOutsideInvariant}); ledgered as a {@code pack fact}, at the method's first parameter (or the method) */
+    private boolean packRunsOutsideInvariant(MethodNode node) {
+        if (node.isStatic() || node instanceof ConstructorNode) return false
+        for (EncodingPack pack : PackRegistry.packs()) {
+            if (pack.runsOutsideInvariant(node)) {
+                ASTNode at = node.parameters.length > 0 ? (ASTNode) node.parameters[0] : (ASTNode) node
+                TrustLedger.record(TrustLedger.PACK_FACT, "${node.declaringClass.name}#${node.name}".toString(),
+                    "the class invariant is neither assumed nor owed in ${node.name}: it runs after the actor stops (${pack.name()} pack)".toString(),
+                    at)
+                return true
+            }
+        }
+        false
     }
 
     /** Phase 541 — the first pack owing something on every exit of {@code node}: [pack, its words], or null */

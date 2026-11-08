@@ -22589,6 +22589,41 @@ guards dropped from the feasibility check (1), nothing to decide (5), not run wi
 branch for a store through another object, survived because it was unreachable (such a store is outside the
 fragment), so it was removed.
 
+## Phase 542 — the Pekko pack, slice 5: a PostStop handler runs outside the invariant  *(shipped — capability)*
+
+Resting on Phase 540's measurement (`anAbstractBehaviorThatStopsGetsNoMoreMessagesButPostStopAfter`): an
+`onSignal(PostStop)` handler runs once after a handler returned `Behaviors.stopped()`, on the state that handler left,
+and nothing is delivered after it. Phase 540 withdrew the `stopped()` release for a class with any `onSignal` step;
+this slice narrows that for the PostStop handler itself.
+
+- **A new SPI hook, `EncodingPack.runsOutsideInvariant(MethodNode)`**: the method may run on a state where the class
+  invariant no longer holds, and nothing observes the object after it. Asked once per method in `beforeVisitMethod`,
+  where `currentClassInvariants` is set — the one source of both the entry assumption and the exit obligation — so the
+  invariant is neither assumed nor owed anywhere in that method. Ledgered as a `pack fact` at the first parameter.
+- **PekkoPack answers** for a registered handler (Phase 539) whose parameter is `PostStop`, in a class whose stopped
+  state nothing else reads (Phase 540's `unobservedAfterStop`). That test now passes over a step
+  `onSignal(PostStop, this::h)` (resolved to `ReceiveBuilder`) whose `h` is that handler (the one method of its name);
+  any other signal step still withdraws the release: another signal class (`@TypeChecked` accepts
+  `onSignal(Terminated, this::h)` for an `h(PostStop)`), a handler taking `Signal`, `onSignalEquals`, a closure.
+
+So the blog's `HelloWorldBot` with a PostStop handler that logs its count still proves `greetingCounter < max`, and an
+`assert greetingCounter < max` in that handler refutes, at `greetingCounter = 0, max = 0`: the stopped state.
+
+**Boundary:** a PostStop handler also called directly is an ordinary method (and its step withdraws the release);
+where something else could read the stopped state, the PostStop handler assumes and owes the invariant as any handler
+does; signals other than PostStop are not measured, so their steps keep withdrawing the release.
+
+**Shipped tests:** group `P542 Pekko PostStop` (G583), 9 cases: the blog's bot with a logging PostStop handler (proved,
+the fact asserted via `trusted:`); the invariant not assumed (an assert refuted at the stopped state) and not owed (a
+write breaking it, proved); withdrawn for a handler typed `Signal`, `onSignal(PostStop, …)` to a `Signal` handler,
+`onSignal(Terminated, …)` to a PostStop handler, `onSignal(Terminated, this::onTerminated)`, a direct call; an observed
+class's PostStop handler assuming and owing it; `VERIFY_TRUST=deny` failing at the handler's parameter (line and column
+pinned). P540's case for an `onSignal(PostStop)` step now uses a closure, which still withdraws the release.
+
+Mutation-checked: 9 of 9 killed — no hook (4), observed classes too (1), any parameter type (8), unregistered too (1),
+any signal step sanctioned (5), any signal class (1, after the `onSignal(Terminated, …)` case was added for it), any
+pointer target (2), the invariant kept (2), not ledgered (2).
+
 ## Definition of done, per increment
 
 An increment is done when:

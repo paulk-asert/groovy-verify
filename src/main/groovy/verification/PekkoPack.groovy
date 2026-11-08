@@ -89,6 +89,7 @@ class PekkoPack implements EncodingPack {
 
     static final String ACTOR_REF = 'org.apache.pekko.actor.typed.ActorRef'
     static final String REPLY_TO = 'replyTo'
+    static final String POST_STOP = 'org.apache.pekko.actor.typed.PostStop'
 
     private static final String HANDLER_KEY = 'verification.PekkoPack.handler'
     private static final String UNOBSERVED_KEY = 'verification.PekkoPack.unobservedAfterStop'
@@ -97,7 +98,7 @@ class PekkoPack implements EncodingPack {
     String name() { 'pekko' }
 
     @Override
-    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply'] }
+    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply', 'P542 Pekko PostStop'] }
 
     @Override
     List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef'] }
@@ -121,6 +122,14 @@ class PekkoPack implements EncodingPack {
     @Override
     boolean releasesInvariantAt(MethodNode m, Expression returned) {
         isStoppedMarker(returned) && isRegisteredHandler(m) && unobservedAfterStop(m.declaringClass)
+    }
+
+    @Override
+    boolean runsOutsideInvariant(MethodNode m) { isPostStopHandler(m) && unobservedAfterStop(m.declaringClass) }
+
+    /** A registered handler whose parameter is {@code PostStop}: only the runtime calls it, with that signal. */
+    static boolean isPostStopHandler(MethodNode m) {
+        m != null && m.parameters.length == 1 && m.parameters[0].type?.name == POST_STOP && isRegisteredHandler(m)
     }
 
     @Override
@@ -246,7 +255,7 @@ class PekkoPack implements EncodingPack {
             if (mn.name == 'createReceive' && mn.parameters.length == 0) continue
             return false
         }
-        SignalSteps signals = new SignalSteps()
+        SignalSteps signals = new SignalSteps(dc)
         for (MethodNode mn : dc.methods) mn.code?.visit(signals)
         for (MethodNode mn : dc.declaredConstructors) mn.code?.visit(signals)
         if (signals.found) return false
@@ -262,12 +271,26 @@ class PekkoPack implements EncodingPack {
         true
     }
 
+    /** A signal step, but {@code onSignal(PostStop, this::h)} for a PostStop handler (Phase 542: it runs outside the
+     *  invariant, so the state it sees after {@code stopped()} owes nothing). */
     private static class SignalSteps extends CodeVisitorSupport {
+        final ClassNode dc
         boolean found
+        SignalSteps(ClassNode dc) { this.dc = dc }
         @Override
         void visitMethodCallExpression(MethodCallExpression c) {
-            if (c.methodAsString in ['onSignal', 'onSignalEquals']) found = true
+            if (c.methodAsString in ['onSignal', 'onSignalEquals'] && !postStopStep(c)) found = true
             super.visitMethodCallExpression(c)
+        }
+        private boolean postStopStep(MethodCallExpression c) {
+            if (c.methodAsString != 'onSignal' || !declaredBy(c, RECEIVE_BUILDER)) return false
+            List<Expression> as = ((TupleExpression) c.arguments).expressions
+            if (as.size() != 2 || !(as[0] instanceof ClassExpression) || ((ClassExpression) as[0]).type?.name != POST_STOP) return false
+            if (!(as[1] instanceof MethodPointerExpression)) return false
+            MethodPointerExpression p = (MethodPointerExpression) as[1]
+            String name = p.methodName?.text
+            List<MethodNode> ms = name != null ? dc.getMethods(name) : Collections.<MethodNode> emptyList()
+            isThisPointerTo(p, name) && ms.size() == 1 && isPostStopHandler(ms[0])
         }
     }
 
