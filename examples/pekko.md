@@ -211,7 +211,10 @@ The reply obligation is a check, not an assumption, so it isn't listed.
 
 ## Not yet
 
-- **The functional style.** `Behaviors.setup(ctx -> …)` / `Behaviors.receive(…)` aren't modelled. Under
+- **The functional style.** `Behaviors.setup(ctx -> …)` / `Behaviors.receive(…)` aren't modelled. A handler
+  closure's body is checked like any closure's (Phase 544): an `assert` in it, or a call whose precondition it
+  breaks, such as a recursive `bot(ctx, count + 1, max)` past `max`, is refuted. But the facts above aren't given
+  to it, so its `message` and `ctx` may still be reported possibly null. Under
   `@TypeChecked` on Groovy 6.0.0, `Behaviors.setup(ctx -> new Bot(ctx, max))` also needs `Behaviors.<T>setup(…)`:
   the lambda's parameter isn't inferred from the return-type target.
 - **Closures as handlers.** `onMessage(T, { m -> … })` isn't verified as a handler, and a closure that replies isn't

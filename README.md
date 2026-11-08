@@ -223,8 +223,11 @@ you write:
   closure-literal helper calls.
   *Out:* a labelled `continue`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), a
   loop body's `switch` arm or `try` that returns, breaks or continues, and
-  type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
-  (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
+  type-pattern cases (`case String s`); in a specification, closures and lambdas appear only as predicates
+  (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`). A closure's *body* is checked for
+  safety as a path of its own: from where it is written, through the havoc of whatever may change before it runs,
+  then its own statements, so its asserts, its calls' preconditions and its implicit obligations are checked, and
+  its locals and guards hold at its sites (Phase 544). What it computes isn't followed back into the caller.
 
 **Spec sources** — beyond `@Requires` / `@Ensures` / `@Invariant`, a precondition can also be read off a Jakarta /
 `javax.validation` constraint on a parameter or field — `@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty` — so
