@@ -239,6 +239,18 @@ a coverage metric. In expressions the fragment is:
   its `@Ensures` equation at call sites and derives the monoid laws (Phase 130) — both worked through in
   [Relationship to Groovy's other checkers](README.md#relationship-to-groovys-other-checkers);
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.
+- **logging calls** (Phase 535) — a call on an slf4j, `java.util.logging`, `System.Logger`, log4j2 or
+  commons-logging logger changes nothing the program reads: as a statement, in a loop or after one, in a method a
+  caller frames, and in the guarded form Groovy's `@Slf4j` / `@Log` write (`log.isInfoEnabled() ? log.info("…") :
+  null`). It is a **trusted** fact about the logging implementation, recorded in the ledger as an external spec, and
+  taken only where the logger can't reach the program's state: the arguments are constants, values of an immutable
+  type (`String`, numbers, `Boolean`, `Character`), a GString of those, or a `Level` constant; the receiver is a name,
+  a property chain or library getters (`getContext().getLog()`); and no class of the unit implements a logger type.
+  An object, a `Throwable`, an array or a `Marker` argument (whose `toString()` may run program code) leaves the call
+  to the general rules, which skip it loudly. A level check (`isDebugEnabled()`, `isLoggable(Level.FINE)`) is a
+  boolean the configuration decides, so unknown: a refutation resting on it names no call. With it, a ternary in
+  statement position is an `if`/`else` (only the arm its condition picks runs), and a call typed `boolean` is a
+  condition as it stands (the type checker's `(boolean)` cast on it was an untranslatable guard).
 
 The unit of verification is a **method** (static or instance) carrying contracts — the enclosing definition is
 *context*, not itself a proof target. The engine models a **class** (instance fields, SSA-tracked across a

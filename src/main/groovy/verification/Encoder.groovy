@@ -23,12 +23,14 @@ import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.ArrayExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.CastExpression
+import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MapEntryExpression
 import org.codehaus.groovy.ast.expr.MapExpression
@@ -6982,6 +6984,158 @@ class Encoder implements TheoryApi {
             m in ['acquireFence', 'releaseFence', 'loadLoadFence', 'storeStoreFence', 'fullFence']
     }
 
+    // ==================== Phase 535 — logging calls ====================
+    // A call on a logger records a message and changes nothing the program can read, so it is a no-op for a logic
+    // proof, like a memory fence. Unlike a fence that is a trusted fact, not a semantic one: the call runs the
+    // logging implementation on the classpath, and it calls toString() on what it is handed. So the recogniser takes
+    // only what can't reach the program's state that way: a logger type's own method (never one declared in this
+    // compilation unit, and no class of the unit may implement a logger type), a receiver whose evaluation has no
+    // effect, and arguments whose toString() is the JDK's: constants, immutable values (String, numbers, Boolean,
+    // Character), a GString of those, and a logging Level constant. Anything else (an object, a Throwable, an array,
+    // a Marker, a Supplier) leaves the call to the general rules, which skip it loudly. Each use is recorded in the
+    // trusted ledger as an external spec.
+
+    /** The logging APIs, by the interface or class that declares their methods. */
+    static final Set<String> LOGGER_TYPES = ['org.slf4j.Logger', 'java.util.logging.Logger', 'java.lang.System$Logger',
+        'org.apache.logging.log4j.Logger', 'org.apache.commons.logging.Log'] as Set<String>
+
+    /** The methods that record a message (void on every API above). */
+    static final Set<String> LOG_METHODS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal',
+        'severe', 'warning', 'config', 'fine', 'finer', 'finest', 'log'] as Set<String>
+
+    /** The level checks: a boolean the configuration decides, so unknown to the proof. */
+    static final Set<String> LOG_ENABLED = ['isTraceEnabled', 'isDebugEnabled', 'isInfoEnabled', 'isWarnEnabled',
+        'isErrorEnabled', 'isFatalEnabled', 'isEnabled', 'isLoggable'] as Set<String>
+
+    /** The level classes whose static constants may be passed ({@code Level.INFO}). */
+    private static final Set<String> LOG_LEVEL_TYPES = ['java.util.logging.Level', 'java.lang.System$Logger$Level',
+        'org.apache.logging.log4j.Level'] as Set<String>
+
+    /** {@code 'log'} for a message call, {@code 'enabled'} for a level check, null when {@code e} isn't a logging call
+     *  this recogniser takes (see above). {@code unit} is the compilation unit's module, null when unknown. */
+    static String loggingCallKind(Expression e, ModuleNode unit) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.implicitThis || mce.spreadSafe) return null
+        String m = mce.methodAsString
+        boolean enabled = m in LOG_ENABLED
+        if (!enabled && !(m in LOG_METHODS)) return null
+        String api = loggerApiOf(mce)
+        if (api == null || unitImplementsLogger(unit)) return null
+        if (!effectFreeReceiver(mce.objectExpression)) return null
+        Expression a = mce.arguments
+        List<Expression> args = a instanceof TupleExpression ? ((TupleExpression) a).expressions : [a]
+        for (Expression arg : args) if (!loggableArgument(arg)) return null
+        enabled ? 'enabled' : 'log'
+    }
+
+    /** Phase 535 — a statement that only logs: a logging call, or the guarded form Groovy's logging transforms write,
+     *  {@code log.isInfoEnabled() ? log.info("…") : null}, whose condition is a level check (or a constant) and whose
+     *  arms each log or do nothing. Taken whole it changes nothing, so no guard value is needed. */
+    static boolean isLoggingStatement(Expression e, ModuleNode unit) {
+        if (loggingCallKind(e, unit) != null) return true
+        if (!(e instanceof TernaryExpression) || e instanceof ElvisOperatorExpression) return false
+        TernaryExpression te = (TernaryExpression) e
+        Expression c = te.booleanExpression.expression
+        if (!(c instanceof ConstantExpression) && loggingCallKind(c, unit) != 'enabled') return false
+        [te.trueExpression, te.falseExpression].every { Expression arm ->
+            arm == null || arm instanceof EmptyExpression || arm instanceof ConstantExpression || loggingCallKind(arm, unit) == 'log'
+        }
+    }
+
+    /** Phase 535 — {@code e} as the type checker typed it is a primitive {@code boolean}: its static type, or the
+     *  return type of the method a call resolved to (a call's own {@code type} is Object). No null to coerce. */
+    static boolean isPrimitiveBooleanValued(Expression e) {
+        if (staticTypeOf(e)?.name == 'boolean') return true
+        Object t = e instanceof MethodCallExpression ? ((MethodCallExpression) e).getNodeMetaData(
+            org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET) : null
+        t instanceof MethodNode && ((MethodNode) t).returnType?.name == 'boolean'
+    }
+
+    /** Phase 535 — {@link #recordLoggingTrust} for each logging call in a logging statement. */
+    static void recordLoggingStatementTrust(Expression e) {
+        if (e instanceof MethodCallExpression) { recordLoggingTrust((MethodCallExpression) e); return }
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            for (Expression x : [te.booleanExpression.expression, te.trueExpression, te.falseExpression]) {
+                if (x instanceof MethodCallExpression) recordLoggingTrust((MethodCallExpression) x)
+            }
+        }
+    }
+
+    /** The logging API a call's resolved target belongs to (else its receiver's static type's), or null. */
+    static String loggerApiOf(MethodCallExpression mce) {
+        Object t = mce.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+        if (t instanceof MethodNode) {
+            ClassNode dc = ((MethodNode) t).declaringClass
+            if (dc == null || dc.isPrimaryClassNode()) return null    // a body in this unit: not a library logger
+            return loggerTypeOf(dc)
+        }
+        loggerTypeOf(staticTypeOf(mce.objectExpression))
+    }
+
+    /** The logger type {@code t} is or implements, or null. */
+    private static String loggerTypeOf(ClassNode t) {
+        if (t == null) return null
+        if (t.name in LOGGER_TYPES) return t.name
+        for (ClassNode i : t.interfaces ?: new ClassNode[0]) { String r = loggerTypeOf(i); if (r != null) return r }
+        ClassNode sup = t.superClass
+        sup != null && sup.name != 'java.lang.Object' ? loggerTypeOf(sup) : null
+    }
+
+    /** True when a class of the unit is a logger: then a logger-typed receiver may dispatch to its body. */
+    private static boolean unitImplementsLogger(ModuleNode unit) {
+        if (unit == null) return false
+        unit.classes.any { ClassNode cn -> loggerTypeOf(cn) != null }
+    }
+
+    /** A receiver whose evaluation has no effect: a name, a property chain, or no-argument calls on library classes
+     *  ({@code getContext().getLog()}); a call on a class compiled here could run anything. */
+    private static boolean effectFreeReceiver(Expression e) {
+        if (e instanceof VariableExpression || e instanceof ClassExpression) return true
+        if (e instanceof PropertyExpression) return effectFreeReceiver(((PropertyExpression) e).objectExpression)
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression c = (MethodCallExpression) e
+            Expression a = c.arguments
+            if (!(a instanceof TupleExpression) || !((TupleExpression) a).expressions.isEmpty()) return false
+            Object t = c.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET)
+            if (!(t instanceof MethodNode)) return false
+            ClassNode dc = ((MethodNode) t).declaringClass
+            if (dc == null || dc.isPrimaryClassNode()) return false
+            return c.implicitThis || effectFreeReceiver(c.objectExpression)
+        }
+        false
+    }
+
+    /** An argument a logger can format without running the program's code: see the section comment. */
+    private static boolean loggableArgument(Expression a) {
+        while (a instanceof CastExpression) a = ((CastExpression) a).expression
+        if (a instanceof ConstantExpression) return true
+        if (a instanceof GStringExpression) {
+            GStringExpression g = (GStringExpression) a
+            return g.values.every { Expression v -> loggableValue(v) }
+        }
+        if (a instanceof PropertyExpression && ((PropertyExpression) a).objectExpression instanceof ClassExpression &&
+                ((ClassExpression) ((PropertyExpression) a).objectExpression).type?.name in LOG_LEVEL_TYPES) {
+            return true                                                        // Level.INFO
+        }
+        loggableValue(a)
+    }
+
+    /** A value whose toString() is the JDK's own and whose evaluation has no effect: a constant, or a name or field
+     *  of an immutable type. */
+    private static boolean loggableValue(Expression v) {
+        if (v instanceof ConstantExpression) return true
+        if (!(v instanceof VariableExpression || v instanceof PropertyExpression)) return false
+        if (v instanceof PropertyExpression && !effectFreeReceiver(((PropertyExpression) v).objectExpression)) return false
+        ClassNode t = staticTypeOf(v)
+        if (t == null) return false
+        if (ClassHelper.isPrimitiveType(t)) return true
+        t.name in ['java.lang.String', 'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte',
+                   'java.lang.Double', 'java.lang.Float', 'java.lang.Boolean', 'java.lang.Character',
+                   'java.math.BigDecimal', 'java.math.BigInteger']
+    }
+
     /** If {@code e} is {@code AsyncSupport.await(arg)} over a safe async source, the read-out value (its body,
      *  translated); else null (skip). Called from both the method-call and static-call dispatch paths. */
     private Object tryTranslateAwait(Expression e) {
@@ -8150,6 +8304,7 @@ class Encoder implements TheoryApi {
         // handler; anything else — including null, a matched branch's "honest skip, do NOT fall
         // through" abort — is the final answer.
         Object r
+        r = tmcLoggingLevelCheck  (mce);               if (!NO_MATCH.is(r)) return r
         r = tmcAtomicCellRead     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcCarrierFactory     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcSamApply           (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
@@ -8182,6 +8337,21 @@ class Encoder implements TheoryApi {
         r = tmcNamedReceiverOracle(mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcEqualsNumeric      (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         return null
+    }
+
+    /** translateMethodCall registry — Phase 535: a logger's level check ({@code log.isDebugEnabled()}) is a boolean the
+     *  logging configuration decides, so a fresh one, unconstrained. Its name marks it unmodelled, so a counterexample
+     *  that rests on it names no failing call. */
+    private Object tmcLoggingLevelCheck(MethodCallExpression mce) {
+        if (loggingCallKind(mce, vcMethod?.declaringClass?.module) != 'enabled') return NO_MATCH
+        recordLoggingTrust(mce)
+        session.boolVar(mce.methodAsString + '$unmodelled$' + (havocCounter++))
+    }
+
+    /** Phase 535 — a logging call taken as changing nothing is a trusted fact about the logging implementation. */
+    static void recordLoggingTrust(MethodCallExpression mce) {
+        TrustLedger.record('external spec', "${loggerApiOf(mce)}#${mce.methodAsString}".toString(),
+            'logging call: changes nothing the program reads (Phase 535)')
     }
 
     /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */

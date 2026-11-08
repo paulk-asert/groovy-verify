@@ -389,7 +389,9 @@ class EvalOrder {
             return op == Types.LOGICAL_AND || op == Types.LOGICAL_OR || Types.ofType(op, Types.COMPARISON_OPERATOR) ||
                 op == Types.KEYWORD_INSTANCEOF || op == Types.KEYWORD_IN
         }
-        ClassHelper.boolean_TYPE == e.type || ClassHelper.Boolean_TYPE == e.type
+        // Phase 535 — a call is typed Object on the node itself; one STC resolved to a primitive boolean (`log.isDebugEnabled()`,
+        // `xs.isEmpty()`) is a condition already, and a cast around it was an untranslatable guard
+        ClassHelper.boolean_TYPE == e.type || ClassHelper.Boolean_TYPE == e.type || Encoder.isPrimitiveBooleanValued(e)
     }
 
     private static Statement assign(String name, Expression value, ASTNode at) {

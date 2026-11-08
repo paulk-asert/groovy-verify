@@ -22292,6 +22292,62 @@ withholding (13).
 Also: Phase 47c's `unsupported regex feature honest-skips` case used `\b`, which now verifies; it uses a
 back-reference.
 
+## Phase 535 — logging calls change nothing  *(shipped — capability, two general fixes)*
+
+Measured first, 7 shapes. A logging call on a `log` **field** with constant or immutable arguments already verified,
+through Phase 45/363's rule for a call with no body or contract (its receiver's fields havocked, a mutable argument
+refused). What skipped: a non-constant message under `@Slf4j` / `@Log`, which the transform writes as a
+statement-position ternary (`log.isInfoEnabled() ? log.info("…") : null`, "statement with no modelled effect"); an
+explicit `if (log.isDebugEnabled())` (an untranslatable guard); a logger reached through a property chain or getters
+(Pekko's `context.log` / `getContext().getLog()`, "no usable @Ensures"); and logging in or after a loop.
+
+**Shipped:** `Encoder.loggingCallKind` / `isLoggingStatement`. A call on slf4j, `java.util.logging`,
+`System.Logger`, log4j2 or commons-logging (by the resolved target's declaring type, else the receiver's static type)
+is a no-op step: in a method body, a loop body, an inner loop's frame, after a loop, and a method's inferred frame for
+its callers. It is a **trusted** fact (the logging implementation runs, and calls `toString()` on what it's handed),
+ledgered as an external spec per API and method, and taken only where that can't reach the program's state: arguments
+that are constants, immutable values (`String`, boxed numbers, `Boolean`, `Character`, `BigDecimal`/`BigInteger`), a
+GString of those, or a `Level` constant; a receiver that is a name, a property chain, or no-argument getters of
+library classes; and no class of the unit implementing a logger type. A level check (`isXEnabled()`,
+`isLoggable(…)`) is a fresh boolean named as unmodelled, so a refutation resting on it names no call. A ternary whose
+condition is a level check (or constant) and whose arms log or do nothing is one no-op step, so it needs no guard and
+a refutation past it keeps its call.
+
+**Two general fixes found on the way.** A ternary in statement position that `EvalOrder` doesn't lower (no write in
+an arm: `b ? up() : down()`) is walked as an `if`/`else` (`BodyEncoder`); before, "statement with no modelled effect".
+And `EvalOrder.isCondition` took a call by its node's type, which is `Object`, so a call the type checker resolved to
+a primitive `boolean` got a `(boolean)` cast that the guard translation refused: `c ? x++ : null` with `c` a boolean
+call (`xs.isEmpty()`, `log.isDebugEnabled()`) skipped.
+
+**Boundary:** an object, `Throwable`, array, `Marker` or `Supplier` argument (its `toString()` or `get()` may run
+program code) leaves the call to the general rules, which skip it loudly; the fluent slf4j API (`atInfo().log(…)`) and
+log4j2's lambda forms aren't recognised; two level checks are independent unknowns.
+
+**Found, not fixed (next):** Phase 45/363's rule for an unresolved call on a **parameter** receiver havocs only the
+receiver's fields, so a library interface call that dispatches to code writing a **static** proves falsely:
+`static void inc(Appendable sink) { total++; sink.append('x') }` verifies `total == old.total + 1`, with or without a
+class of the unit implementing `Appendable` (and `inc(new Evil())`, whose `append` sets `total = 0`, breaks it). A
+field receiver skips; instance state reached through the receiver is caught. Separately, an abstract unit class
+implementing a library interface makes a call through that interface take Phase 347's trusted "a bodiless method
+writes nothing" reading.
+
+**Shipped tests:** group `P535 logging calls`, 28 cases: an slf4j field; a placeholder; `@Slf4j` and `@Log` GStrings;
+an explicit level check; Pekko's `getContext().getLog()`; in a loop (plain and `@Slf4j`), in an inner loop, after a
+loop; a caller of a method that only logs; an index check after a guarded log; wrong claims past a log call and an
+`@Slf4j` GString refuting with their call; an effect under a level check refuting with no call, and not taken as
+always on; a guarded arm that writes (an increment, a contracted call) not taken as logging; an object, a GString of an
+object, a `Throwable`, a receiver built by a call of the unit, and a logger implemented in the unit all skipping; and
+the general ternary fixes (an arm that writes, a boolean call's condition, a choice between two contracted calls,
+right and wrong).
+
+Mutation-checked: 16 of 18 killed. The two survivors were redundant code, removed: a `(boolean)`-cast strip in the
+ternary rewrite (the cast came only from `EvalOrder`, now fixed) and a logging skip in the implicit-obligation pass
+(its fallback havocs only the logger receiver). Killed: any argument loggable (2), a GString's values unchecked (1),
+the unit's loggers ignored (1), a receiver calling the unit (1), any ternary arm taken as logging (1), the level check
+always on (2), always off (3), or not marked unmodelled (1), `EvalOrder` casting boolean calls (2), no logging in a
+loop body (3), after a loop (1), or in an inner loop's frame (1), no logging step in a method body (3), no
+logging-ternary shortcut (1), no ternary rewrite (3), its arms swapped (2).
+
 ## Definition of done, per increment
 
 An increment is done when:

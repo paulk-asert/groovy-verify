@@ -16112,6 +16112,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // Phase 235 — a VarHandle memory fence has no sequential semantics at all: no value, no
                         // state, it constrains only reordering, which this engine deliberately doesn't model.
                         // Ignore the statement — a fenced body proves exactly as its unfenced twin does.
+                    } else if (Encoder.isLoggingStatement(call, node?.declaringClass?.module)) {
+                        // Phase 535 — a logging call (or a level-guarded one) changes nothing the program reads
+                        // (a trusted fact, ledgered)
+                        Encoder.recordLoggingStatementTrust(call)
                     } else if (!applySetMutation(session, enc, call) &&
                         !applyMapPut(session, enc, call) &&
                         !applyListMutation(session, enc, call, countVals) &&

@@ -23,7 +23,9 @@ import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
+import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
+import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
@@ -444,6 +446,14 @@ class BodyEncoder {
         null
     }
 
+    /** Phase 535 — one arm of a statement-position ternary as the branch it is: a constant or empty arm does nothing. */
+    private static Statement ternaryArm(Expression arm) {
+        if (arm == null || arm instanceof EmptyExpression || arm instanceof ConstantExpression) return new BlockStatement()
+        ExpressionStatement st = new ExpressionStatement(arm)
+        st.setSourcePosition(arm)
+        st
+    }
+
     private static WalkResult walkOne(Statement s, Path prefix, boolean tail) {
         WalkResult res = new WalkResult()
 
@@ -577,6 +587,25 @@ class BodyEncoder {
 
         if (s instanceof ExpressionStatement) {
             Expression e = ((ExpressionStatement) s).expression
+
+            // Phase 535 — a ternary in statement position, `c ? a() : b()`, is an if/else on c: only the arm its
+            // condition picks runs, and its value is discarded. Groovy's logging transforms (@Slf4j, @Log, …) write
+            // every call whose message isn't a constant this way, `log.isInfoEnabled() ? log.info("…") : null`. A
+            // constant or empty arm is an empty branch; any other arm is walked as the statement it is.
+            // A ternary that only logs is one step (no guard value needed); the checker re-checks it against the unit.
+            if (!tail && e instanceof TernaryExpression && Encoder.isLoggingStatement(e, null)) {
+                Path np = copy(prefix)
+                np.steps.add(new LemmaCall(e))
+                res.live.add(np)
+                return res
+            }
+            if (!tail && e instanceof TernaryExpression && !(e instanceof ElvisOperatorExpression)) {
+                TernaryExpression te = (TernaryExpression) e
+                IfStatement asIf = new IfStatement(te.booleanExpression, ternaryArm(te.trueExpression),
+                    ternaryArm(te.falseExpression))
+                asIf.setSourcePosition(s)
+                return walkOne(asIf, prefix, tail)
+            }
 
             if (e instanceof DeclarationExpression) {
                 DeclarationExpression de = (DeclarationExpression) e

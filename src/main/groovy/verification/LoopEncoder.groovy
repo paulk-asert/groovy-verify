@@ -752,6 +752,8 @@ class LoopEncoder {
             if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) return innerFrameTarget(be.leftExpression, scalars, arrays)
             return true
         }
+        // Phase 535 — a logging statement writes nothing (the body pass re-checks it against the unit)
+        if (Encoder.isLoggingStatement(e, null)) return true
         return false   // method calls (mutators / unknown) → bail
     }
     private static final Set<String> READ_ONLY_CALLS = ['size', 'length', 'isEmpty', 'get', 'getAt', 'contains'] as Set
@@ -913,6 +915,8 @@ class LoopEncoder {
                 ExpressionStatement es = (ExpressionStatement) st
                 if (isAssign(es.expression)) {
                     applyAssign(es, enc, s)
+                } else if (!last && Encoder.isLoggingStatement(es.expression, enc.currentMethod()?.declaringClass?.module)) {
+                    Encoder.recordLoggingStatementTrust(es.expression)   // Phase 535 — no effect
                 } else if (last) {
                     result = es.expression   // Groovy implicit return
                 } else {
@@ -1040,6 +1044,11 @@ class LoopEncoder {
         // {@code VerifyChecker.applyListMutation} does, sans count-law tracking (the loop
         // pass doesn't carry countVals).
         if (e instanceof MethodCallExpression && applyListMutationInLoop((MethodCallExpression) e, enc, s)) return
+        // Phase 535 — a logging call, or a level-guarded one, changes nothing the program reads (trusted, ledgered)
+        if (Encoder.isLoggingStatement(e, enc.currentMethod()?.declaringClass?.module)) {
+            Encoder.recordLoggingStatementTrust(e)
+            return
+        }
         if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) {
             // A call statement (a rely-step, or Phase 347 any same-class call): handed off to VerifyChecker's
             // caller-side framing via the installed handler — havoc the callee's frame, assume its @Ensures. A call
