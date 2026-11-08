@@ -259,7 +259,8 @@ The reply obligation is a check, not an assumption, so it isn't listed.
 
 - **The rest of the functional style.** `withTimers` and `withStash` closures aren't measured, so their scheduler or
   buffer is possibly null. A closure stored in a variable before it is passed gets nothing. The reply obligation and
-  the stopped release are the `AbstractBehavior` style's only. Under `@TypeChecked` on Groovy 6.0.0,
+  the stopped release are the `AbstractBehavior` style's only. Under `@TypeChecked` on Groovy 6.0.0, a handler
+  closure's parameters need their types (`{ ActorContext<Greeted> context, Greeted message -> … }`), and
   `Behaviors.setup(ctx -> new Bot(ctx, max))` also needs `Behaviors.<T>setup(…)`: the lambda's parameter isn't
   inferred from the return-type target.
 - **Closures as handlers.** `onMessage(T, { m -> … })` on an `AbstractBehavior`'s builder gets a non-null message and
@@ -267,6 +268,9 @@ The reply obligation is a check, not an assumption, so it isn't listed.
   and a closure that replies isn't counted as a reply.
 - **Calls without contracts.** `pipeToSelf`, `ask` from inside a handler, timers and stash have no skeletons yet, so
   a handler using one skips verification, loudly.
+- **The guardian side, untried.** The cases cover the actors themselves. Code that starts them (`ActorSystem.create`,
+  `ctx.spawn`, a main behaviour that spawns the bot and greets it) hasn't been run through the verifier, so whether
+  it verifies, skips loudly, or needs contracts is not yet known.
 
 The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–545),
 and the capability rows in [CAPABILITIES.md](../CAPABILITIES.md).
