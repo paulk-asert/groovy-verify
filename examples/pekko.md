@@ -268,9 +268,13 @@ The reply obligation is a check, not an assumption, so it isn't listed.
   and a closure that replies isn't counted as a reply.
 - **Calls without contracts.** `pipeToSelf`, `ask` from inside a handler, timers and stash have no skeletons yet, so
   a handler using one skips verification, loudly.
-- **The guardian side, untried.** The cases cover the actors themselves. Code that starts them (`ActorSystem.create`,
-  `ctx.spawn`, a main behaviour that spawns the bot and greets it) hasn't been run through the verifier, so whether
-  it verifies, skips loudly, or needs contracts is not yet known.
+- **The guardian side.** Probed on the blog's sample code ([groovy-pekko-gpars](https://github.com/paulk-asert/groovy-pekko-gpars)),
+  every class under the verifier. The greeter verifies as written, and so does the bot with its two contracts. Two
+  false alarms remain. `context.spawn(…)` in `HelloWorldMain`'s constructor is reported possibly null, but
+  `AbstractBehavior`'s constructor throws `IllegalArgumentException` on a null context, so `super(context)` already
+  rules that out. `system.tell(…)` in `Run` is reported possibly null because `ActorSystem.create` has no skeleton yet.
+  Separately, under `@TypeChecked` each `Behaviors.setup(X::new)` needs `Behaviors.<T>setup(…)`: plain `@TypeChecked`
+  rejects it too, so that is Groovy's inference, not the verifier.
 
 The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–545),
 and the capability rows in [CAPABILITIES.md](../CAPABILITIES.md).
