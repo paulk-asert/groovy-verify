@@ -22381,6 +22381,41 @@ Mutation-checked: disabling the guard fails the six cases that verified before.
 `old.total` as a false proof; groovy-contracts rejects `old` of a field in a static postcondition, a compile error the
 probe misread.
 
+## Phase 537 — Pekko measured  *(shipped — measurement, no engine change)*
+
+The first step of an in-tree Pekko encoding pack (the plan: Pekko matched by name in the main jar, a test-only
+dependency, moving to `groovy-verify-pekko` when units moves out). Two measurements. **What the verifier does with Pekko
+code today** (11 shapes, Phase 535's probes): a typed handler skips on `Behaviors.stopped()` / `same()` returns, on
+`tell` (no usable contract; after Phase 536 any unresolved library call does), on `super(context)` in the constructor
+("statement with no modelled effect"), on the `newReceiveBuilder()…build()` chain, and reports a spurious
+`onGreeted(null)` dereference; logging (Phase 535) no longer skips. And under `@TypeChecked`,
+`Behaviors.setup(ctx -> new Bot(ctx, max))` doesn't compile on Groovy 6.0.0: the lambda's parameter isn't inferred
+from the return-type target (reduced to a dependency-free repro; JIRA drafted; workaround `Behaviors.<T>setup(…)`).
+
+**What Pekko 2.0.0 does** — `PekkoSemanticsTest` (in `:test`), each fact printed and asserted so an upgrade that
+changes one fails before a proof rests on it:
+
+| Fact | Measured |
+|---|---|
+| a handler is never handed null | `tell(null)` throws `org.apache.pekko.actor.InvalidMessageException` at the sender; the handler doesn't run |
+| nothing is delivered after `Behaviors.stopped()` | three tells to an actor that stops on its first: handled once |
+| a tell to self is queued, not re-entered | trace `enter a, exit a, enter b, exit b` |
+| `AbstractBehavior`'s constructor runs no subclass code | `createReceive` not called by `super(context)`; built once, on the first message |
+| a full bounded mailbox drops without blocking | 6 tells into `MailboxSelector.bounded(2)` behind a wedged handler returned in ~10 ms; 3 handled |
+| a stash past capacity throws at the call | `withStash(2)` given three: `StashOverflowException` at the third `stash` |
+| an unanswered `ask` fails at its timeout | `java.util.concurrent.TimeoutException` after ~320 ms (300 ms timeout) |
+| an exception in a handler stops the actor | a child that throws on its first message handles nothing more |
+| `Behaviors.same()` and `this` keep the actor and its state | `same:1, this:2` |
+
+So the mailbox deadlock `groovy.concurrent`'s `BLOCK` policy allows (Phase 289) has no Pekko counterpart: a full mailbox
+loses messages instead. A missed reply surfaces as an `ask` timeout, not a hang.
+
+**Next (the pack):** slice 1 — `Behaviors.same()` / `stopped()` / `this` as opaque values, `ActorRef.tell` framed as
+writing nothing of the sender's (a ledgered skeleton), `super(context)` as no effect, the receive builder recognised
+(it also names the handlers). Slice 2 — a pack API extension for entry facts, so a registered handler's message is
+non-null. Slice 3 — the stopped-actor fact, so an invariant need hold only while the actor is live (the blog's Pekko
+bot as written). Then the property Pekko needs most: every path through a handler replies on its `replyTo`.
+
 ## Definition of done, per increment
 
 An increment is done when:
