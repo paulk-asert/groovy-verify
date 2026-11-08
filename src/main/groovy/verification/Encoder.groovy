@@ -6844,6 +6844,12 @@ class Encoder implements TheoryApi {
         false
     }
 
+    /** Phase 538 — true iff a pack knows the statement {@code e} changes nothing ({@link EncodingPack#claimsNoEffect}). */
+    static boolean packsClaimNoEffect(Expression e) {
+        for (EncodingPack p : PackRegistry.packs()) if (p.claimsNoEffect(e)) return true
+        false
+    }
+
     // ──────────────────────────── Phase 153 — Groovy 6 async/await ────────────────────────────
     // `async`/`await` lower (at parse time) to AsyncSupport.async(closure) / AsyncSupport.await(arg). By the time
     // the verifier runs, STC has resolved those static calls to StaticMethodCallExpression (the Phase 8a form), so

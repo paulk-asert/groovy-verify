@@ -20,6 +20,7 @@ import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.runtime.InvokerHelper
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import verification.SpecRegistry
 import verification.VerifyChecker
@@ -123,7 +124,33 @@ class SpecAuditTest {
             case 'groovy.concurrent.BroadcastChannel':
                 def closedB = groovy.concurrent.BroadcastChannel.create(); closedB.close()
                 return [groovy.concurrent.BroadcastChannel.create(), closedB]
+            // Phase 538 — a tell is queued (and dead-lettered once the actor has stopped): a live actor's ref and a
+            // stopped one's, in one actor system made on first use
+            case 'org.apache.pekko.actor.typed.ActorRef':
+                return pekkoRefs()
             default: return null
+        }
+    }
+
+    private static Object pekkoSystem
+    private static List<Object> pekkoRefsMade
+
+    private static synchronized List<Object> pekkoRefs() {
+        if (pekkoRefsMade != null) return pekkoRefsMade
+        def behaviors = Class.forName('org.apache.pekko.actor.typed.javadsl.Behaviors')
+        def system = Class.forName('org.apache.pekko.actor.typed.ActorSystem').create(behaviors.ignore(), 'specAudit')
+        pekkoSystem = system
+        def stoppedRef = system.systemActorOf(behaviors.stopped(), 'stopped',
+            Class.forName('org.apache.pekko.actor.typed.Props').empty())
+        Thread.sleep(200)
+        pekkoRefsMade = [system, stoppedRef]
+    }
+
+    @AfterAll
+    static void terminatePekko() {
+        if (pekkoSystem != null) {
+            pekkoSystem.terminate()
+            pekkoSystem.getWhenTerminated().toCompletableFuture().get(10, java.util.concurrent.TimeUnit.SECONDS)
         }
     }
 

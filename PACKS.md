@@ -31,7 +31,10 @@ coefficient witnesses), [`UnitsPack`](src/main/groovy/verification/UnitsPack.gro
 properties, operators, expression claims, value-source aliasing, a checker pass, curated tables), and
 [`CombinatoricsPack`](src/main/groovy/verification/CombinatoricsPack.groovy) (factorial and the Pascal-rule
 binomial — the first **two-argument** primitive, and a worked warning about axiom domain guards: its refute
-twins caught an unguarded-base inconsistency during development).
+twins caught an unguarded-base inconsistency during development). [`PekkoPack`](src/main/groovy/verification/PekkoPack.groovy)
+(Phase 538) is the first pack for a **concurrency library**: Apache Pekko typed actors, matched by name, every
+fact it uses measured first (`PekkoSemanticsTest`) — returned behaviours as claimed value sources, a pack-shipped
+`ActorRef.tell` skeleton, and `super(context)` through `claimsNoEffect`.
 
 ## The shape of a pack
 
@@ -60,6 +63,7 @@ value you know is yours (that is what `claimsExpression` exists to prevent — s
 | `translateProperty(api, pe, obj, prop)` | a property read (after the core's carrier/record branches) | `X.value` |
 | `translateBinary(api, be, opType)` | a binary expression, at the domain-comparison slot | quantity `==` / `!=` |
 | `claimsExpression(e)` *(static context)* | scalar classifiers asking "is this value yours?" | `quantity / quantity` is `Quantity.divide` — no Real classification, no divide-by-zero obligation |
+| `claimsNoEffect(e)` *(static context)* | the body walk meeting a statement the core would refuse as "no modelled effect" — true when the pack knows it changes nothing the program reads (Phase 538) | Pekko's `super(context)` in an `AbstractBehavior` subclass (PekkoPack) |
 | `claimsValueSource(api, e)` | the checker deciding whether to alias a scalar-handle-less name to its construction expression (read it back via `api.sourceAlias(name)`) | a Quantity-typed local / `result` |
 | `checkMethod(api, node)` | once per method: a pure-AST **checker pass** with diagnostics — no SMT (programs against `CheckerApi`: `reportError`, `cleanBody`, `inferredTypeOf`); best-effort, contained per pack | the C₀ kind-vector check of `as Quantity<K>` casts |
 | `resolveDynamicProperty(receiverType, pexp, enclosingClass)` | **STC time** (Phase 209): an unresolved property `@TypeChecked` would reject — return the type to store, or null to decline | `n.fizzBuzz` backed by a visible `metaClass` registration (MetaProgrammingPack) |

@@ -22416,6 +22416,50 @@ writing nothing of the sender's (a ledgered skeleton), `super(context)` as no ef
 non-null. Slice 3 — the stopped-actor fact, so an invariant need hold only while the actor is live (the blog's Pekko
 bot as written). Then the property Pekko needs most: every path through a handler replies on its `replyTo`.
 
+## Phase 538 — the Pekko pack, slice 1: a handler's own body  *(shipped — capability)*
+
+`PekkoPack`, in tree (Pekko matched by name; `pekko-actor-typed` stays a test-only dependency), the fifth pack and the
+first for a concurrency library. It takes the four Phase 537 blockers that are about a handler's own body, each resting
+on a `PekkoSemanticsTest` fact:
+
+- **Returned behaviours.** `Behaviors.same()` / `stopped()` / `empty()` / `unhandled()` / `ignore()` and a receive
+  built by `newReceiveBuilder()` (declared by `AbstractBehavior`), registration steps (`onMessage`, `onMessageEquals`,
+  `onAnyMessage`, `onSignal`, `onSignalEquals`, declared by `ReceiveBuilder`) whose arguments are a class, a method
+  reference or a closure, then `build()` — claimed via `claimsValueSource`, so `result` is an opaque non-null handle.
+  Building a receive calls no handler (measured: built once, on the first message).
+- **`tell`.** A pack-shipped skeleton (`specFqns`): `org.apache.pekko.actor.typed.ActorRef#tell` is `@Pure` (a tell is
+  queued, never run inside the sender's handler, measured) with `@ThrowsIf({ msg == null }, RuntimeException)` (measured:
+  `InvalidMessageException`, a `RuntimeException`). Trusted, ledgered as an external spec, and held against the runtime
+  by `SpecAuditTest` like every shipped skeleton (receivers: a live actor's ref and a stopped one's; it first failed
+  for want of an `ActorRef` generator). Through Phase 536's rule a skeleton is the remedy, and it is consulted before
+  the library-receiver refusal.
+- **`super(context)`.** A new SPI hook, `EncodingPack.claimsNoEffect(Expression)` (static context, like
+  `claimsExpression`): the body walk takes a statement a pack claims as an empty step where it refused "statement with
+  no modelled effect". PekkoPack claims `super(context)` in a subclass of `AbstractBehavior` (the resolved constructor's
+  declaring class) with a name as its argument — measured to run no subclass code. `super(…)` to any other library
+  class still refuses (`Random(long)` calls the overridable `setSeed`).
+
+So the blog's `HelloWorldBot`, ignoring a late greeting first, proves `max >= 1 && 0 <= greetingCounter &&
+greetingCounter <= max` through its `getContext().getLog()` line, its `tell` and its `stopped()`, with the constructor
+establishing it.
+
+**Boundary:** a handler's message is still possibly null (slice 2: an entry fact for a registered handler's parameter,
+a new pack-API surface); the blog's bot as written refutes (`greetingCounter = 1, max = 1`): its invariant holds only
+because nothing is delivered after `stopped()` (slice 3); a claim about the returned behaviour itself (`result.is(this)`)
+skips; `Behaviors.setup` / `receive` / `receiveMessage` factories (the functional style) aren't modelled; and the Groovy
+inference issue under `@TypeChecked` (`Behaviors.setup(ctx -> …)`) stands.
+
+**Shipped tests:** group `P538 Pekko pack`, 15 cases: the blog's bot guarded (verifies) and as written (refutes with its
+counterexample); `return this` / `same()` / `stopped()` / `empty()`; a returned behaviour non-null, and nothing else
+about it known; a `tell` through a message's reference and through a field; a wrong claim past a `tell` refuting; a
+null `tell`; the constructor and built receive keeping a class invariant; a receive whose handler comes from a call not
+claimed; `super(seed)` to `Random` still refused.
+
+Mutation-checked: 7 of 8 killed — no behaviour values (7), no `super(context)` (2), `stopped` not a marker (4), any
+builder argument (1), any super call (1), no no-effect hook in the walk (2), `tell(null)` fine (6). The survivor, the
+skeleton's `@Pure` removed, is equivalent: a bodiless skeleton method without `@Modifies` already reads as writing
+nothing (Phase 347); `@Pure` stays as the explicit statement, as on the `Quantity` skeleton.
+
 ## Definition of done, per increment
 
 An increment is done when:

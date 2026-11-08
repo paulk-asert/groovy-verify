@@ -782,6 +782,12 @@ class BodyEncoder {
                 return res
             }
 
+            // Phase 538 — a statement an encoding pack knows changes nothing (Pekko's `super(context)`): an empty step
+            if (!tail && Encoder.packsClaimNoEffect(e)) {
+                res.live.add(copy(prefix))
+                return res
+            }
+
             // A plain expression is only meaningful as the implicit return.
             if (tail) {
                 Path np = copy(prefix)

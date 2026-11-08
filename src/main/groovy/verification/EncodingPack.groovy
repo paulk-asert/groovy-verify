@@ -132,6 +132,10 @@ interface EncodingPack {
      *  then aliases the (scalar-handle-less) name to the expression, which the pack's readers resolve via
      *  {@link TheoryApi#sourceAlias}. */
     default boolean claimsValueSource(TheoryApi api, Expression e) { false }
+    /** Phase 538 — true iff the statement {@code e} changes nothing the program reads, by this pack's knowledge of
+     *  its library (e.g. Pekko's {@code super(context)} in an {@code AbstractBehavior} subclass, measured to run no
+     *  subclass code). The body walk then takes it as an empty step. Static context, like {@link #claimsExpression}. */
+    default boolean claimsNoEffect(Expression e) { false }
 
     /**
      * A per-method <b>checker pass</b> — pure AST analysis with diagnostics, no SMT (e.g. UnitsPack's C₀
