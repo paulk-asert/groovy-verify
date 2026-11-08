@@ -22655,6 +22655,52 @@ record's missing call.
 Mutation-checked: 5 of 5 killed — components not shown (5), reassigned shown too (1), any component type built (1),
 zero-filled rather than the model's (2), no whole value (5).
 
+## Phase 544 — a closure body is a path of its own  *(shipped — soundness: two silent holes; completeness)*
+
+Found probing the Pekko functional style, whose handlers are closures (`Behaviors.receiveMessage { m -> … }`): a false
+`assert` in the handler compiled cleanly. Probed on plain closures, three gaps, none Pekko's:
+
+- **An `assert` inside a closure was never checked.** The value-flow pass collected `assert` statements at the method's
+  level only; a closure's were scanned as expressions, so `3.times { assert c < 0 }` and `return { -> assert c < 0 }`
+  compiled cleanly. (The region pass, the fallback, already reported every assert skipped, closures' included.)
+- **A call's precondition inside a closure was read where the closure is written.** Phase 372's havoc reached the
+  implicit obligations, not the call-site pass, so `int d = 1; Closure r = { g(d) }; d = 0; r()` and
+  `3.times { g(d); d-- }` passed with `g` needing `k > 0`.
+- **A closure's own locals, guards and early returns were unknown at its sites.** `3.times { int n = c + 1; g(n) }`
+  under `c >= 0` showed `counterexample: c = 0, n = 0` and `fails on: f(0)`, a call that doesn't fail; the same for
+  `if (c <= 0) return; g(c)`.
+
+The fix walks each closure's body as a path: the steps to the closure (the state where it is written), then the havoc of
+what may change by the time it runs (Phase 372's names, shown "when the closure runs"), then the closure's own statements.
+
+- **Value-flow pass** (`walkClosures`): each outermost closure literal in a statement is collected as a body; its sites
+  carry the outer steps and its own (`VfObligation.innerSteps`), replayed after the havoc at discharge. Its asserts are
+  obligations. A closure writing a local declared outside it leaves the walk (the old reading stands).
+- **Region pass** (`walkRegionClosures`): the same, as a region reached by the statements before it, a havoc marker,
+  and its own statements; the old reading's sites for it are skipped.
+- **Call-site pass**: `collectPrefix` steps into the closure holding the call, with a marker resolved to the closure's
+  havoc (`resolveClosureRuns`), and the failing call is withheld.
+- **What the old reading kept, kept**: the short-circuit or ternary conditions the closure sits under (`cs != null &&
+  (0..<N).every { cs(r) … }`, Phase 411), its parameter's range (Phase 380, read as the call starts) and a helper's
+  parameter facts (Phase 393). The first full run lost all three (8 cases in P198, P380 and P393); each now goes into the
+  walked path where the old discharge asserted it.
+- **Nothing silent left**: an assert in a closure nested in a walked one, or in one the walk can't follow, is reported
+  skipped ("it is inside a closure whose body the verifier can't follow as a path").
+
+**Boundary:** a closure in an `if` or loop condition isn't walked (the old reading); a nested closure keeps the old
+reading; a call-site counterexample doesn't show the closure's locals; a method outside the value-flow fragment still
+skips its closures' asserts, loudly, as before.
+
+**Shipped tests:** group `P544 closure bodies` (G585), 15 cases. Silent before: an assert in `times`, one in a returned
+closure, a stored closure called after a write, a closure writing what its call reads. A false `fails on:` before: a
+local the closure declares (twice), an early return in it. Plus an assert that holds, a guard inside the closure, an
+implicit obligation over its local, a closure under `&&` and without it, a local that does break the precondition, and
+the two loud skips. The full corpus passes unchanged otherwise (4971/4971).
+
+Mutation-checked: 8 of 8 killed — value-flow walk off (4), no skipped-assert report (1), region walk off (1), inner
+steps not replayed (1), no call-site closure marker (6), the marker havocking nothing (2), the call not withheld (3), no
+enclosing guards (1).
+
 ## Perf ceilings re-based (after Phase 542)
 
 The JUnit `test` run (the only place `PerfBudget` is asserted) passed at Phase 542 at 20,961 solver checks / 13,171

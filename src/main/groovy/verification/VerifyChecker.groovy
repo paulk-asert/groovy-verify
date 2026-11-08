@@ -6075,9 +6075,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentAssertsTrusted = false
         try {
             List<VfObligation> sites = new ArrayList<VfObligation>()
+            vfWalked.clear()
             collectVfObligations(topStatements(body),
                 new ArrayList<Object>(),
                 new HashSet<String>(), sites)
+            sites = closureWalkedSites(sites)   // Phase 544
+            reportUnwalkedClosureAsserts(body, sites)
             for (VfObligation v : sites) dischargeVfObligation(node, v, reqAst)
             currentAssertsTrusted = true   // every assert was discharged here → safe to assume them in the postcondition
         } catch (UnsupportedConstructException bail) {
@@ -6317,6 +6320,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static class VfObligation {
         Object site                 // IndexSite | DivideSite | DerefSite
         List<Object> steps          // Assign | FieldAssign | Guard | LemmaCall, in source order
+        /** Phase 544 — for a site in a closure the walk followed: the closure's own steps to it, replayed after the
+         *  havoc of what may change by the time it runs; {@code steps} is then the state where the closure is written */
+        List<Object> innerSteps
     }
 
     /**
@@ -6363,6 +6369,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 (!Encoder.nestedTargets(st).isEmpty() || Encoder.containsCallableCall(st))) {
                 throw new UnsupportedConstructException("a statement that writes inside an expression, or runs a callable")
             }
+            if (vfClosureDepth == 0) walkClosures(st, steps, out)   // Phase 544
             if (st instanceof BlockStatement) {
                 collectVfObligations(((BlockStatement) st).statements, steps, assigned, out, followed)
                 continue
@@ -6537,6 +6544,166 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 544 — the closures whose bodies {@link #walkClosures} followed, in the method being collected. */
+    private final List<ClosureExpression> vfWalked = new ArrayList<ClosureExpression>()
+    private int vfClosureDepth = 0
+
+    /**
+     * Phase 544 — a closure's body runs when the closure is called, as a path of its own: its locals, guards and early
+     * returns hold at its sites. Each closure literal in {@code st} (not a `.each` the loop pass takes, Phase 310) is
+     * walked as a body, its sites keeping the steps to the closure ({@code steps}, the state where it is written; the
+     * havoc of what may change by the time it runs comes at discharge, Phase 372) and its own steps after it. A user
+     * {@code assert} in it is checked: the pass collected statements only at the method's level, so one inside a closure
+     * was never checked. A closure nested in a walked one keeps the old reading (its sites at the outer state, havocked);
+     * one the walk can't follow keeps it too, and its asserts are reported skipped ({@link #reportUnwalkedClosureAsserts}).
+     */
+    private void walkClosures(Statement st, List<Object> steps, List<VfObligation> out) {
+        if (!(st instanceof ExpressionStatement || st instanceof ReturnStatement || st instanceof ThrowStatement ||
+              st instanceof AssertStatement)) return
+        if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return
+        List<ClosureExpression> found = new ArrayList<ClosureExpression>()
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { found.add(ce) }   // the outermost only
+        })
+        for (ClosureExpression ce : found) {
+            if (ce.code == null || ce.lineNumber < 0) continue
+            List<ClosureExpression> nested = closuresIn(ce.code)
+            List<VfObligation> inner = new ArrayList<VfObligation>()
+            vfClosureDepth++
+            try {
+                collectVfObligations(topStatements(ce.code), new ArrayList<Object>(), declaredOutside(ce), inner)
+            } catch (UnsupportedConstructException ignored) {
+                continue   // outside the fragment: the old reading stands
+            } finally { vfClosureDepth-- }
+            List<Object> at = new ArrayList<Object>(steps)
+            for (Object[] g : guardsTo(st, ce)) at.add(new Guard((Expression) g[0], (boolean) g[1]))
+            for (VfObligation v : inner) {
+                ASTNode n = siteNode(v.site)
+                if (n == null || nested.any { within(n, it) }) continue   // a nested closure's: the old reading
+                v.innerSteps = v.steps
+                v.steps = at
+                out.add(v)
+            }
+            vfWalked.add(ce)
+        }
+    }
+
+    /** Phase 544 — the conditions {@code ce} is evaluated under within {@code st}'s expression ([condition, holds]): a
+     *  short-circuit's left operand, a ternary's condition (Phase 411's siteGuards, for the closure as a whole). None when
+     *  the expression writes within itself. */
+    private static List<Object[]> guardsTo(Statement st, ClosureExpression ce) {
+        List<Object[]> out = new ArrayList<Object[]>()
+        Expression e = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression :
+            st instanceof ReturnStatement ? ((ReturnStatement) st).expression :
+            st instanceof ThrowStatement ? ((ThrowStatement) st).expression :
+            st instanceof AssertStatement ? ((AssertStatement) st).booleanExpression : null
+        if (e instanceof DeclarationExpression) e = ((DeclarationExpression) e).rightExpression
+        else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) e = ((BinaryExpression) e).rightExpression
+        if (e == null || writesWithin(e)) return out
+        while (e != null) {
+            if (e instanceof BooleanExpression) { e = ((BooleanExpression) e).expression; continue }
+            if (e instanceof BinaryExpression &&
+                    (((BinaryExpression) e).operation.type == Types.LOGICAL_AND || ((BinaryExpression) e).operation.type == Types.LOGICAL_OR)) {
+                BinaryExpression be = (BinaryExpression) e
+                if (within(ce, be.rightExpression)) {
+                    out.add([be.leftExpression, be.operation.type == Types.LOGICAL_AND] as Object[])
+                    e = be.rightExpression
+                } else e = be.leftExpression
+                continue
+            }
+            if (e instanceof TernaryExpression && !(e instanceof ElvisOperatorExpression)) {
+                TernaryExpression te = (TernaryExpression) e
+                if (within(ce, te.trueExpression)) { out.add([te.booleanExpression, true] as Object[]); e = te.trueExpression; continue }
+                if (within(ce, te.falseExpression)) { out.add([te.booleanExpression, false] as Object[]); e = te.falseExpression; continue }
+                e = te.booleanExpression
+                continue
+            }
+            break
+        }
+        out
+    }
+
+    private static ASTNode siteNode(Object site) {
+        site != null && site.hasProperty('node') ? (ASTNode) site['node'] : null
+    }
+
+    /** Phase 544 — every closure literal in {@code s}, at any depth. */
+    private static List<ClosureExpression> closuresIn(Statement s) {
+        List<ClosureExpression> out = new ArrayList<ClosureExpression>()
+        s.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { out.add(ce); super.visitClosureExpression(ce) }
+        })
+        out
+    }
+
+    /** Phase 544 — the locals the method declares outside {@code ce}: a closure's write to one is a re-assignment, which
+     *  takes the closure out of the walk (its value when the closure runs is the havoc's, not a fresh binding). */
+    private Set<String> declaredOutside(ClosureExpression ce) {
+        Set<String> out = new HashSet<String>()
+        Statement body = currentMethod == null ? null :
+            ((Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code)
+        if (body == null) return out
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression c) { if (!c.is(ce)) super.visitClosureExpression(c) }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) out.add(((VariableExpression) de.leftExpression).name)
+                else if (de.leftExpression instanceof TupleExpression) {
+                    for (Expression x : ((TupleExpression) de.leftExpression).expressions) {
+                        if (x instanceof VariableExpression) out.add(((VariableExpression) x).name)
+                    }
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitForLoop(ForStatement f) { if (f.variable != null) out.add(f.variable.name); super.visitForLoop(f) }
+        })
+        out
+    }
+
+    /** Phase 544 — the sites collected the old way (at the state where the closure is written) inside a closure the walk
+     *  followed are its sites again, now with their path: those are dropped. A nested closure's stay. */
+    private List<VfObligation> closureWalkedSites(List<VfObligation> sites) {
+        if (vfWalked.isEmpty()) return sites
+        List<VfObligation> out = new ArrayList<VfObligation>()
+        for (VfObligation v : sites) {
+            ASTNode n = siteNode(v.site)
+            if (v.innerSteps == null && n != null) {
+                ClosureExpression w = vfWalked.find { within(n, it) }
+                if (w != null && !closuresIn(w.code).any { within(n, it) }) continue
+            }
+            out.add(v)
+        }
+        out
+    }
+
+    /** Phase 544 — an {@code assert} inside a closure that no pass checks (one the walk didn't follow, or nested in one it
+     *  did) is reported skipped. A `.each` loop's body is the loop pass's. */
+    private void reportUnwalkedClosureAsserts(Statement body, List<VfObligation> sites) {
+        Set<ASTNode> checked = Collections.newSetFromMap(new IdentityHashMap<ASTNode, Boolean>())
+        for (VfObligation v : sites) if (v.site instanceof AssertSite) checked.add(((AssertSite) v.site).node)
+        List<AssertStatement> skipped = new ArrayList<AssertStatement>()
+        body.visit(new CodeVisitorSupport() {
+            int depth = 0
+            @Override void visitExpressionStatement(ExpressionStatement es) {
+                LoopSpec spec = (LoopSpec) es.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                if (depth == 0 && spec != null && spec.fromEach) return   // the loop pass's
+                super.visitExpressionStatement(es)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                depth++
+                try { super.visitClosureExpression(ce) } finally { depth-- }
+            }
+            @Override void visitAssertStatement(AssertStatement as) {
+                if (depth > 0 && as.getNodeMetaData(ASSUME_ONLY_KEY) == null && !checked.contains(as)) skipped.add(as)
+                super.visitAssertStatement(as)
+            }
+        })
+        for (AssertStatement as : skipped) {
+            addStaticTypeError(Reporter.formatImplicitSkipped('assertion',
+                'it is inside a closure whose body the verifier can\'t follow as a path (nested in another closure, or ' +
+                'outside the value-flow fragment)'), as)
+        }
+    }
+
     /** Phase 477 — does the arm record a step that outlives it ({@link #collectVfObligations}): an element store, a write
      *  to a field or parameter, or a statement that writes through a call ({@code xs.add(v)}, {@code xs << v}), here or
      *  in a nested if's arm; a local's re-assignment already leaves the pass. */
@@ -6645,139 +6812,147 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // checkPath uses; unrecognised calls are silently ignored so the implicit pass
             // doesn't fail on lemma-style callees that won't affect downstream oracles. The
             // ordered walk keeps the oracles' state consistent between the two passes.
-            for (Object step : v.steps) {
-                if (step instanceof Assign) {
-                    Assign a = (Assign) step
-                    if (stripCasts(a.rhs) instanceof ClosureExpression) { enc.bindNullity(a.name, s.boolLit(false)); continue }   // Phase 390
-                    if (enc.isArrayTyped(a.name) && arrayReassign(s, enc, a.name, a.rhs, node)) continue   // Phase 375
-                    if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
-                    if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
-                    // Phase 420 — the name's nullity is the new value's (as LoopEncoder.rebind binds it): a null is known,
-                    // not an unmodelled value; an unknown one is fresh, where the old one stayed
-                    if (stripCasts(a.rhs) instanceof ConstantExpression && ((ConstantExpression) stripCasts(a.rhs)).value == null) {
-                        Object isNull = s.boolVar(a.name + '?null#vf' + (ssaCounter++))
-                        s.assertExpr(isNull)
-                        enc.bindNullity(a.name, isNull)
-                        enc.havoc(a.name)
-                        continue
-                    }
-                    Object knownNull = receiverFieldNullity(enc, node, a.rhs) ?: enc.nullityOfExpr(a.rhs)   // Phase 520 — a receiver field's first
-                    enc.noteNullableValue(a.name, a.rhs)   // Phase 423
-                    enc.bindNullity(a.name, knownNull != null ? knownNull : s.boolVar(a.name + '?null$unmodelled$' + (ssaCounter++)))
-                    // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await
-                    // read-out can't discharge in this seeded session: `def fa = async { e }` aliases fa to e, and
-                    // `r = await(a,b,c)` records r as the gathered value-list factory.
-                    if (Encoder.isAsyncCall(a.rhs) && Encoder.asyncBodyExpr(a.rhs) != null) {
-                        enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs)); continue
-                    }
-                    if (enc.tryRecordAwaitAll(a.name, a.rhs)) continue
-                    if (enc.tryBindChannelSelect(a.name, a.rhs)) continue     // Phase 249 — an ALT's index / value
-                    if (enc.tryBindAwaitAny(a.name, a.rhs)) continue
-                    // Phase 242 — the modular channel receive (mirrors checkPath): a channel-typed
-                    // param's first()/awaited receive() binds a fresh value with the element bounds.
-                    if (enc.tryBindChannelReceive(a.name, a.rhs, currentChannelRecvParams)) continue
-                    // Phase 113 — a tuple-returning call (`r = callee(...)`): constrain r's slots by the
-                    // callee's @Ensures so a downstream `a[r.vN]` / call-arg obligation sees the slot bounds.
-                    // Mirrors checkPath; without it r$vN is unconstrained here and the bound can't discharge.
-                    if (isCallExpr(a.rhs) && currentTupleTypes.get(a.name) != null) {
-                        enc.registerTupleLocal(a.name, currentTupleTypes.get(a.name))
-                        if (assumeCalleeEnsures(s, enc, a.rhs, node, null, hasDecreases(node), a.name)) continue
-                    }
-                    assertSurvivalFacts(s, enc, a.rhs, node)   // Phase 222 — executed call ⟹ no arm held
-                    // Phase 227 — `def d = q` on a reference: the local shares the source's nullity (a
-                    // downstream `d.m()` deref obligation must see the caller's `q != null`)
-                    if (a.rhs instanceof VariableExpression) {
-                        enc.bindNullity(a.name, enc.nullityOf(((VariableExpression) a.rhs).name))
-                    }
-                    Expression removedRead = removedElementRead(a.rhs, enc, s)   // Phase 504 — the element, before the write
-                    Object rhs = enc.translate(removedRead ?: a.rhs)
-                    if (rhs != null) { s.assertDefinition(enc.varFor(a.name), rhs); continue }   // Phase 473
-                    // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
-                    // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
-                    // replay leaves `i` unconstrained and a downstream `s.charAt(i)` bound can't discharge.
-                    boolean modelled = false
-                    if (isCallExpr(a.rhs)) {
-                        if (calleeReturnsList(a.rhs, node)) {
-                            // Phase 225 — list-returning callee: the rename route (see checkPath), so the
-                            // callee's reference-oracle facts land on the local for downstream obligations
-                            modelled = listLocalFromCall(s, enc, a.name, a.rhs, node)
-                        } else {
-                            // Phase 479 — in the local's own sort: a carrier's (`Length r = Length.km(2.0)`) as an Int
-                            // crashed its @Ensures (`result.metres`), once the method had an obligation to replay it for
-                            ClassNode lt = currentScalarTypes.get(a.name)
-                            Object lsort = lt != null && !isIntElement(lt) ? enc.sortForType(lt) : null
-                            String fn = 'specw$' + Integer.toHexString(System.identityHashCode(a.rhs))
-                            Object fresh = lsort != null && lsort != s.intSort() ? s.varOfSort(fn, lsort) : s.intVar(fn)
-                            if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
-                                s.assertExpr(s.eq(enc.varFor(a.name), fresh))
-                                enc.bindNullity(a.name, enc.lastCallResultNullity)   // Phase 421 — what its @Ensures says
-                                modelled = true
-                            }
-                        }
-                    }
-                    // Phase 386 — nothing modelled the value: the name stays free (sound), but a model's value for it
-                    // is no run's, so shown() withholds the call (`List r = (4.5..6.5).toList()` read `fails on: f()`)
-                    if (!modelled) replayUnmodelled.add(a.name)
-                } else if (step instanceof ArrayStore) {
-                    // Phase 404 — an element store: the contents after it are the stored ones (and an array that may be
-                    // this one has unknown contents); one that doesn't translate leaves them unknown
-                    ArrayStore st = (ArrayStore) step
-                    boolean isMap = currentMapTypes.containsKey(st.arr)
-                    Object idx = isMap ? enc.translateInSort(st.index, enc.mapKeySort(st.arr)) : enc.indexTerm(st.arr, st.index)
-                    Object val = isMap ? enc.mapValueOf(st.arr, st.value) : enc.translateInSort(st.value, enc.listElementSort(st.arr))
-                    if (idx == null || val == null) { if (isMap) enc.havocMap(st.arr) else enc.havocArray(st.arr) }
-                    else if (isMap) doMapPut(s, enc, st.arr, idx, val, st.value)
-                    else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storeElementNullity(st.arr, idx, st.value); enc.storedInto(st.arr) }   // Phase 445
-                } else if (step instanceof FieldAssign) {
-                    // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
-                    // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
-                    // without the entry symbol picking up a self-contradictory `name == rhs` constraint.
-                    FieldAssign a = (FieldAssign) step
-                    Expression removedRead = removedElementRead(a.rhs, enc, s)   // Phase 504 — the element, before the write
-                    Object rhs = enc.translate(removedRead ?: a.rhs)
-                    if (rhs != null) {
-                        Object fresh = s.intVar('ssa$' + a.name + '$' + (ssaCounter++))
-                        s.assertExpr(s.eq(fresh, rhs))
-                        enc.bind(a.name, fresh)
-                    }
-                } else if (step instanceof SoftAssume) {
-                    Object c = enc.translate(((SoftAssume) step).cond)   // Phase 223 — catch-entry fact
-                    if (c != null) {
-                        s.assertExpr(c)
-                        if (Reporter.EXPLAIN) {
-                            s.explainNoteFact("TRUSTED catch-entry fact (${((SoftAssume) step).cond.text.replaceAll(/\s+/, ' ')}) — registry arms".toString(), c)
-                        }
-                    }
-                } else if (step instanceof Guard) {
-                    Guard g = (Guard) step
-                    Object c = enc.translateCondition(g.cond)   // Phase 450
-                    // Phase 447 — a guard on a value's truth (`m.get(5) ?: 0`) is no boolean term: left unassumed (it threw)
-                    if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))
-                    else taintDropped(s, g.cond, g.positive)   // Phase 472
-                    assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
-                } else if (step instanceof LemmaCall) {
-                    Expression call = ((LemmaCall) step).call
-                    assumeDerefSurvival(s, enc, call, false)   // Phase 418 — a call statement the path moved past
-                    // Note: countVals are scoped to a postcondition's @Ensures, not relevant for implicit
-                    // obligations (bounds/null/div) — pass empty so the bcount boundary law just skips for
-                    // unrelated v's. The size-thread is what we need here.
-                    if (applySetMutation(s, enc, call)) continue
-                    if (applyMapPut(s, enc, call)) continue
-                    if (applyListMutation(s, enc, call, Collections.<Object>emptyList())) continue
-                    // Caller-side framing for a standalone @Modifies / @Ensures call: havoc the callee's declared
-                    // frame and assume its @Ensures — exactly as the postcondition path (`assumeCalleeEnsures`)
-                    // does — so a downstream obligation can't assume a field the call modified is unchanged.
-                    // Without this the call was a silent no-op, so an in-segment obligation could be proven over a
-                    // field a @Modifies call actually changed (the call-framing gap). Phase 405 — a call it doesn't frame
-                    // (a library mutator, a generated accessor) was a no-op here: `xs.remove(0); assert xs.size() == 1`
-                    // proved. What it may write is havocked now
-                    if (!assumeCalleeEnsures(s, enc, call, node, null, hasDecreases(node))) havocUnframedCall(enc, call)
-                }
-            }
-            dischargeObligationUnder(s, enc, v.site)
+            replayVfSteps(s, enc, node, v.steps)
+            // Phase 544 — a site inside a closure the walk followed: the closure's own steps, replayed in the state when
+            // it runs (after the havoc of what may have changed by then)
+            List<Object> inner = v.innerSteps
+            dischargeObligationUnder(s, enc, v.site, inner == null ? null : { -> replayVfSteps(s, enc, node, inner) })
         } finally {
             replayUnmodelled.clear()
             try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Replay value-flow {@code steps} in source order into {@code s} (see {@link #dischargeVfObligation}). */
+    private void replayVfSteps(SmtSession s, Encoder enc, MethodNode node, List<Object> steps) {
+        for (Object step : steps) {
+            if (step instanceof Assign) {
+                Assign a = (Assign) step
+                if (stripCasts(a.rhs) instanceof ClosureExpression) { enc.bindNullity(a.name, s.boolLit(false)); continue }   // Phase 390
+                if (enc.isArrayTyped(a.name) && arrayReassign(s, enc, a.name, a.rhs, node)) continue   // Phase 375
+                if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
+                if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
+                // Phase 420 — the name's nullity is the new value's (as LoopEncoder.rebind binds it): a null is known,
+                // not an unmodelled value; an unknown one is fresh, where the old one stayed
+                if (stripCasts(a.rhs) instanceof ConstantExpression && ((ConstantExpression) stripCasts(a.rhs)).value == null) {
+                    Object isNull = s.boolVar(a.name + '?null#vf' + (ssaCounter++))
+                    s.assertExpr(isNull)
+                    enc.bindNullity(a.name, isNull)
+                    enc.havoc(a.name)
+                    continue
+                }
+                Object knownNull = receiverFieldNullity(enc, node, a.rhs) ?: enc.nullityOfExpr(a.rhs)   // Phase 520 — a receiver field's first
+                enc.noteNullableValue(a.name, a.rhs)   // Phase 423
+                enc.bindNullity(a.name, knownNull != null ? knownNull : s.boolVar(a.name + '?null$unmodelled$' + (ssaCounter++)))
+                // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await
+                // read-out can't discharge in this seeded session: `def fa = async { e }` aliases fa to e, and
+                // `r = await(a,b,c)` records r as the gathered value-list factory.
+                if (Encoder.isAsyncCall(a.rhs) && Encoder.asyncBodyExpr(a.rhs) != null) {
+                    enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs)); continue
+                }
+                if (enc.tryRecordAwaitAll(a.name, a.rhs)) continue
+                if (enc.tryBindChannelSelect(a.name, a.rhs)) continue     // Phase 249 — an ALT's index / value
+                if (enc.tryBindAwaitAny(a.name, a.rhs)) continue
+                // Phase 242 — the modular channel receive (mirrors checkPath): a channel-typed
+                // param's first()/awaited receive() binds a fresh value with the element bounds.
+                if (enc.tryBindChannelReceive(a.name, a.rhs, currentChannelRecvParams)) continue
+                // Phase 113 — a tuple-returning call (`r = callee(...)`): constrain r's slots by the
+                // callee's @Ensures so a downstream `a[r.vN]` / call-arg obligation sees the slot bounds.
+                // Mirrors checkPath; without it r$vN is unconstrained here and the bound can't discharge.
+                if (isCallExpr(a.rhs) && currentTupleTypes.get(a.name) != null) {
+                    enc.registerTupleLocal(a.name, currentTupleTypes.get(a.name))
+                    if (assumeCalleeEnsures(s, enc, a.rhs, node, null, hasDecreases(node), a.name)) continue
+                }
+                assertSurvivalFacts(s, enc, a.rhs, node)   // Phase 222 — executed call ⟹ no arm held
+                // Phase 227 — `def d = q` on a reference: the local shares the source's nullity (a
+                // downstream `d.m()` deref obligation must see the caller's `q != null`)
+                if (a.rhs instanceof VariableExpression) {
+                    enc.bindNullity(a.name, enc.nullityOf(((VariableExpression) a.rhs).name))
+                }
+                Expression removedRead = removedElementRead(a.rhs, enc, s)   // Phase 504 — the element, before the write
+                Object rhs = enc.translate(removedRead ?: a.rhs)
+                if (rhs != null) { s.assertDefinition(enc.varFor(a.name), rhs); continue }   // Phase 473
+                // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
+                // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
+                // replay leaves `i` unconstrained and a downstream `s.charAt(i)` bound can't discharge.
+                boolean modelled = false
+                if (isCallExpr(a.rhs)) {
+                    if (calleeReturnsList(a.rhs, node)) {
+                        // Phase 225 — list-returning callee: the rename route (see checkPath), so the
+                        // callee's reference-oracle facts land on the local for downstream obligations
+                        modelled = listLocalFromCall(s, enc, a.name, a.rhs, node)
+                    } else {
+                        // Phase 479 — in the local's own sort: a carrier's (`Length r = Length.km(2.0)`) as an Int
+                        // crashed its @Ensures (`result.metres`), once the method had an obligation to replay it for
+                        ClassNode lt = currentScalarTypes.get(a.name)
+                        Object lsort = lt != null && !isIntElement(lt) ? enc.sortForType(lt) : null
+                        String fn = 'specw$' + Integer.toHexString(System.identityHashCode(a.rhs))
+                        Object fresh = lsort != null && lsort != s.intSort() ? s.varOfSort(fn, lsort) : s.intVar(fn)
+                        if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
+                            s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                            enc.bindNullity(a.name, enc.lastCallResultNullity)   // Phase 421 — what its @Ensures says
+                            modelled = true
+                        }
+                    }
+                }
+                // Phase 386 — nothing modelled the value: the name stays free (sound), but a model's value for it
+                // is no run's, so shown() withholds the call (`List r = (4.5..6.5).toList()` read `fails on: f()`)
+                if (!modelled) replayUnmodelled.add(a.name)
+            } else if (step instanceof ArrayStore) {
+                // Phase 404 — an element store: the contents after it are the stored ones (and an array that may be
+                // this one has unknown contents); one that doesn't translate leaves them unknown
+                ArrayStore st = (ArrayStore) step
+                boolean isMap = currentMapTypes.containsKey(st.arr)
+                Object idx = isMap ? enc.translateInSort(st.index, enc.mapKeySort(st.arr)) : enc.indexTerm(st.arr, st.index)
+                Object val = isMap ? enc.mapValueOf(st.arr, st.value) : enc.translateInSort(st.value, enc.listElementSort(st.arr))
+                if (idx == null || val == null) { if (isMap) enc.havocMap(st.arr) else enc.havocArray(st.arr) }
+                else if (isMap) doMapPut(s, enc, st.arr, idx, val, st.value)
+                else { enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val)); enc.storeElementNullity(st.arr, idx, st.value); enc.storedInto(st.arr) }   // Phase 445
+            } else if (step instanceof FieldAssign) {
+                // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
+                // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
+                // without the entry symbol picking up a self-contradictory `name == rhs` constraint.
+                FieldAssign a = (FieldAssign) step
+                Expression removedRead = removedElementRead(a.rhs, enc, s)   // Phase 504 — the element, before the write
+                Object rhs = enc.translate(removedRead ?: a.rhs)
+                if (rhs != null) {
+                    Object fresh = s.intVar('ssa$' + a.name + '$' + (ssaCounter++))
+                    s.assertExpr(s.eq(fresh, rhs))
+                    enc.bind(a.name, fresh)
+                }
+            } else if (step instanceof SoftAssume) {
+                Object c = enc.translate(((SoftAssume) step).cond)   // Phase 223 — catch-entry fact
+                if (c != null) {
+                    s.assertExpr(c)
+                    if (Reporter.EXPLAIN) {
+                        s.explainNoteFact("TRUSTED catch-entry fact (${((SoftAssume) step).cond.text.replaceAll(/\s+/, ' ')}) — registry arms".toString(), c)
+                    }
+                }
+            } else if (step instanceof Guard) {
+                Guard g = (Guard) step
+                Object c = enc.translateCondition(g.cond)   // Phase 450
+                // Phase 447 — a guard on a value's truth (`m.get(5) ?: 0`) is no boolean term: left unassumed (it threw)
+                if (c != null && s.isBool(c)) s.assertExpr(g.positive ? c : s.not(c))
+                else taintDropped(s, g.cond, g.positive)   // Phase 472
+                assumeDerefSurvival(s, enc, g.cond, g.positive)   // Phase 415
+            } else if (step instanceof LemmaCall) {
+                Expression call = ((LemmaCall) step).call
+                assumeDerefSurvival(s, enc, call, false)   // Phase 418 — a call statement the path moved past
+                // Note: countVals are scoped to a postcondition's @Ensures, not relevant for implicit
+                // obligations (bounds/null/div) — pass empty so the bcount boundary law just skips for
+                // unrelated v's. The size-thread is what we need here.
+                if (applySetMutation(s, enc, call)) continue
+                if (applyMapPut(s, enc, call)) continue
+                if (applyListMutation(s, enc, call, Collections.<Object>emptyList())) continue
+                // Caller-side framing for a standalone @Modifies / @Ensures call: havoc the callee's declared
+                // frame and assume its @Ensures — exactly as the postcondition path (`assumeCalleeEnsures`)
+                // does — so a downstream obligation can't assume a field the call modified is unchanged.
+                // Without this the call was a silent no-op, so an in-segment obligation could be proven over a
+                // field a @Modifies call actually changed (the call-framing gap). Phase 405 — a call it doesn't frame
+                // (a library mutator, a generated accessor) was a no-op here: `xs.remove(0); assert xs.size() == 1`
+                // proved. What it may write is havocked now
+                if (!assumeCalleeEnsures(s, enc, call, node, null, hasDecreases(node))) havocUnframedCall(enc, call)
+            }
         }
     }
 
@@ -7862,7 +8037,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * captured name that can differ by then is havocked first ({@link #closureHavoc}). The failing call is withheld:
      * nothing follows the calls from entry, and the closure's own parameters (`k` in `n.times { k -> … }`) are free.
      */
-    private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+    private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site, Closure afterHavoc = null) {
         // Phase 404 — an obligation reading an array made unknown only as a possible alias: its failing run needs the two
         // to be one array, so the call isn't shown
         String prevAlias = aliasCallNote
@@ -7873,7 +8048,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             else if (n instanceof AssertStatement) collectLocationNames(((AssertStatement) n).booleanExpression, read)
             if (!Collections.disjoint(read, enc.aliasHavocked)) aliasCallNote = ALIAS_CALL_NOTE
         }
-        try { dischargeObligationUnder0(s, enc, site) } finally { aliasCallNote = prevAlias }
+        try { dischargeObligationUnder0(s, enc, site, afterHavoc) } finally { aliasCallNote = prevAlias }
     }
 
     static final String ALIAS_CALL_NOTE = 'no failing call: the failure needs two of the arrays this method names to be ' +
@@ -7882,9 +8057,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 404 — while set, {@link #shown} withholds the failing call, with this note. */
     private String aliasCallNote = null
 
-    private void dischargeObligationUnder0(SmtSession s, Encoder enc, Object site) {
+    private void dischargeObligationUnder0(SmtSession s, Encoder enc, Object site, Closure afterHavoc) {
         Set<String> h = site.hasProperty('node') ? closureHavocFor((ASTNode) site['node']) : null
-        if (h == null) { dischargeObligationAt(s, enc, site); return }
+        if (h == null) { afterHavoc?.call(); dischargeObligationAt(s, enc, site); return }
+        if (regionWalking != null && ownSiteOf((ASTNode) site['node'], regionWalking)) {
+            // Phase 544 — the region walk put the havoc in the path, with the range and helper facts, before the closure's
+            // own statements
+            String prevNote = closureCallNote
+            closureCallNote = CLOSURE_CALL_NOTE
+            try { dischargeObligationAt(s, enc, site) } finally { closureCallNote = prevNote }
+            return
+        }
         // Phase 380 — a closure iterating a range runs with its parameter in it: `(0..<j.length).every { j[it] >= 0 }`
         // checked `j[it]` with `it` free (`it = -1`). The range is evaluated once, as the call starts, so its bounds are
         // read here, in the state at the call, before the havoc of what may change by the time the closure runs.
@@ -7906,6 +8089,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object t = enc.translate(fact)
             if (t != null) s.assertExpr(t)
         }
+        afterHavoc?.call()   // Phase 544 — the closure's own path to the site, from the state when it runs
         String prev = closureCallNote
         closureCallNote = CLOSURE_CALL_NOTE
         try { dischargeObligationAt(s, enc, site) } finally { closureCallNote = prev }
@@ -7966,6 +8150,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 else if (!ce.isParameterSpecified()) params.add('it')
                 List<Expression> next = stack.get(stack.size() - 1).findAll { Expression f -> !namesRead(f).any { params.contains(it) } }
                 next.addAll(facts)
+                if (!next.isEmpty()) out.put(ce, next)   // Phase 544 — the closure's own, for the region walk
                 stack.add(next)
                 try { ce.code?.visit(this) } finally { stack.remove(stack.size() - 1) }
             }
@@ -8268,6 +8453,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (!loops.isEmpty()) {
                     for (Object[] lf : leaves) if (within((Statement) lf[0], loops.get(0))) names.addAll((Set<String>) lf[1])
                 }
+                out.put(ce, new LinkedHashSet<String>(names))   // Phase 544 — the closure's own, for the region walk
                 if (ce.code != null) {
                     ce.code.visit(new CodeVisitorSupport() {
                         void mark(ASTNode n) {
@@ -8977,8 +9163,87 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Non-if statement: walk each top-level expression with short-circuit awareness too,
             // not just {@code sitesInStatement}, so an inline {@code a != null && a.m()} in any
             // statement gets the same treatment.
-            dischargeStatementShortCircuit(st, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
+            // Phase 544 — its closures' bodies first, each as a region of its own; their sites aren't checked again below
+            List<ClosureExpression> walked = regionClosureDepth == 0 ?
+                walkRegionClosures(st, reqAst, assumePos, assumeNeg, preceding, handleAsserts) :
+                Collections.<ClosureExpression> emptyList()
+            List<ClosureExpression> prevSkip = regionSkip
+            if (!walked.isEmpty()) regionSkip = walked
+            try {
+                dischargeStatementShortCircuit(st, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
+            } finally { regionSkip = prevSkip }
         }
+    }
+
+    /** Phase 544 — while the region pass checks a statement, the closures in it whose bodies were walked
+     *  ({@link #walkRegionClosures}): their sites (but a nested closure's) are skipped. */
+    private List<ClosureExpression> regionSkip = null
+    /** Phase 544 — the closure whose body the region pass is walking: the havoc of what may change by the time it runs
+     *  is in its sites' path, before its own statements, so the discharge doesn't havoc again. */
+    private ClosureExpression regionWalking = null
+    private int regionClosureDepth = 0
+
+    /**
+     * Phase 544 — the region pass's reading of {@link #walkClosures}: each outermost closure literal in {@code st} (not a
+     * `.each` the loop pass takes) is checked as a region of its own, reached by {@code preceding}, then the havoc of
+     * what may have changed by the time it runs (Phase 372's names, shown "when the closure runs"), then its own
+     * statements, so its locals, guards and early returns hold at its sites. A closure nested in it keeps the old
+     * reading. One that can't be walked keeps it too (it isn't returned).
+     */
+    private List<ClosureExpression> walkRegionClosures(Statement st, Expression reqAst, List<Expression> assumePos,
+                                                       Expression assumeNeg, List<Statement> preceding, boolean handleAsserts) {
+        List<ClosureExpression> walked = new ArrayList<ClosureExpression>()
+        if (!(st instanceof ExpressionStatement || st instanceof ReturnStatement || st instanceof ThrowStatement)) return walked
+        if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return walked
+        List<ClosureExpression> found = new ArrayList<ClosureExpression>()
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { found.add(ce) }   // the outermost only
+        })
+        for (ClosureExpression ce : found) {
+            if (ce.code == null || ce.lineNumber < 0) continue
+            Set<String> h = closureHavocFor(ce)
+            if (h == null) continue   // a process: rely/guarantee
+            // the path into it: the conditions it's evaluated under in the statement, and its parameter's range (Phase 380,
+            // read as the call starts); then the havoc; then a helper's parameter facts (Phase 393, bound per call)
+            List<Statement> path = preceding
+            for (Object[] g : guardsTo(st, ce)) {
+                path = withAssume(path, (boolean) g[1] ? (Expression) g[0] : new NotExpression((Expression) g[0]))
+            }
+            List<Expression> helperFacts = new ArrayList<Expression>()
+            List<Expression> after = new ArrayList<Expression>()
+            for (Expression fact : closureParamFactsFor(ce)) {
+                if (fact.getNodeMetaData(HELPER_PARAM_KEY) != null) helperFacts.add(fact)
+                else if (namesRead(fact).any { h.contains(it) }) path = withAssume(path, fact)
+                else after.add(fact)   // the same after the havoc: kept next to the closure's own statements
+            }
+            path = withHavoc(path, h, 'when the closure runs')
+            for (Expression fact : after) path = withAssume(path, fact)
+            for (Expression fact : helperFacts) {
+                String hp = (String) fact.getNodeMetaData(HELPER_PARAM_KEY)
+                if (!namesRead(fact).any { it != hp && h.contains(it) }) path = withAssume(path, fact)
+            }
+            List<ClosureExpression> prevSkip = regionSkip
+            ClosureExpression prevWalking = regionWalking
+            regionSkip = null
+            regionWalking = ce
+            regionClosureDepth++
+            try {
+                dischargeRegion(topStatements(ce.code), reqAst, assumePos, assumeNeg, path, handleAsserts)
+                walked.add(ce)
+            } catch (Throwable ignored) {
+                // the old reading stands
+            } finally {
+                regionClosureDepth--
+                regionWalking = prevWalking
+                regionSkip = prevSkip
+            }
+        }
+        walked
+    }
+
+    /** Phase 544 — is the site at {@code n} one of {@code ce}'s own (inside it, not inside a closure nested in it)? */
+    private static boolean ownSiteOf(ASTNode n, ClosureExpression ce) {
+        n != null && within(n, ce) && !closuresIn(ce.code).any { ClosureExpression c -> within(n, c) }
     }
 
     /**
@@ -9293,6 +9558,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void dischargeSeeded(Object site, Expression reqAst,
                                  List<Expression> assumePos, Expression assumeNeg,
                                  List<Statement> preceding) {
+        if (regionSkip != null) {   // Phase 544 — a walked closure's site: checked in its own region
+            ASTNode n = siteNode(site)
+            if (regionSkip.any { ClosureExpression ce -> ownSiteOf(n, ce) }) return
+        }
         if (heldErrors != null || currentChannelDesugared || !currentChannelNames.isEmpty()) {
             dischargeSeededAt(site, reqAst, assumePos, assumeNeg, preceding)
             return
@@ -21234,6 +21503,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             //     path (no worse than before), so we never assume the invariant without the matching body replay.
             boolean handledInLoop = false
             boolean throughLoop = false
+            boolean inClosure = false   // Phase 544 — the call is inside a closure: its failing call is withheld
             // Phase 462 — the conditions the replayed prefix assumes where the path passes them (see collectPrefix)
             Set<String> branchFacts = new HashSet<String>()
             List<Statement> replayed = new ArrayList<Statement>()
@@ -21273,6 +21543,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         List<Statement> outer = encBody == null ? Collections.<Statement> emptyList() :
                             prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, (Statement) encLoop)
                         labelSummaries(outer + inLoopPrefix)
+                        if (resolveClosureRuns(outer) | resolveClosureRuns(inLoopPrefix)) inClosure = true   // Phase 544
                         try {
                             replayPrefix(outer, enc, session)
                         } catch (Throwable ignored) {
@@ -21310,6 +21581,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // 2d. Thread the intervening straight-line body mutations to the call site, so both the
                 //     precondition and the actual arguments (step 1, next) see the state *at the call*.
                 List<Statement> prefix = prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber, null, leaf)
+                if (resolveClosureRuns(prefix)) inClosure = true   // Phase 544
                 throughLoop = prefix.any { Statement st -> st.getNodeMetaData(HAVOC_LOOP_KEY) != null }   // Phase 461
                 if (throughLoop || prefix.any { Statement st -> st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null }) witnessPrefix = prefix
                 replayed.addAll(prefix)
@@ -21576,10 +21848,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // 4. Check. Phase 461 — inside an unannotated loop the state is an arbitrary iteration's: the call withheld
             String prevNote = loopCallNote
             if (throughLoop) loopCallNote = IN_LOOP_CALL_NOTE
+            String prevClosureNote = closureCallNote
+            if (inClosure) closureCallNote = CLOSURE_CALL_NOTE
             // Phase 476 — a path through a condition it couldn't evaluate, or resting on a helper's unknown value: the
             // session's taints (Phase 472) and its dependence test (Phase 473), as for every other check
             CheckResult r
-            try { r = shown(session.check()) } finally { loopCallNote = prevNote }
+            try { r = shown(session.check()) } finally { loopCallNote = prevNote; closureCallNote = prevClosureNote }
             if (exactPath != null) exactStatus = r.status   // Phase 466
             // Phase 464 — refuted at an arbitrary iteration: a failing call is sought along the exact runs from entry
             // through the loop's first iterations to the call (Phase 371's search); the first refuted is reported
@@ -22761,10 +23035,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Statement> stmts = new ArrayList<Statement>()
         for (Statement st : prefix) {
             if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) stmts.addAll((List<Statement>) st.getNodeMetaData(HAVOC_SUMMARY_KEY))
-            else stmts.add((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY) ?: st)
+            else if (st.getNodeMetaData(HAVOC_NAMES_KEY) == null) stmts.add((Statement) st.getNodeMetaData(HAVOC_LOOP_KEY) ?: st)
         }
         boolean[] thisCall = [false] as boolean[]
         Set<String> out = new HashSet<String>()
+        for (Statement st : prefix) {   // Phase 544 — a closure's call: what it havocs
+            Set<String> h = (Set<String>) st.getNodeMetaData(HAVOC_NAMES_KEY)
+            if (h != null) out.addAll(h)
+        }
         for (String w : writeTargetsOf(stmts, thisCall)) out.add((w.startsWith('this.') ? w.substring(5) : w).split(/[.\[]/, 2)[0])
         if (thisCall[0] && currentMethod?.declaringClass != null) {
             for (FieldNode f : currentMethod.declaringClass.fields) out.add(f.name)
@@ -22904,8 +23182,53 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (arm == null || LoopEncoder.leaves(arm)) from = i + 1
             }
         }
+        // Phase 544 — a call inside a closure literal runs when the closure is called: the path to the closure's statement,
+        // then a marker for what may have changed by then (resolved by the caller, {@link #resolveClosureRuns}), then the
+        // closure's own statements up to the call. It was checked at the closure's statement, in the state where the
+        // closure is written, so `int d = 1; Closure r = { g(d) }; d = 0; r()` passed, and the closure's own locals and
+        // guards were unknown (`{ int n = c + 1; g(n) }` showed `n = 0`, failing on a call that doesn't fail)
+        if (!(st instanceof LoopingStatement) && st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null &&
+                !(st instanceof IfStatement)) {
+            ClosureExpression ce = closureAt(st, tl, tc)
+            if (ce != null) {
+                Statement m = new EmptyStatement()
+                m.putNodeMetaData(CLOSURE_RUN_KEY, ce)
+                out.add(m)
+                collectPrefix(ce.code, tl, tc, out, stop, leaf)
+                return true
+            }
+        }
         if (leaf != null) leaf[0] = st
         return false
+    }
+
+    /** Phase 544 — marks a prefix statement standing for a closure's call: what may have changed by then is unknown. */
+    static final String CLOSURE_RUN_KEY = 'verification.closureRun'
+
+    /** Phase 544 — the outermost closure literal in {@code st} whose body holds the position, or null. */
+    private static ClosureExpression closureAt(Statement st, int tl, int tc) {
+        ClosureExpression[] hit = new ClosureExpression[1]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                if (hit[0] == null && ce.code != null && ce.lineNumber > 0 && spans(ce.code, tl, tc)) hit[0] = ce
+            }
+        })
+        hit[0]
+    }
+
+    /** Phase 544 — each closure marker in {@code prefix} ({@link #CLOSURE_RUN_KEY}) havocs what may have changed by the
+     *  time the closure runs (Phase 372's names); true when there is one. */
+    private boolean resolveClosureRuns(List<Statement> prefix) {
+        boolean any = false
+        for (Statement st : prefix) {
+            ClosureExpression ce = (ClosureExpression) st.getNodeMetaData(CLOSURE_RUN_KEY)
+            if (ce == null) continue
+            any = true
+            Set<String> h = closureHavocFor(ce)
+            st.putNodeMetaData(HAVOC_NAMES_KEY, h == null ? new LinkedHashSet<String>() : new LinkedHashSet<String>(h))
+            st.putNodeMetaData(HAVOC_LABEL_KEY, 'when the closure runs')
+        }
+        any
     }
 
     /** Phase 463 — marks a synthetic prefix statement standing for {@code stmts}, which may have run part-way (a try
@@ -22987,6 +23310,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 continue
             }
             if (st.getNodeMetaData(HAVOC_SUMMARY_KEY) != null) { havocSummary(st, enc); continue }   // Phase 463
+            if (st.getNodeMetaData(HAVOC_NAMES_KEY) != null) {   // Phase 544 — a closure's call
+                for (String n : (Set<String>) st.getNodeMetaData(HAVOC_NAMES_KEY)) havocLocation(enc, n)
+                continue
+            }
             if (st instanceof ExpressionStatement && replayMutation(((ExpressionStatement) st).expression, enc, s)) {
                 continue
             }
