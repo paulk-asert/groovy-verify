@@ -22774,7 +22774,7 @@ verifier's: under `@TypeChecked`, `Behaviors.setup(X::new)` needs `Behaviors.<T>
 it the same way).
 
 **Found, not fixed (core, not Pekko):** both reproduce in plain Groovy and are recorded for their own phase.
-- A value written after an *assigned* call the replay can't frame (`Object g = mk(); StringBuilder b = sb(g);
+- (Fixed in Phase 547.) A value written after an *assigned* call the replay can't frame (`Object g = mk(); StringBuilder b = sb(g);
   b.append('x')`, `mk` calling an unspecified static) is reported with a false failing call, `fails on: run()`; the same
   call as a bare statement (`mk()`) correctly withholds it. In Pekko terms: a guardian held in a local built by a user
   method (`Behavior<…> g = Main.create(); ActorSystem.create(g, …)`).
@@ -22797,6 +22797,45 @@ an opaque value for any actual, not only a call (1, in P533); and the skeleton c
 `SpecAuditTest` on both guardians. The binding's mention check (an opaque value only for a formal the
 ensures doesn't read) is kept as the conservative guard; no case can tell it apart, since the actual is unmodelled either
 way.
+
+## Phase 547 — false failing calls: a value no run is known to produce  *(shipped — diagnostics: a tenet violation)*
+
+Phase 546's probe found `fails on: run()` on a call that never fails: `Object g = mk(); StringBuilder b = sb(g);
+b.append('x')`, with `sb` returning `new StringBuilder()` (in Pekko terms, a guardian held in a local built by a user
+method). Narrowing it showed two causes, either enough on its own:
+
+- **(A) The region replay's label.** Stopping at a statement it can't follow, `replaySafely` havocs what comes after
+  under a label, and every label but 'after a loop' withholds the call (a loop's havoc stands for an arbitrary iteration,
+  whose witness is sought separately). A bare call it can't frame (`mk()`) was labelled 'after a call'; the same call with
+  its value assigned (`Object g = mk()`) fell through to 'after a loop'. It is 'after a call' now, for any non-loop
+  statement holding a call.
+- **(B) A null the contract never mentions.** `StringBuilder b = sb(new Object())` alone read `counterexample: b = 0`,
+  `fails on: run()`, in the main value-flow pass: the call's result nullity is a fresh flag per call (Phase 421),
+  constrained only by what the callee's @Ensures says of `result`. When it says nothing, the model's null is no run's: a
+  run gets what the body returns. The flag now carries the callee's name and an `unknown:` taint (Phase 472's route), and
+  the call is withheld with a note that says how to settle it: `the failure rests on sb(…) returning null, which its
+  contract doesn't rule out but no run is known to do — an @Ensures({ result != null }) on sb would settle it`.
+
+Withholding is the conservative direction. A P386 case changes with (A): `List r = b.toList()`, with a user `toList`
+that does return null, read `fails on: f(new Box())`; the call can't be framed, so the same claim would be made for a
+`toList` returning a list, and it is withheld now.
+
+**Tried and taken out:** the same rule for a call's *value* its contract bounds but doesn't pin (`@Ensures({ result >=
+-5 })`, `a[idx(o)]` reads `fails on: run()` with `idx` returning 0). Tainting the value whenever the model shows it
+withheld seven true failing calls across P347, P421 and P461 (`g(1)` breaking `i == 0` in a loop, `bump()` writing a field), because
+a call's value is in every model on its path, whether or not the failure rests on it. It needs a relevance test (does the
+obligation still fail for every value the contract allows?), and is recorded below.
+
+**Found, not fixed:** (1) the contract-bounded value above; (2) the Phase 546 crash, a user method taking `Object`
+called with a `String` ("Sort mismatch … supplied sort is String").
+
+**Shipped tests:** group `P547 false failing calls` (G588), 7 cases: (A) the assigned unframable call, with and without a
+parameter, and the bare one that already named none; (B) the null a contract never mentions (the note pinned), settled by
+the @Ensures it suggests, and a contract promising null, whose failing call stays (every run gets it); the Pekko guardian
+in a local. P386's user-`toList()` case now expects no failing call.
+
+Mutation-checked: 4 of 4 killed — the assigned call still 'after a loop' (3), the null flag untainted (1), tainted even
+when the contract speaks of `result` (1), the generic note (1).
 
 ## Perf ceilings re-based (after Phase 542)
 

@@ -1567,6 +1567,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     static final String DROPPED_CONDITION_NOTE = 'no failing call: the path here passes %s, a condition the ' +
         'verifier can\'t evaluate, so no run is known to get there'
     /** Phase 471/472 — a helper's value no run is known to produce, which the failure rests on (Phase 473's test) */
+    /** Phase 547 — a call's reference result whose nullity its contract never mentions, which the model took as null. */
+    static final String CONTRACT_NULL_NOTE = 'no failing call: the failure rests on %1$s(…) returning null, which its contract ' +
+        'doesn\'t rule out but no run is known to do — an @Ensures({ result != null }) on %1$s would settle it'
+
     static final String UNKNOWN_CALL_NOTE = 'no failing call: the failure rests on what %s(…) returns, a value the ' +
         'verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so no run is known to fail'
 
@@ -3461,6 +3465,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (dropped != null || unknown != null) {
                 r.failingCall = null
                 String note = dropped != null ? String.format(DROPPED_CONDITION_NOTE, dropped.substring('dropped:'.length())) :
+                    unknown.endsWith('?null') ? String.format(CONTRACT_NULL_NOTE, unknown - '?null') :   // Phase 547
                     String.format(UNKNOWN_CALL_NOTE, unknown)
                 if (!r.notes.contains(note)) r.notes.add(note)
             }
@@ -9469,7 +9474,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     'after the switch' : st instanceof LoopingStatement ? 'after a loop' :
                     Encoder.containsCallableCall(st) ? 'after a callable\'s call' :
                     !Encoder.nestedTargets(st).isEmpty() ? 'after a nested write' :
-                    standaloneCallOf(st) != null ? 'after a call' : 'after a loop'   // Phase 404 — a call it can't frame
+                    standaloneCallOf(st) != null ? 'after a call' :   // Phase 404 — a call it can't frame
+                    // Phase 547 — or one whose value is assigned (`Object g = mk()`): it fell to 'after a loop', the one
+                    // label that keeps the call, so a later `b.append(…)` read `fails on: run()`
+                    !(st instanceof LoopingStatement) && holdsCall(st) ? 'after a call' : 'after a loop'
                 Set<String> havocked = null
                 labelHavoc(enc, label) { -> havocked = havocWritesOf(rest, enc) }
                 for (int k = 0; k < rest.size(); k++) {
@@ -9482,6 +9490,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
         }
+    }
+
+    /** Phase 547 — a statement with a method call anywhere in it (a closure's body aside). */
+    private static boolean holdsCall(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression c) { found[0] = true }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression c) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+        })
+        found[0]
     }
 
     private static void assumeMarker(AssertStatement m, Encoder enc, SmtSession s, boolean stripQ, List<Expression> assumed) {
@@ -24202,7 +24221,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // and `result == null` made the path vacuous (`@Ensures({ result == 1 }) f(int x) { … return x }` proved), and the
         // name assigned the value never took it. Each call's is its own now, the caller's own `result` put back after.
         Object savedResultNull = enc.peekNullity('result')
-        Object resultNull = s.boolVar('result?null#call' + (havocCounter++))
+        // Phase 547 — a reference result whose nullity the contract never mentions: a model's null is no run's (a run gets
+        // whatever the body returns), so the flag carries the callee's name and taints the failing call
+        // (`StringBuilder b = sb(new Object()); b.append('x')` read `fails on: run()`, sb returning `new StringBuilder()`)
+        boolean nullUnsaid = callee.returnType != null && !ClassHelper.isPrimitiveType(callee.returnType) &&
+            !ClassHelper.isPrimitiveVoid(callee.returnType) && resultTupleName == null &&
+            (ensuresAst == null || mentionedName(ensuresAst, ['result'] as Set<String>) == null)
+        String nullName = (nullUnsaid ? callee.name + '?null' : 'result?null') + '#call' + (havocCounter++)
+        Object resultNull = s.boolVar(nullName)
+        if (nullUnsaid) s.witnessTaints().add('unknown:' + nullName)
         enc.bindNullity('result', resultNull)
         enc.lastCallResultNullity = resultNull
         Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)

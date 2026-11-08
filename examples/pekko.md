@@ -294,8 +294,9 @@ The reply obligation is a check, not an assumption, so it isn't listed.
 - **The rest of the guardian side.** A constructor that delegates (`this(context, …)`), or one of a class extending
   `AbstractBehavior` through another class, gets no context fact. `ActorSystem.create`'s overloads taking a setup, a
   config or props have no skeleton. A guardian held in a local built by a user method
-  (`Behavior<…> g = Main.create(); ActorSystem.create(g, …)`) hits a bug in the core, not the pack: `system.tell(…)`
-  is reported with a false `fails on:`. It is recorded in ROADMAP (Phase 546) for a phase of its own.
+  (`Behavior<…> g = Main.create(); ActorSystem.create(g, …)`) is still reported possibly null at `system.tell(…)`:
+  the user method calls into `Behaviors`, whose writes the verifier can't bound. Since Phase 547 it names no failing
+  call (before, it showed a false one).
 
 The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–546),
 and the capability rows in [CAPABILITIES.md](../CAPABILITIES.md).

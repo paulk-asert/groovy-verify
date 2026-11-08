@@ -95,8 +95,10 @@ class G429_p386_fresh_collection {
                     }''')],
 
         // Teeth: STC's target, not the name — a user's toList() may return null, and does.
+        // Phase 547 — `b.toList()` is a call the replay can't frame, so the value after it is no run's: this toList does
+        // return null, but one returning a list would have got the same `fails on: f(new Box())`
         [group: "P386 fresh collection", name: "a user's own toList() can still return null",
-         expect: [NPE, "fails on: f(new Box())"],
+         expect: [NPE, "no failing call: the failure rests on what a statement writes inside it"], refute: 'fails on',
          src: tc('''class A {
                         @Requires({ b != null })
                         static int f(Box b) {
