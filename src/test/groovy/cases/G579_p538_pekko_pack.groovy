@@ -21,7 +21,8 @@ import static cases.CaseDsl.*
  *  A returned behaviour (Behaviors.same() / stopped() / empty(), a built receive) is an opaque non-null value,
  *  ActorRef.tell changes nothing the sender reads (a pack-shipped skeleton; a null message throws), and
  *  super(context) in an AbstractBehavior subclass runs no subclass code. Each fact measured in PekkoSemanticsTest.
- *  A handler's message is still possibly null here (slice 2), so the handlers carry @Requires({ message != null }). */
+ *  The handlers here carry @Requires({ message != null }); Phase 539 (G580) makes it unnecessary for a registered
+ *  private handler. */
 class G579_p538_pekko_pack {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */

@@ -22460,6 +22460,50 @@ builder argument (1), any super call (1), no no-effect hook in the walk (2), `te
 skeleton's `@Pure` removed, is equivalent: a bodiless skeleton method without `@Modifies` already reads as writing
 nothing (Phase 347); `@Pure` stays as the explicit statement, as on the `Quantity` skeleton.
 
+## Phase 539 — the Pekko pack, slice 2: a handler's message is never null  *(shipped — capability)*
+
+Measured first: `PekkoSemanticsTest` gains `anAskWithANullMessageNeverReachesTheHandler` (an `ask` whose message factory
+returns null fails with an NPE; the handler runs 0 times), beside the Phase 537 fact that `tell(null)` throws
+`InvalidMessageException` at the sender. Delivery being the only way in, Pekko never hands a handler `null`.
+
+- **A new SPI hook, `EncodingPack.nonNullOnEntry(MethodNode)`**: the reference parameters a pack's library never passes
+  as null. `VerifyChecker.assumePackEntryFacts` assumes each non-null beside `@NonNull` and the validation constraints
+  (so every discharge path and the vacuity check see it), and records it in the trust ledger under a **new kind,
+  `pack fact`** (`TrustLedger.PACK_FACT`; the summary line counts it; `VERIFY_TRUST=deny:pack` matches it), anchored
+  at the parameter.
+- **PekkoPack answers** for a private, non-static, one-reference-parameter method of an `AbstractBehavior` subclass,
+  the only method of that name in its class, whose every reference in the module is `this::name` (or `this.&name`)
+  inside an `onMessage` / `onAnyMessage` / `onSignal` step (resolved to `ReceiveBuilder`) in its own class — at least
+  one. Any call by that name, a computed method name, `invokeMethod`, or any other pointer by that name, and the answer
+  is no. A predicate registered on the same step (`onMessage(T, this::wanted, this::h)`) gets the fact too. Cached per
+  method.
+
+Why private is enough: `@TypeChecked` rejects a call to another class's private method (checked: "Cannot find matching
+method"), so only a dynamic, unchecked caller can bypass the scan — the same caller that can ignore any `@Requires`.
+
+So the blog's guarded `HelloWorldBot` proves its invariant with its handler exactly as the blog declares it
+(`private Behavior<Greeted> onGreeted(Greeted message)`, no `@Requires`).
+
+**Boundary:** the scan is by name and conservative — a same-named call anywhere in the source withdraws the fact, and a
+class later in the file has not been type-checked when an earlier one is verified, so its registrations read as
+unexplained references. Non-private handlers, closures (`onMessage(T, { m -> … })`) and the functional style still
+need `@Requires`. Slice 3 (nothing delivered after `stopped()`) remains.
+
+**Shipped tests:** group `P539 Pekko handler message`, 15 cases: the blog's bot with no `@Requires` (proved, the
+`pack fact` asserted via `trusted:`); `onMessage`, `onAnyMessage`, a predicate plus handler, the `this.&h` spelling;
+withdrawn for a public handler, a direct call, a stored reference, an overload, an unregistered method, a
+non-behaviour class, `onMessageEquals`, another behaviour's same-named registration, a pointer on another object;
+`VERIFY_TRUST=deny` failing at the parameter (line and column pinned). Each withdrawn case's diagnostic was read in
+full: the handler's own `message.from` / `message.whom` NPE obligations and nothing else.
+
+Mutation-checked: 10 of 12 killed — no entry fact (6), public handlers too (1), overloads too (1), unregistered too
+(1), direct calls ignored (1), any step delivers (1), any pointer sanctioned (2), any receiver (1, after a case was
+added for it), fact not assumed (5), fact not ledgered (2). Two survivors, both equivalent: dropping the
+`AbstractBehavior` test (a `ReceiveBuilder` registration delivers non-null wherever it is built; the test stays as the
+pre-filter that keeps the module scan off non-Pekko classes) and dropping the own-class requirement (another class's
+`this::name` names its own method, so the one granted is never called; and, checked earlier in the file, that class's
+steps aren't yet resolved, so the case still withdraws).
+
 ## Definition of done, per increment
 
 An increment is done when:

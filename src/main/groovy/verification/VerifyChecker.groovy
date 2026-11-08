@@ -7618,8 +7618,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void assumeValidationConstraints(SmtSession s, Encoder enc) {
         if (currentMethod == null) return
         for (Parameter p : currentMethod.parameters) assumeConstraintsFor(s, enc, p.annotations, p.type, p.name)
+        assumePackEntryFacts(s, enc)
         ClassNode dc = currentMethod.declaringClass
         if (dc != null) for (FieldNode f : dc.fields) assumeConstraintsFor(s, enc, f.annotations, f.type, f.name)
+    }
+
+    /** Phase 539 — a pack's entry facts ({@link EncodingPack#nonNullOnEntry}): a parameter its library never passes as
+     *  null is assumed non-null, as {@code @NonNull} is, and ledgered as a {@code pack fact}. */
+    private void assumePackEntryFacts(SmtSession s, Encoder enc) {
+        for (EncodingPack pack : PackRegistry.packs()) {
+            for (String n : pack.nonNullOnEntry(currentMethod)) {
+                assertFact(s, s.not(enc.nullityOf(n)), pack.name() + ': ' + n + ' ≠ null on entry')
+                TrustLedger.record(TrustLedger.PACK_FACT, "${currentMethod.declaringClass.name}#${currentMethod.name}".toString(),
+                    "${n} is never null on entry (${pack.name()} pack)".toString(),
+                    currentMethod.parameters.find { Parameter p -> p.name == n } ?: currentMethod)
+            }
+        }
     }
 
     private void assumeConstraintsFor(SmtSession s, Encoder enc, List<AnnotationNode> anns, ClassNode type, String name) {

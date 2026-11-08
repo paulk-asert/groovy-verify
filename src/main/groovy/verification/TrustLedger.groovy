@@ -31,6 +31,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   <li><b>opaque carrier</b> — a {@code Monoid}/{@code Semigroup} value handed to a parallel reduction whose
  *       combiner has no body in sight (a parameter, a library constant): its laws are assumed, where a carrier
  *       built from a visible lambda has them proven (Phase 291).</li>
+ *   <li><b>pack fact</b> — an entry fact an encoding pack assumes from its library's measured behaviour (Phase 539:
+ *       a Pekko handler's message is non-null).</li>
  * </ul>
  *
  * The design principle from the {@code trusted} discussions: <b>trust that is visible is trust that
@@ -59,10 +61,14 @@ class TrustLedger {
     static volatile String mode = (System.getenv('VERIFY_TRUST') ?: System.getProperty('verify.trust'))?.trim() ?: null
 
     /** The ledger's kinds, lower-cased — what a {@code VERIFY_TRUST} kind token must name part of. */
-    static final List<String> KINDS = ['in-place @throwsif', 'external spec', 'opaque carrier', 'closed world'].asImmutable()
+    static final List<String> KINDS = ['in-place @throwsif', 'external spec', 'opaque carrier', 'closed world', 'pack fact'].asImmutable()
 
     /** Phase 362 — the kind of a {@code closedWorld: true} reliance on an overridable body or property. */
     static final String CLOSED_WORLD = 'closed world'
+
+    /** Phase 539 — the kind of an entry fact an encoding pack supplies from its library's measured behaviour (Pekko:
+     *  a registered handler is never handed {@code null}), assumed like a precondition nobody wrote. */
+    static final String PACK_FACT = 'pack fact'
 
     /**
      * A {@code VERIFY_TRUST} value as {@code [action, kindTokens]} clauses: clauses separated by {@code ;}, each
@@ -176,8 +182,10 @@ class TrustLedger {
         int external = ENTRIES.count { it.startsWith('[external') } as int
         int opaque = ENTRIES.count { it.startsWith('[opaque carrier') } as int
         int closed = ENTRIES.count { it.startsWith('[closed world') } as int
+        int pack = ENTRIES.count { it.startsWith('[pack fact') } as int
         "trusted: ${ENTRIES.size()} fact(s) assumed without proof (${external} external spec(s), " +
-            "${inPlace} in-place trusted contract(s), ${opaque} opaque carrier(s), ${closed} closed-world reliance(s))"
+            "${inPlace} in-place trusted contract(s), ${opaque} opaque carrier(s), ${closed} closed-world reliance(s), " +
+            "${pack} pack fact(s))"
     }
 
     static void reset() { ENTRIES.clear() }

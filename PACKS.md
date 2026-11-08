@@ -34,7 +34,8 @@ binomial — the first **two-argument** primitive, and a worked warning about ax
 twins caught an unguarded-base inconsistency during development). [`PekkoPack`](src/main/groovy/verification/PekkoPack.groovy)
 (Phase 538) is the first pack for a **concurrency library**: Apache Pekko typed actors, matched by name, every
 fact it uses measured first (`PekkoSemanticsTest`) — returned behaviours as claimed value sources, a pack-shipped
-`ActorRef.tell` skeleton, and `super(context)` through `claimsNoEffect`.
+`ActorRef.tell` skeleton, and `super(context)` through `claimsNoEffect`; and (Phase 539) a registered handler's
+message non-null on entry through `nonNullOnEntry`, ledgered as a `pack fact`.
 
 ## The shape of a pack
 
@@ -64,6 +65,7 @@ value you know is yours (that is what `claimsExpression` exists to prevent — s
 | `translateBinary(api, be, opType)` | a binary expression, at the domain-comparison slot | quantity `==` / `!=` |
 | `claimsExpression(e)` *(static context)* | scalar classifiers asking "is this value yours?" | `quantity / quantity` is `Quantity.divide` — no Real classification, no divide-by-zero obligation |
 | `claimsNoEffect(e)` *(static context)* | the body walk meeting a statement the core would refuse as "no modelled effect" — true when the pack knows it changes nothing the program reads (Phase 538) | Pekko's `super(context)` in an `AbstractBehavior` subclass (PekkoPack) |
+| `nonNullOnEntry(m)` | assuming a method's entry facts, beside `@NonNull` and the validation constraints — the reference parameters the pack's library never passes as `null`; each is assumed non-null and ledgered as a `pack fact` (Phase 539). Answer only for a method nothing but the library can call: the fact puts no obligation on any caller | a private Pekko handler referenced only as `this::h` in an `onMessage` / `onAnyMessage` / `onSignal` step (PekkoPack) |
 | `claimsValueSource(api, e)` | the checker deciding whether to alias a scalar-handle-less name to its construction expression (read it back via `api.sourceAlias(name)`) | a Quantity-typed local / `result` |
 | `checkMethod(api, node)` | once per method: a pure-AST **checker pass** with diagnostics — no SMT (programs against `CheckerApi`: `reportError`, `cleanBody`, `inferredTypeOf`); best-effort, contained per pack | the C₀ kind-vector check of `as Quantity<K>` casts |
 | `resolveDynamicProperty(receiverType, pexp, enclosingClass)` | **STC time** (Phase 209): an unresolved property `@TypeChecked` would reject — return the type to store, or null to decline | `n.fizzBuzz` backed by a visible `metaClass` registration (MetaProgrammingPack) |

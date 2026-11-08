@@ -64,8 +64,9 @@ programmatically, and DocLint's `[5] trusted inventory` section lints every ship
 the contract — so it is a drift finding, asserted in `check`). Trust that is visible is trust that
 gets reviewed.
 
-The ledger has four kinds: in-place `@ThrowsIf`, external spec, opaque `Monoid`/`Semigroup` carrier (Phase
-291), and closed world (Phase 362, below). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
+The ledger has five kinds: in-place `@ThrowsIf`, external spec, opaque `Monoid`/`Semigroup` carrier (Phase
+291), closed world (Phase 362, below), and pack fact (Phase 539: an entry fact an encoding pack assumes from its
+library's measured behaviour, such as a Pekko handler's message being non-null). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
 Gradle daemon captures environment variables when it starts, so pass the knob as a system property of the
 compiler JVM:
 

@@ -136,6 +136,12 @@ interface EncodingPack {
      *  its library (e.g. Pekko's {@code super(context)} in an {@code AbstractBehavior} subclass, measured to run no
      *  subclass code). The body walk then takes it as an empty step. Static context, like {@link #claimsExpression}. */
     default boolean claimsNoEffect(Expression e) { false }
+    /** Phase 539 — the reference parameters of {@code m} that this pack knows its library never passes as
+     *  {@code null} (e.g. the message of a Pekko handler registered with {@code onMessage}, measured in
+     *  {@code PekkoSemanticsTest}). Each is assumed non-null on entry, as a {@code @NonNull} parameter is, and recorded
+     *  in the trust ledger as a {@code pack fact}. A pack must answer only for methods nothing but the library can call:
+     *  the fact puts no obligation on a caller. */
+    default List<String> nonNullOnEntry(MethodNode m) { Collections.<String> emptyList() }
 
     /**
      * A per-method <b>checker pass</b> — pure AST analysis with diagnostics, no SMT (e.g. UnitsPack's C₀

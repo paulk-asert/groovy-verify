@@ -42,7 +42,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue
  * <p>Each test drives the real runtime, prints what it saw as a {@code [runtime]} line, and asserts it, so a Pekko
  * upgrade that changes a fact fails here before a proof is built on the old one. The facts a pack would use:
  * <ul>
- *   <li>a handler is never handed {@code null} ({@code tell(null)} throws at the sender);</li>
+ *   <li>a handler is never handed {@code null} ({@code tell(null)} throws at the sender, and an {@code ask} whose
+ *       message is null fails without delivering it);</li>
  *   <li>nothing is delivered after a handler returns {@code Behaviors.stopped()};</li>
  *   <li>a tell to self is queued, never run inside the handler that sent it;</li>
  *   <li>{@code AbstractBehavior}'s constructor runs no subclass code ({@code createReceive} is called later);</li>
@@ -84,6 +85,23 @@ class PekkoSemanticsTest {
         println "  [runtime] tell(null) threw ${thrown?.class?.name}; the handler ran ${handled.get()} time(s)"
         assertTrue(thrown != null, 'tell(null) returned normally: a handler could be handed null')
         assertEquals(0, handled.get(), 'a null message reached the handler')
+    }
+
+    @Test
+    void anAskWithANullMessageNeverReachesTheHandler() {
+        AtomicInteger handled = new AtomicInteger()
+        ActorSystem<Object> s = system(Behaviors.receiveMessage { Object m -> handled.incrementAndGet(); Behaviors.same() })
+        Throwable failure = null
+        try {
+            AskPattern.ask(s, { ActorRef<String> replyTo -> null }, Duration.ofMillis(300), s.scheduler())
+                .toCompletableFuture().get(5, TimeUnit.SECONDS)
+        } catch (Throwable t) {
+            failure = t
+        }
+        Thread.sleep(300)
+        println "  [runtime] an ask whose message is null failed with ${failure?.class?.name}; the handler ran ${handled.get()} time(s)"
+        assertTrue(failure != null, 'an ask with a null message completed normally')
+        assertEquals(0, handled.get(), 'a null message reached the handler through ask')
     }
 
     @Test

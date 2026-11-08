@@ -16,7 +16,10 @@
 package verification
 
 import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.CodeVisitorSupport
+import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
@@ -26,6 +29,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.MethodPointerExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
+import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.transform.stc.StaticTypesMarker
 
 /**
@@ -45,6 +49,12 @@ import org.codehaus.groovy.transform.stc.StaticTypesMarker
  *   <li>{@code super(context)} in an {@code AbstractBehavior} subclass's constructor runs no subclass code (the receive
  *       is built on the first message, measured) and writes none of the subclass's fields: a statement with no
  *       effect.</li>
+ *   <li>Phase 539 — a handler's message is never {@code null}: {@code tell(null)} throws at the sender and an
+ *       {@code ask} whose message is null fails before delivery, so the runtime never hands a handler null. The pack
+ *       answers only for a method nothing else can call — private, one reference parameter, one method of that name,
+ *       and named in this source only as {@code this::name} inside an {@code onMessage}/{@code onAnyMessage}/
+ *       {@code onSignal} step of a receive builder in its own class (a direct call, or any other reference, and the
+ *       message is possibly null again, a caller's {@code @Requires} to state).</li>
  * </ul>
  */
 @CompileStatic
@@ -62,11 +72,16 @@ class PekkoPack implements EncodingPack {
     static final Set<String> BUILDER_STEPS = ['onMessage', 'onMessageEquals', 'onAnyMessage', 'onSignal',
         'onSignalEquals'] as Set<String>
 
+    /** The builder steps whose method-reference arguments the runtime calls with a delivered message or signal. */
+    static final Set<String> DELIVERING_STEPS = ['onMessage', 'onAnyMessage', 'onSignal'] as Set<String>
+
+    private static final String HANDLER_KEY = 'verification.PekkoPack.handler'
+
     @Override
     String name() { 'pekko' }
 
     @Override
-    List<String> corpusGroups() { ['P538 Pekko pack'] }
+    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message'] }
 
     @Override
     List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef'] }
@@ -81,6 +96,87 @@ class PekkoPack implements EncodingPack {
 
     @Override
     boolean claimsNoEffect(Expression e) { isAbstractBehaviorSuperCall(e) }
+
+    @Override
+    List<String> nonNullOnEntry(MethodNode m) {
+        isRegisteredHandler(m) ? [m.parameters[0].name] : Collections.<String> emptyList()
+    }
+
+    /** A private one-parameter method of an AbstractBehavior subclass, referenced only as a receive-builder handler. */
+    static boolean isRegisteredHandler(MethodNode m) {
+        if (m == null || !m.isPrivate() || m.isStatic() || m.parameters.length != 1) return false
+        if (ClassHelper.isPrimitiveType(m.parameters[0].type)) return false
+        ClassNode dc = m.declaringClass
+        if (dc == null || !extendsAbstractBehavior(dc) || dc.getMethods(m.name).size() != 1) return false
+        Object cached = m.getNodeMetaData(HANDLER_KEY)
+        if (cached instanceof Boolean) return (Boolean) cached
+        boolean r = onlyRegistered(m.name, dc)
+        m.putNodeMetaData(HANDLER_KEY, r)
+        r
+    }
+
+    private static boolean extendsAbstractBehavior(ClassNode c) {
+        for (ClassNode k = c.superClass; k != null; k = k.superClass) if (k.name == ABSTRACT_BEHAVIOR) return true
+        false
+    }
+
+    /** Every reference to {@code name} in the module is {@code this::name} in a delivering step in {@code owner}, and
+     *  there is at least one; a call by that name, a dynamic method name, or any other pointer to it and the answer is no. */
+    private static boolean onlyRegistered(String name, ClassNode owner) {
+        List<ClassNode> classes = owner.module != null ? owner.module.classes : [owner]
+        HandlerRefs refs = new HandlerRefs(name)
+        for (ClassNode c : classes) {
+            refs.inOwner = c.is(owner)
+            for (MethodNode mn : c.methods) mn.code?.visit(refs)
+            for (MethodNode mn : c.declaredConstructors) mn.code?.visit(refs)
+            for (FieldNode f : c.fields) f.initialExpression?.visit(refs)
+            for (org.codehaus.groovy.ast.stmt.Statement st : c.objectInitializerStatements) st.visit(refs)
+        }
+        !refs.other && refs.registered > 0
+    }
+
+    private static class HandlerRefs extends CodeVisitorSupport {
+        final String name
+        boolean inOwner
+        boolean other
+        int registered
+        private final Set<MethodPointerExpression> sanctioned = Collections.newSetFromMap(new IdentityHashMap<MethodPointerExpression, Boolean>())
+
+        HandlerRefs(String name) { this.name = name }
+
+        @Override
+        void visitMethodCallExpression(MethodCallExpression c) {
+            String m = c.methodAsString
+            if (m == null || m == name || m == 'invokeMethod') other = true
+            if (inOwner && m in DELIVERING_STEPS && declaredBy(c, RECEIVE_BUILDER)) {
+                for (Expression a : ((TupleExpression) c.arguments).expressions) {
+                    if (a instanceof MethodPointerExpression && isThisPointerTo((MethodPointerExpression) a, name)) {
+                        sanctioned.add((MethodPointerExpression) a)
+                    }
+                }
+            }
+            super.visitMethodCallExpression(c)
+        }
+
+        @Override
+        void visitStaticMethodCallExpression(StaticMethodCallExpression c) {
+            if (c.method == name) other = true
+            super.visitStaticMethodCallExpression(c)
+        }
+
+        @Override
+        void visitMethodPointerExpression(MethodPointerExpression p) {
+            if (!(p.methodName instanceof org.codehaus.groovy.ast.expr.ConstantExpression) || p.methodName.text == name) {
+                if (sanctioned.contains(p)) registered++ else other = true
+            }
+            super.visitMethodPointerExpression(p)
+        }
+    }
+
+    private static boolean isThisPointerTo(MethodPointerExpression p, String name) {
+        p.methodName?.text == name && p.expression instanceof VariableExpression &&
+            ((VariableExpression) p.expression).isThisExpression()
+    }
 
     /** A behaviour marker ({@code Behaviors.same()}) or a built receive. */
     static boolean isBehaviorValue(Expression e) {
