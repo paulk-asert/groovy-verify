@@ -22504,6 +22504,48 @@ pre-filter that keeps the module scan off non-Pekko classes) and dropping the ow
 `this::name` names its own method, so the one granted is never called; and, checked earlier in the file, that class's
 steps aren't yet resolved, so the case still withdraws).
 
+## Phase 540 — the Pekko pack, slice 3: nothing is delivered after `stopped()`  *(shipped — capability)*
+
+Measured first: `PekkoSemanticsTest.anAbstractBehaviorThatStopsGetsNoMoreMessagesButPostStopAfter` — an `AbstractBehavior`
+whose handler returns `Behaviors.stopped()` on its first of three messages handles only that one, **and its
+`onSignal(PostStop)` handler then runs once, on the state the stopping handler left** (`[message one, count 1, PostStop,
+count 1]`). The second half shapes the rule.
+
+- **A new SPI hook, `EncodingPack.releasesInvariantAt(MethodNode, Expression returned)`**, asked per exit path in
+  `verifyPostcondition` with the path's returned expression: when a pack answers true, that path does not owe the class
+  invariant (a path with no `@Ensures` is skipped; one with an `@Ensures` is checked against it alone). The entry
+  assumption stands. Each release is a `pack fact` in the ledger, anchored at the return and shown as written
+  (`Behaviors.stopped()`, via `asSpelled`).
+- **PekkoPack answers** for a return of argument-free `Behaviors.stopped()`, from a registered handler (Phase 539's
+  test: only the runtime calls it, so its result is what decides the stop), in a class whose stopped state nothing else
+  can observe: no `onSignal` / `onSignalEquals` step (PostStop, measured), no Groovy property (a public getter), no
+  non-synthetic, non-private instance method other than `createReceive()` (static methods reach no instance), and no
+  parameter or field of the class's type in any class of the source (a parameter's class invariant is assumed).
+  Cached per class.
+
+The class invariant of an actor is then the property of its **live** states. The blog's `HelloWorldBot`, exactly as
+written, proves `max >= 1 && 0 <= greetingCounter && greetingCounter < max`: the counter reaches `max` only on the
+stopped exit. The weaker `greetingCounter <= max` is true in every reachable state but not inductive, and still
+refutes, at `greetingCounter = 1, max = 1`, which is unreachable (the slice-1 case is renamed to say so).
+
+**Boundary:** `Behaviors.stopped(postStop)` is not a claimed value and skips loudly; `empty()` / `ignore()` (live, but
+deaf) and returning a different behaviour object aren't released; any `onSignal` step withdraws the release, even for a
+signal other than PostStop (a narrower rule would need the signal classes measured); a cross-file holder of the
+actor's type, or a dynamic caller ignoring `private`, is outside, as it is for slice 2.
+
+**Shipped tests:** group `P540 Pekko stopped`, 16 cases: the blog's bot as written proved (the release asserted via
+`trusted:`); `<= max` refuted at its unreachable state; `return this` / `same()` where it stops refuted; a true
+`@Ensures` on the stopped exit proved and a false one refuted; withdrawn for `onSignal(PostStop)`, a public method, a
+property, a parameter and a field of the actor's type elsewhere, a public handler, a private helper returning
+`stopped()` (its own exit owes the invariant); a static method leaving the release standing; `stopped(postStop)`
+skipping; `VERIFY_TRUST=deny` failing at the return (line and column pinned). Every refuting case's diagnostic was
+read in full: each is the stopped exit's (`greetingCounter = 0, max = 1`), or the helper's.
+
+Mutation-checked: 14 of 14 killed — no release (4), any return releases (4), any method releases (1, after the
+private-helper case was added for it), any marker (1), `stopped` with arguments (1), properties ignored (1), synthetic
+methods counted (4), statics counted (1), public methods ignored (1), signals ignored (1), fields ignored (1), parameters
+ignored (1), the invariant kept beside a postcondition (1), the release not ledgered (2).
+
 ## Definition of done, per increment
 
 An increment is done when:

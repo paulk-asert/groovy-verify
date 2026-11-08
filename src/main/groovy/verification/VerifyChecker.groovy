@@ -14020,7 +14020,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod() || node instanceof ConstructorNode)
             if (isListType(node.returnType)) paths = splitTernaryReturns(paths)   // Phase 456
             for (Path p : paths) {
-                checkPath(node, p, postAst, reqAst, classInvs)
+                List<Expression> invs = classInvs
+                if (!classInvs.isEmpty() && p.result != null && packReleasesInvariant(node, p.result)) {
+                    if (postAst == null) continue   // Phase 540 — this exit owes nothing else
+                    invs = Collections.<Expression> emptyList()
+                }
+                checkPath(node, p, postAst, reqAst, invs)
             }
         } catch (RecursionNeedsDecreasesException e) {
             addStaticTypeError(Reporter.formatRecursionNeedsDecreases(node.name), node)   // Phase 452
@@ -14028,6 +14033,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
         }
+    }
+
+    /** Phase 540 — a pack releases the class invariant on this exit ({@link EncodingPack#releasesInvariantAt}); ledgered
+     *  as a {@code pack fact}, at the returned expression. */
+    private boolean packReleasesInvariant(MethodNode node, Expression returned) {
+        for (EncodingPack pack : PackRegistry.packs()) {
+            if (pack.releasesInvariantAt(node, returned)) {
+                TrustLedger.record(TrustLedger.PACK_FACT, "${node.declaringClass.name}#${node.name}".toString(),
+                    "the class invariant is not owed where it returns ${asSpelled(returned)} (${pack.name()} pack)".toString(),
+                    returned)
+                return true
+            }
+        }
+        false
     }
 
     // ---- Phase L1: information flow — static-label noninterference (no-leak) ----------------------

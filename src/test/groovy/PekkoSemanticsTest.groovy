@@ -17,6 +17,7 @@ import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.actor.typed.ActorSystem
 import org.apache.pekko.actor.typed.Behavior
 import org.apache.pekko.actor.typed.MailboxSelector
+import org.apache.pekko.actor.typed.PostStop
 import org.apache.pekko.actor.typed.javadsl.AbstractBehavior
 import org.apache.pekko.actor.typed.javadsl.ActorContext
 import org.apache.pekko.actor.typed.javadsl.AskPattern
@@ -44,7 +45,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue
  * <ul>
  *   <li>a handler is never handed {@code null} ({@code tell(null)} throws at the sender, and an {@code ask} whose
  *       message is null fails without delivering it);</li>
- *   <li>nothing is delivered after a handler returns {@code Behaviors.stopped()};</li>
+ *   <li>nothing is delivered after a handler returns {@code Behaviors.stopped()} — but an {@code AbstractBehavior}'s
+ *       {@code onSignal(PostStop)} handler still runs once, after, on the state the stopping handler left;</li>
  *   <li>a tell to self is queued, never run inside the handler that sent it;</li>
  *   <li>{@code AbstractBehavior}'s constructor runs no subclass code ({@code createReceive} is called later);</li>
  *   <li>a full bounded mailbox drops, without blocking the sender;</li>
@@ -120,6 +122,42 @@ class PekkoSemanticsTest {
         Thread.sleep(500)
         println "  [runtime] three tells to an actor that stops on its first message: handled ${handled.get()}"
         assertEquals(1, handled.get(), 'a message was delivered after the handler returned Behaviors.stopped()')
+    }
+
+    static final ConcurrentLinkedQueue<String> STOPPER = new ConcurrentLinkedQueue<String>()
+
+    static class Stopper extends AbstractBehavior<String> {
+        private int count
+        Stopper(ActorContext<String> context) { super(context) }
+        @Override
+        Receive<String> createReceive() {
+            newReceiveBuilder().onMessage(String, this::onMsg).onSignal(PostStop, this::onPostStop).build()
+        }
+        private Behavior<String> onMsg(String m) {
+            count++
+            STOPPER << ('message ' + m + ', count ' + count)
+            Behaviors.stopped()
+        }
+        private Behavior<String> onPostStop(PostStop s) {
+            STOPPER << ('PostStop, count ' + count)
+            this
+        }
+    }
+
+    @Test
+    void anAbstractBehaviorThatStopsGetsNoMoreMessagesButPostStopAfter() {
+        STOPPER.clear()
+        CompletableFuture<ActorRef<String>> child = new CompletableFuture<ActorRef<String>>()
+        system(Behaviors.setup { ctx ->
+            child.complete(ctx.spawn(Behaviors.setup { c -> new Stopper(c) }, 'stopper'))
+            Behaviors.empty()
+        })
+        ActorRef<String> ref = child.get(5, TimeUnit.SECONDS)
+        ref.tell('one'); ref.tell('two'); ref.tell('three')
+        Thread.sleep(500)
+        println "  [runtime] an AbstractBehavior stopping on its first message, with an onSignal(PostStop): ${STOPPER.toList()}"
+        assertEquals(['message one, count 1', 'PostStop, count 1'], STOPPER.toList(),
+            'after Behaviors.stopped(): expected no further message, then PostStop once on the stopped state')
     }
 
     @Test

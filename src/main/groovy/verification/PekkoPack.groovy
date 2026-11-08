@@ -55,6 +55,13 @@ import org.codehaus.groovy.transform.stc.StaticTypesMarker
  *       and named in this source only as {@code this::name} inside an {@code onMessage}/{@code onAnyMessage}/
  *       {@code onSignal} step of a receive builder in its own class (a direct call, or any other reference, and the
  *       message is possibly null again, a caller's {@code @Requires} to state).</li>
+ *   <li>Phase 540 — after a handler returns {@code Behaviors.stopped()} no message is delivered to the behaviour
+ *       again, so the class invariant is not owed on that exit (the invariant is the property of the actor's live
+ *       states). Measured too: an {@code onSignal(PostStop)} handler still runs once, after, on that state — so a
+ *       class with any {@code onSignal} step gets no release. Nor does a class whose state anything else could
+ *       observe: a Groovy property (a public getter), an instance method other than the private ones and
+ *       {@code createReceive()}, or a parameter or field of its type anywhere in the source (a parameter's class
+ *       invariant is assumed).</li>
  * </ul>
  */
 @CompileStatic
@@ -76,12 +83,13 @@ class PekkoPack implements EncodingPack {
     static final Set<String> DELIVERING_STEPS = ['onMessage', 'onAnyMessage', 'onSignal'] as Set<String>
 
     private static final String HANDLER_KEY = 'verification.PekkoPack.handler'
+    private static final String UNOBSERVED_KEY = 'verification.PekkoPack.unobservedAfterStop'
 
     @Override
     String name() { 'pekko' }
 
     @Override
-    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message'] }
+    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped'] }
 
     @Override
     List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef'] }
@@ -100,6 +108,65 @@ class PekkoPack implements EncodingPack {
     @Override
     List<String> nonNullOnEntry(MethodNode m) {
         isRegisteredHandler(m) ? [m.parameters[0].name] : Collections.<String> emptyList()
+    }
+
+    @Override
+    boolean releasesInvariantAt(MethodNode m, Expression returned) {
+        isStoppedMarker(returned) && isRegisteredHandler(m) && unobservedAfterStop(m.declaringClass)
+    }
+
+    /** {@code Behaviors.stopped()}, argument-free (the overload taking a post-stop callback runs code after). */
+    static boolean isStoppedMarker(Expression e) {
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression s = (StaticMethodCallExpression) e
+            return s.ownerType?.name == BEHAVIORS && s.method == 'stopped' && noArgs(s.arguments)
+        }
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression c = (MethodCallExpression) e
+        c.objectExpression instanceof ClassExpression && ((ClassExpression) c.objectExpression).type?.name == BEHAVIORS &&
+            c.methodAsString == 'stopped' && noArgs(c.arguments)
+    }
+
+    /** Nothing but the runtime reaches a stopped behaviour's state: no property, no non-private instance method but
+     *  {@code createReceive()}, no {@code onSignal} step (PostStop runs after), no parameter or field of its type. */
+    static boolean unobservedAfterStop(ClassNode dc) {
+        Object cached = dc.getNodeMetaData(UNOBSERVED_KEY)
+        if (cached instanceof Boolean) return (Boolean) cached
+        boolean r = computeUnobserved(dc)
+        dc.putNodeMetaData(UNOBSERVED_KEY, r)
+        r
+    }
+
+    private static boolean computeUnobserved(ClassNode dc) {
+        if (!dc.properties.isEmpty()) return false
+        for (MethodNode mn : dc.methods) {
+            if (mn.isSynthetic() || mn.isPrivate() || mn.isStatic()) continue
+            if (mn.name == 'createReceive' && mn.parameters.length == 0) continue
+            return false
+        }
+        SignalSteps signals = new SignalSteps()
+        for (MethodNode mn : dc.methods) mn.code?.visit(signals)
+        for (MethodNode mn : dc.declaredConstructors) mn.code?.visit(signals)
+        if (signals.found) return false
+        List<ClassNode> classes = dc.module != null ? dc.module.classes : [dc]
+        for (ClassNode c : classes) {
+            for (FieldNode f : c.fields) if (f.type?.name == dc.name) return false
+            List<MethodNode> all = new ArrayList<MethodNode>(c.methods)
+            all.addAll(c.declaredConstructors)
+            for (MethodNode mn : all) {
+                for (org.codehaus.groovy.ast.Parameter p : mn.parameters) if (p.type?.name == dc.name) return false
+            }
+        }
+        true
+    }
+
+    private static class SignalSteps extends CodeVisitorSupport {
+        boolean found
+        @Override
+        void visitMethodCallExpression(MethodCallExpression c) {
+            if (c.methodAsString in ['onSignal', 'onSignalEquals']) found = true
+            super.visitMethodCallExpression(c)
+        }
     }
 
     /** A private one-parameter method of an AbstractBehavior subclass, referenced only as a receive-builder handler. */

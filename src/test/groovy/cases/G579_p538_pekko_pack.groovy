@@ -85,7 +85,7 @@ ${handlerBody}
         if (greetingCounter == max) return Behaviors.stopped()
         message.from.tell(new Greet(message.whom, getContext().getSelf()))
         return this''')],
-        [group: 'P538 Pekko pack', name: '… and as the blog writes it, refuted: nothing yet says no message follows stopped()',
+        [group: 'P538 Pekko pack', name: '… and as the blog writes it, refuted: greetingCounter <= max is not inductive (Phase 540 proves the live-state invariant)',
          expect: ['Cannot prove class invariant of onGreeted holds at method exit', 'counterexample: greetingCounter = 1, max = 1'],
          src: helloBot('''        greetingCounter++
         getContext().getLog().info("Greeting $greetingCounter for ${message.whom}")

@@ -142,6 +142,11 @@ interface EncodingPack {
      *  in the trust ledger as a {@code pack fact}. A pack must answer only for methods nothing but the library can call:
      *  the fact puts no obligation on a caller. */
     default List<String> nonNullOnEntry(MethodNode m) { Collections.<String> emptyList() }
+    /** Phase 540 — true iff, on the exit of {@code m} that returns {@code returned}, the class invariant is not owed:
+     *  this pack knows its library lets no code observe the object's state after that exit (e.g. a Pekko handler
+     *  returning {@code Behaviors.stopped()}, measured to get no further message). The entry assumption stands;
+     *  each use is recorded in the trust ledger as a {@code pack fact}. */
+    default boolean releasesInvariantAt(MethodNode m, Expression returned) { false }
 
     /**
      * A per-method <b>checker pass</b> — pure AST analysis with diagnostics, no SMT (e.g. UnitsPack's C₀
