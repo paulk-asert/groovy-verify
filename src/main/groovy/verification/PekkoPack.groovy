@@ -18,6 +18,7 @@ package verification
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.ConstructorNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
@@ -73,6 +74,10 @@ import org.codehaus.groovy.transform.stc.StaticTypesMarker
  *       {@code onSignal} step of a {@code BehaviorBuilder} or {@code ReceiveBuilder}, is called only by the runtime,
  *       and measured never to be handed {@code null}: its reference parameters (or its implicit {@code it}) are
  *       non-null where it runs ({@code nonNullClosureParams}), unless it assigns one.</li>
+ *   <li>Phase 546 — the guardian side: in a constructor of a direct {@code AbstractBehavior} subclass that begins
+ *       {@code super(context)}, {@code context} is non-null after it, since {@code AbstractBehavior} throws
+ *       {@code IllegalArgumentException} on null (measured); and {@code ActorSystem.create(guardian, name)} returns a
+ *       system, never null (a shipped skeleton, held against the runtime by {@code SpecAuditTest}).</li>
  * </ul>
  */
 @CompileStatic
@@ -104,10 +109,10 @@ class PekkoPack implements EncodingPack {
     String name() { 'pekko' }
 
     @Override
-    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply', 'P542 Pekko PostStop', 'P545 Pekko functional'] }
+    List<String> corpusGroups() { ['P538 Pekko pack', 'P539 Pekko handler message', 'P540 Pekko stopped', 'P541 Pekko reply', 'P542 Pekko PostStop', 'P545 Pekko functional', 'P546 Pekko guardian'] }
 
     @Override
-    List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef'] }
+    List<String> specFqns() { ['org.apache.pekko.actor.typed.ActorRef', 'org.apache.pekko.actor.typed.ActorSystem'] }
 
     @Override
     Object translateCall(TheoryApi api, MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
@@ -122,7 +127,32 @@ class PekkoPack implements EncodingPack {
 
     @Override
     List<String> nonNullOnEntry(MethodNode m) {
-        isRegisteredHandler(m) ? [m.parameters[0].name] : Collections.<String> emptyList()
+        if (isRegisteredHandler(m)) return [m.parameters[0].name]
+        String c = contextPassedToSuper(m)
+        c != null ? [c] : Collections.<String> emptyList()
+    }
+
+    @Override
+    String nonNullOnEntryReason(MethodNode m, String n) {
+        n == contextPassedToSuper(m) ? "${n} is non-null past super(${n}): AbstractBehavior's constructor throws on null".toString() : null
+    }
+
+    /** Phase 546 — the parameter a constructor of a direct AbstractBehavior subclass passes as its first statement,
+     *  {@code super(context)}: AbstractBehavior throws IllegalArgumentException on a null context (measured), so no
+     *  statement after it runs with the parameter null. Null when the constructor doesn't begin so. */
+    static String contextPassedToSuper(MethodNode m) {
+        if (!(m instanceof ConstructorNode)) return null
+        org.codehaus.groovy.ast.stmt.Statement code = m.code
+        if (code instanceof org.codehaus.groovy.ast.stmt.BlockStatement) {
+            List<org.codehaus.groovy.ast.stmt.Statement> ss = ((org.codehaus.groovy.ast.stmt.BlockStatement) code).statements
+            code = ss.isEmpty() ? null : ss.get(0)
+        }
+        if (!(code instanceof org.codehaus.groovy.ast.stmt.ExpressionStatement)) return null
+        Expression e = ((org.codehaus.groovy.ast.stmt.ExpressionStatement) code).expression
+        if (!isAbstractBehaviorSuperCall(e)) return null
+        Expression a = ((ConstructorCallExpression) e).arguments
+        String name = ((VariableExpression) (a instanceof TupleExpression ? ((TupleExpression) a).expressions.get(0) : a)).name
+        m.parameters.any { it.name == name } ? name : null
     }
 
     /** Phase 545 — the functional style: {@code Behaviors.setup}'s context, {@code receiveMessage}'s message,

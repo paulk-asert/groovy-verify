@@ -84,6 +84,12 @@ class SpecAuditTest {
 
     /** Inputs a signature's own types can't describe: the units library's (Number, Unit) behind an (Object, Object) skeleton. */
     static List<List> overrideInputs(String fqn, String name) {
+        // Phase 546 — a guardian behaviour and a name (a valid one, an invalid one, null); each system started is
+        // terminated after the run (afterRun)
+        if (fqn == 'org.apache.pekko.actor.typed.ActorSystem' && name == 'create') {
+            def behaviors = Class.forName('org.apache.pekko.actor.typed.javadsl.Behaviors')
+            return [[behaviors.ignore(), behaviors.empty()], ['specAuditCreate', 'not a valid name!', null]]
+        }
         if (fqn == 'tech.units.indriya.quantity.Quantities' && name == 'getQuantity') {
             def units = Class.forName('tech.units.indriya.unit.Units')
             return [[1, 0, -3, 0.5G, 2.5d, null], [units.METRE, units.SECOND, units.KILOGRAM]]
@@ -145,6 +151,15 @@ class SpecAuditTest {
         Thread.sleep(200)
         pekkoRefsMade = [system, stoppedRef]
     }
+    /** Phase 546 — a run that started an actor system (the {@code ActorSystem.create} skeleton) stops it. */
+    static void afterRun(Object result) {
+        if (result != null && result.getClass().name.startsWith('org.apache.pekko.') && result.respondsTo('terminate') &&
+                result.respondsTo('getWhenTerminated')) {
+            result.terminate()
+            result.getWhenTerminated().toCompletableFuture().get(10, java.util.concurrent.TimeUnit.SECONDS)
+        }
+    }
+
 
     @AfterAll
     static void terminatePekko() {
@@ -332,6 +347,7 @@ class SpecAuditTest {
                     } catch (IllegalArgumentException e) {
                         runs--; continue   // an input the runtime signature doesn't take (the Object-widened skeleton)
                     }
+                    afterRun(result)
                     for (Map a : arms) {
                         boolean isIt = thrown != null && (thrown.class.simpleName == a.exception ||
                             ([thrown.class] + (thrown.class.superclass ? ancestors(thrown.class) : [])).any { it.simpleName == a.exception })

@@ -61,6 +61,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue
  *       {@code receive}, {@code receiveSignal}, or to a {@code BehaviorBuilder} / {@code ReceiveBuilder} step
  *       ({@code onMessage}, its predicate too, {@code onAnyMessage}, {@code onSignal}) is never handed {@code null}
  *       for any of its parameters.</li>
+ *   <li>Phase 546 — {@code AbstractBehavior}'s constructor throws {@code IllegalArgumentException} on a null context,
+ *       before the subclass constructor's next statement runs.</li>
  * </ul>
  */
 class PekkoSemanticsTest {
@@ -441,5 +443,31 @@ class PekkoSemanticsTest {
                          'ReceiveBuilder.onSignal']) {
             assertTrue(seen.contains(w + ':ok'), "${w} never ran: the measurement doesn't cover it")
         }
+    }
+
+    /** Phase 546 — what a subclass constructor reached after {@code super(context)}. */
+    private static final ConcurrentLinkedQueue<String> PAST_SUPER = new ConcurrentLinkedQueue<String>()
+
+    static class RecordsPastSuper extends AbstractBehavior<String> {
+        RecordsPastSuper(ActorContext<String> context) {
+            super(context)
+            PAST_SUPER << 'past super(context)'
+        }
+        @Override
+        Receive<String> createReceive() { newReceiveBuilder().build() }
+    }
+
+    @Test
+    void anAbstractBehaviorRefusesANullContextBeforeTheSubclassConstructorGoesOn() {
+        PAST_SUPER.clear()
+        Throwable thrown = null
+        try {
+            new RecordsPastSuper(null)
+        } catch (Throwable t) {
+            thrown = t
+        }
+        println "  [runtime] new RecordsPastSuper(null) threw ${thrown?.class?.name} (${thrown?.message}); the constructor reached ${PAST_SUPER.toList()}"
+        assertTrue(thrown instanceof IllegalArgumentException, "super(null) didn't throw IllegalArgumentException: ${thrown}")
+        assertTrue(PAST_SUPER.isEmpty(), 'the subclass constructor went on past super(null)')
     }
 }

@@ -3342,6 +3342,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * (it is surfaced through the failing call instead). Applied at the solver boundary so every
      * diagnostic shares the rendering; a no-op when there is no model.
      */
+    /** Phase 546 — a registry skeleton's argument was bound to an opaque value in this method ({@link #assumeCalleeEnsures}):
+     *  a model may rest on it without showing it, so no failing call is named here. */
+    private boolean opaqueArgBound = false
+
+    static final String OPAQUE_ARG_NOTE = 'no failing call: the failure may rest on an argument of a library call that the verifier doesn\'t model, so no run is known to reach it'
+
     private CheckResult shown(CheckResult r) {
         if (r == null) return r
         if (r.status == CheckResult.Status.REFUTED) sawRefutation = true
@@ -3368,7 +3374,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (intEmpty && sortedEmpty) {
             // Phase 374 — an exact witness whose model is empty depends on nothing: every call fails, `f()` among them
             if (outsideKind == null && exactWitness && closureCallNote == null && currentMethod != null && currentMethod.parameters.length == 0) {
-                r.failingCall = currentMethod.name + '()'
+                if (opaqueArgBound) { if (!r.notes.contains(OPAQUE_ARG_NOTE)) r.notes.add(OPAQUE_ARG_NOTE) }
+                else r.failingCall = currentMethod.name + '()'
             }
             return r
         }
@@ -3392,6 +3399,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 .collect { String k -> unmodelledBase(k) }.findAll { !it.contains('#') && !it.startsWith('$') } +
              r.counterexample.keySet().collect { String k -> k.split(/[.\[?#$]/, 2)[0] }.findAll { replayUnmodelled.contains(it) }
             ).unique()
+        if (r.failingCall != null && opaqueArgBound) {   // Phase 546
+            r.failingCall = null
+            if (!r.notes.contains(OPAQUE_ARG_NOTE)) r.notes.add(OPAQUE_ARG_NOTE)
+        }
         if (r.failingCall != null && !unmodelled.isEmpty()) {
             r.failingCall = null
             String note = "no failing call: the failure rests on ${unmodelled.join(', ')}, a value the verifier doesn't model (an unmodelled call or expression), so no run is known to reach it".toString()
@@ -5604,6 +5615,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SpecRegistry.COMPILE_LOADER.set(compileLoader)
         currentFacts = new PathFacts()
         currentMethod = node
+        opaqueArgBound = false
         WRITE_OWNER.set(node.declaringClass)
         WRITE_IMMUTABLE.set(immutableNames(node))
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
@@ -7811,13 +7823,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Phase 539 — a pack's entry facts ({@link EncodingPack#nonNullOnEntry}): a parameter its library never passes as
-     *  null is assumed non-null, as {@code @NonNull} is, and ledgered as a {@code pack fact}. */
+     *  null is assumed non-null, as {@code @NonNull} is, and ledgered as a {@code pack fact} (in the pack's words, when
+     *  it gives a reason: Phase 546). */
     private void assumePackEntryFacts(SmtSession s, Encoder enc) {
         for (EncodingPack pack : PackRegistry.packs()) {
             for (String n : pack.nonNullOnEntry(currentMethod)) {
                 assertFact(s, s.not(enc.nullityOf(n)), pack.name() + ': ' + n + ' ≠ null on entry')
                 TrustLedger.record(TrustLedger.PACK_FACT, "${currentMethod.declaringClass.name}#${currentMethod.name}".toString(),
-                    "${n} is never null on entry (${pack.name()} pack)".toString(),
+                    "${pack.nonNullOnEntryReason(currentMethod, n) ?: n + ' is never null on entry'} (${pack.name()} pack)".toString(),
                     currentMethod.parameters.find { Parameter p -> p.name == n } ?: currentMethod)
             }
         }
@@ -23933,6 +23946,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     enc.putMapKeys(formals[i].name, mh[1])
                     enc.putMapVnull(formals[i].name, mh[2])   // Phase 483
                 }
+            }
+            // Phase 546 — a registry skeleton's actual that is a call with no modelled value (`ActorSystem.create(
+            // Main.create(), 'hello')`), where the @Ensures never reads its formal: there is nothing to substitute, so an
+            // opaque value stands in and the rest of the contract is assumed. A model may rest on it unseen, so the
+            // method names no failing call (opaqueArgBound)
+            if (h == null && actual instanceof MethodCall && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null &&
+                    (ensuresAst == null || mentionedName(ensuresAst, [formals[i].name] as Set<String>) == null)) {
+                h = s.varOfSort('$unread' + (havocCounter++) + '#arg', enc.sortForType(ft))
+                opaqueArgBound = true
             }
             if (h == null) {   // can't faithfully substitute → don't assume
                 savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }

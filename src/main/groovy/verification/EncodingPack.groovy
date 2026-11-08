@@ -142,6 +142,10 @@ interface EncodingPack {
      *  in the trust ledger as a {@code pack fact}. A pack must answer only for methods nothing but the library can call:
      *  the fact puts no obligation on a caller. */
     default List<String> nonNullOnEntry(MethodNode m) { Collections.<String> emptyList() }
+    /** Phase 546 — why {@code n}, one of {@link #nonNullOnEntry}'s answers for {@code m}, is non-null, as the trust
+     *  ledger states it; null for the default ({@code n is never null on entry}). For a fact that isn't the library
+     *  never passing null, e.g. a constructor whose first statement throws on null. */
+    default String nonNullOnEntryReason(MethodNode m, String n) { null }
     /** Phase 545 — the parameters of the closure literal {@code ce}, passed as argument {@code at} of {@code call}
      *  (a {@code MethodCallExpression} or {@code StaticMethodCallExpression}, type-checked), that this pack knows its
      *  library never calls it with as {@code null} (e.g. a Pekko {@code Behaviors.receiveMessage} handler's message,

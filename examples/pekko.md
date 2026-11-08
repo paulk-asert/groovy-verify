@@ -23,8 +23,8 @@ groovy-verify's `PekkoPack` answers those questions from what Pekko is **measure
 itself with the usual machinery: `@Invariant`, `@Ensures`, `assert`, and counterexamples.
 
 The pack is in tree and matched by name: Pekko is never compiled against, so a build without Pekko pays nothing.
-It covers the Java DSL's `AbstractBehavior` style (Phases 538–542) and its functional style, `Behaviors.setup` /
-`receive` (Phase 545).
+It covers the Java DSL's `AbstractBehavior` style (Phases 538–542), its functional style, `Behaviors.setup` /
+`receive` (Phase 545), and the code that starts the actors (Phase 546).
 
 ## Measured first
 
@@ -42,6 +42,8 @@ before a proof is built on the old one.
 | an `ask` nobody answers fails at its timeout | `TimeoutException` after ~320 ms (300 ms timeout) | a reply is owed on every path |
 | …one answered by whoever its `replyTo` was handed to completes | the helper's answer arrives | handing the reply ref on meets the obligation |
 | a second reply is dropped harmlessly | the ask completes with the first; the handler goes on | replying twice is no error |
+| `AbstractBehavior`'s constructor refuses a null context | `new Sub(null)` throws `IllegalArgumentException` inside `super(context)`; the subclass constructor never goes on | a constructor's context is non-null past `super(context)` |
+| `ActorSystem.create(guardian, name)` returns a system | `SpecAuditTest` runs the shipped skeleton against the runtime: two guardians, a valid, an invalid and a null name | `system.tell(…)` needs no null check |
 | a functional handler closure is never handed `null` | `setup`, `receiveMessage`, `receive`, `receiveSignal`, and a builder's `onMessage` (with its predicate), `onAnyMessage` and `onSignal`, each sent a message, a refused `tell(null)` and a stop: every argument non-null | a handler closure's parameters are non-null |
 
 ## The blog's bot, as written
@@ -232,6 +234,27 @@ at the stopped state:
 Any other signal step still withdraws the stopped release: `Terminated`, a handler taking any `Signal`,
 `onSignalEquals`, or a closure. Only PostStop has been measured.
 
+## The whole program
+
+The blog's sample code ([groovy-pekko-gpars](https://github.com/paulk-asert/groovy-pekko-gpars)) has a greeter, the
+bot, a main behaviour that spawns them, and a `Run` script that starts the system. With every class under the verifier
+and the bot's two contracts, all of it verifies, including the main behaviour's constructor:
+
+<!-- doclint:case p546-pekko-guardian/the-blog-s-sample-program-verifies-guardian-and-all -->
+```groovy
+    private HelloWorldMain(ActorContext<SayHello> context) {
+        super(context)
+        greeter = context.spawn(HelloWorld.create(), 'greeter')
+    }
+```
+
+`context` can't be null at `spawn`: `AbstractBehavior`'s constructor throws on a null context, so a constructor that
+begins `super(context)` never gets past it with one (measured). And `ActorSystem.create` is known to return a system,
+so `Run`'s `system.tell(…)` is safe.
+
+The one change the code needs is Groovy's, not the verifier's: under `@TypeChecked`, Groovy 6.0.0 doesn't infer
+`Behaviors.setup(HelloWorld::new)`'s type argument, so it is written `Behaviors.<Greet>setup(HelloWorld::new)`.
+
 ## What is trusted
 
 None of the facts above is proved from Pekko's source; each is measured and then assumed. The assumptions are
@@ -268,13 +291,11 @@ The reply obligation is a check, not an assumption, so it isn't listed.
   and a closure that replies isn't counted as a reply.
 - **Calls without contracts.** `pipeToSelf`, `ask` from inside a handler, timers and stash have no skeletons yet, so
   a handler using one skips verification, loudly.
-- **The guardian side.** Probed on the blog's sample code ([groovy-pekko-gpars](https://github.com/paulk-asert/groovy-pekko-gpars)),
-  every class under the verifier. The greeter verifies as written, and so does the bot with its two contracts. Two
-  false alarms remain. `context.spawn(…)` in `HelloWorldMain`'s constructor is reported possibly null, but
-  `AbstractBehavior`'s constructor throws `IllegalArgumentException` on a null context, so `super(context)` already
-  rules that out. `system.tell(…)` in `Run` is reported possibly null because `ActorSystem.create` has no skeleton yet.
-  Separately, under `@TypeChecked` each `Behaviors.setup(X::new)` needs `Behaviors.<T>setup(…)`: plain `@TypeChecked`
-  rejects it too, so that is Groovy's inference, not the verifier.
+- **The rest of the guardian side.** A constructor that delegates (`this(context, …)`), or one of a class extending
+  `AbstractBehavior` through another class, gets no context fact. `ActorSystem.create`'s overloads taking a setup, a
+  config or props have no skeleton. A guardian held in a local built by a user method
+  (`Behavior<…> g = Main.create(); ActorSystem.create(g, …)`) hits a bug in the core, not the pack: `system.tell(…)`
+  is reported with a false `fails on:`. It is recorded in ROADMAP (Phase 546) for a phase of its own.
 
-The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–545),
+The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–546),
 and the capability rows in [CAPABILITIES.md](../CAPABILITIES.md).

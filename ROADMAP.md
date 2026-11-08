@@ -22743,6 +22743,61 @@ class was added), no static-call form (1), no builder steps (2), no implicit `it
 after the nested-handler case was added: at the top level Phase 544's walk already follows the reassignment), no
 coerced literals (2), not ledgered (5), the checker's static-call branch off (1).
 
+## Phase 546 — the Pekko pack, slice 7: the guardian side  *(shipped — capability; diagnostics)*
+
+Probed on the blog's sample program ([groovy-pekko-gpars](https://github.com/paulk-asert/groovy-pekko-gpars), commit
+7a6c53e), every class under the verifier: the greeter verified as written, and the bot with its two contracts. Two
+false alarms remained, on the code that starts the actors.
+
+- **`context.spawn(…)` in `HelloWorldMain`'s constructor** was a possible NullPointerException, `fails on: <init>(null)`.
+  That call fails, but in `super(context)`, not at `spawn`: `AbstractBehavior`'s constructor throws
+  `IllegalArgumentException` on a null context (the bytecode, then measured:
+  `PekkoSemanticsTest.anAbstractBehaviorRefusesANullContextBeforeTheSubclassConstructorGoesOn`, the subclass constructor
+  never goes on). PekkoPack's `nonNullOnEntry` now answers the parameter a direct subclass's constructor passes as its
+  first statement, `super(context)`: no statement after it runs with it null. A new SPI hook,
+  `EncodingPack.nonNullOnEntryReason`, lets the ledger say why: `context is non-null past super(context):
+  AbstractBehavior's constructor throws on null`, not "never null on entry", which would be false here.
+- **`system.tell(…)` in `Run`**: `ActorSystem.create` had no skeleton. It has one now, `@Pure @Ensures({ result !=
+  null })` on `create(guardian, name)`, held against the runtime by `SpecAuditTest` (two guardians, a valid, an invalid
+  and a null name; each system started is terminated after the run).
+- **…and a skeleton's ensures was dropped when an argument is a call** (`ActorSystem.create(HelloWorldMain.create(),
+  'hello')`, the blog's shape): an actual with no modelled value made `assumeCalleeEnsures` give up on the whole
+  contract. For a registry skeleton whose @Ensures never reads that formal, an opaque value now stands in when the
+  actual is a call. A model may rest on that value without showing it, so a method where one was bound names no failing
+  call (a note says why). The first full run showed why both limits matter: bound for any actual, a P533 units case
+  (`getQuantity(1.5, MILE) == getQuantity(2414.016, METRE)`, `MILE` a property) went from "outside the fragment" to a
+  refutation with `fails on: f()` from an empty model, Phase 374's rule. True of that case at runtime, but by the
+  same route a twin that holds would have shown a false one.
+
+So the blog's whole sample program verifies, guardian and `Run` included. The one change it needs is Groovy's, not the
+verifier's: under `@TypeChecked`, `Behaviors.setup(X::new)` needs `Behaviors.<T>setup(…)` (plain `@TypeChecked` rejects
+it the same way).
+
+**Found, not fixed (core, not Pekko):** both reproduce in plain Groovy and are recorded for their own phase.
+- A value written after an *assigned* call the replay can't frame (`Object g = mk(); StringBuilder b = sb(g);
+  b.append('x')`, `mk` calling an unspecified static) is reported with a false failing call, `fails on: run()`; the same
+  call as a bare statement (`mk()`) correctly withholds it. In Pekko terms: a guardian held in a local built by a user
+  method (`Behavior<…> g = Main.create(); ActorSystem.create(g, …)`).
+- A user method taking `Object`, called with a `String` (`sb('k')`), crashes the implicit checks: "Sort mismatch at
+  argument #1 for function (declare-fun sb (Int) Int) supplied sort is String" (a loud skip).
+
+**Boundary:** a constructor that delegates (`this(context, …)`), or whose class extends AbstractBehavior through another
+class, gets no fact; `create`'s overloads taking a setup, a config or props have no skeleton.
+
+**Shipped tests:** group `P546 Pekko guardian` (G587), 9 cases: the blog's sample program, guardian and `Run` (proved,
+the constructor fact and the external spec asserted via `trusted:`); a context reassigned after `super(context)`, a
+delegating constructor and a subclass of a subclass (each still possibly null); `VERIFY_TRUST=deny` at the
+constructor's parameter (line and column pinned); a guardian passed in (proved); a method with an opaque argument
+naming no failing call, even for a failure that doesn't rest on it (the conservative side, pinned); `create` with a
+`Config` (unmodelled, no failing call).
+
+Mutation-checked: 8 of 8 killed — no constructor fact (5), any super call (1), any constructor call (2), the default
+ledger wording (2), the skeleton saying nothing (4), the unread formal not bound (3), the opaque flag never set (1), and
+an opaque value for any actual, not only a call (1, in P533); and the skeleton claiming `result == null` fails
+`SpecAuditTest` on both guardians. The binding's mention check (an opaque value only for a formal the
+ensures doesn't read) is kept as the conservative guard; no case can tell it apart, since the actual is unmodelled either
+way.
+
 ## Perf ceilings re-based (after Phase 542)
 
 The JUnit `test` run (the only place `PerfBudget` is asserted) passed at Phase 542 at 20,961 solver checks / 13,171
