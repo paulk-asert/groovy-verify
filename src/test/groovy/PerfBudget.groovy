@@ -39,7 +39,13 @@ import verification.Z3Backend
 @CompileStatic
 class PerfBudget {
 
-    /** Total solver {@code check()} calls (cache hits + real solves). Deterministic. */
+    /** Total solver {@code check()} calls (cache hits + real solves). Not load-independent: the same tree measured
+     *  20,631 quiet and 21,036 under load (Phase 539), the UNKNOWN count unchanged. The likely source is a re-ask after a
+     *  timeout (conjunct splitting, Phase 435; the witness re-checks), not traced. Size the headroom for it too. */
+    // Re-based 2026-11-08 (after Phase 542): `test` measured 20,961 checks / 13,171 distinct against 21,000 / 13,500, and
+    // 21,173–21,276 under load for Phases 540–541 — 78 phases since Phase 464's 16,396 / 10,331, about 60 checks a phase
+    // (the Pekko pack's groups, the record counterexamples). Not measured per phase.
+    // (2026-10-29: 21,000 at 16,396.)
     // Re-based 2026-10-29 (after Phase 464): `test` measured 16,396 checks / 10,331 distinct against 16,500 / 11,000 —
     // 65 phases of corpus growth since Phase 399's 13,189 / 8,516, about 50 checks a phase (new case groups, and the
     // witness re-checks: Phase 464's along the runs through a loop with no invariant). Not measured per phase.
@@ -51,10 +57,10 @@ class PerfBudget {
     // first's paths: their assume markers are rebuilt, so equal paths compared unequal); the other phases +60 each or less.
     // After it, `test` measured 13,189 / 8,516.
     // (2026-10-23: 15,000 at 11,379; 2026-10-22: 13,000 at 10,413.)
-    static final long MAX_CHECK_CALLS = 21_000
+    static final long MAX_CHECK_CALLS = 27_000
 
     /** Distinct VCs actually solved (the cache-miss population). Deterministic. */
-    static final long MAX_DISTINCT_VCS = 13_500   // re-based with it (10,331 distinct; 2026-10-24: 11,000 at 8,516; 2026-10-23: 9,500 at 7,367)
+    static final long MAX_DISTINCT_VCS = 17_000   // re-based with it (13,171 distinct; 2026-10-29: 13,500 at 10,331; 2026-10-24: 11,000 at 8,516; 2026-10-23: 9,500 at 7,367)
 
     /** UNKNOWN results (solver gave up / timed out). The corpus carries a handful of hard VCs plus the
      *  Phase 203/204 inconsistency canaries (recurrence-axiom refutes that intentionally time MBQI out —

@@ -585,6 +585,44 @@ class Encoder implements TheoryApi {
         session.displayAs(recv + '$' + field, ClassHelper.isPrimitiveBoolean(ft) ? session.eq(cell, session.intLit(1L)) : cell)
     }
 
+    /**
+     * Phase 543 — show a record parameter's component, as read, under {@code r$n}: the name a class parameter's field
+     * has (Phase 436), so the counterexample shows {@code r.n = -1} and the failing call builds {@code new R(-1)}. A
+     * record is immutable, so the read is the entry value, as long as the parameter itself is never reassigned. An int
+     * or boolean component only: those are the values the model pins.
+     */
+    private void showRecordComponent(Expression obj, FieldNode comp, Object sel) {
+        if (assumingCells || comp == null || vcMethod == null || !(obj instanceof VariableExpression)) return
+        if (!(isIntLikeType(comp.type) || ClassHelper.isPrimitiveBoolean(comp.type))) return
+        String n = ((VariableExpression) obj).name
+        if (!vcMethod.parameters.any { it.name == n } || reassignsParameter(n)) return
+        session.displayAs(n + '$' + comp.name, sel)
+    }
+
+    private final Map<String, Boolean> reassignedParams = new HashMap<String, Boolean>()
+
+    private boolean reassignsParameter(String name) {
+        Boolean known = reassignedParams.get(name)
+        if (known != null) return known
+        boolean r = assignsName(vcMethod, name)
+        reassignedParams.put(name, r)
+        r
+    }
+
+    /** Phase 543 — does {@code m}'s body assign {@code name} anywhere (`r = …`, `r += …`)? */
+    static boolean assignsName(MethodNode m, String name) {
+        boolean[] found = [false] as boolean[]
+        m?.code?.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override
+            void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression &&
+                        ((VariableExpression) be.leftExpression).name == name) found[0] = true
+                super.visitBinaryExpression(be)
+            }
+        })
+        found[0]
+    }
+
     /** Phase 436 — a boolean as its identity-map cell: 1 for true, 0 for false. */
     private Object boolCell(Object b) { session.ite(b, session.intLit(1L), session.intLit(0L)) }
 
@@ -6206,7 +6244,11 @@ class Encoder implements TheoryApi {
                 if (rc != null && rc.any { it.name == prop }) {
                     sortFor(mt)
                     Object carrier = translate(obj)
-                    if (carrier != null) return session.datatypeSelect(mt.nameWithoutPackage, mt.nameWithoutPackage, prop, carrier)
+                    if (carrier != null) {
+                        Object sel = session.datatypeSelect(mt.nameWithoutPackage, mt.nameWithoutPackage, prop, carrier)
+                        showRecordComponent(obj, rc.find { it.name == prop }, sel)
+                        return sel
+                    }
                 }
             }
             // EncodingPack property hook (Phase 188) — after the carrier branches (a bespoke record's own

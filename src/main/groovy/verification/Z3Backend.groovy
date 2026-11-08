@@ -2205,6 +2205,24 @@ class Z3Session implements SmtSession {
                 }
                 return  // continue
             }
+            // Phase 543 — a record (an N-field datatype): its whole value, the constructor's int / boolean arguments in
+            // order, under `name()` — what a failing call builds it from (a component the method never read included:
+            // `r != s` constrains both records without reading one)
+            if (var.getSort() instanceof com.microsoft.z3.DatatypeSort) {
+                Expr whole = m.evaluate(var, true)
+                com.microsoft.z3.DatatypeSort ds = (com.microsoft.z3.DatatypeSort) var.getSort()
+                if (whole != null && whole.isApp() && ds.getNumConstructors() == 1 && whole.getFuncDecl() == ds.getConstructors()[0]) {
+                    List<String> parts = new ArrayList<String>()
+                    for (Expr a : whole.getArgs()) {
+                        if (a instanceof IntNum) parts.add(String.valueOf(clampInt64((IntNum) a)))
+                        else if (a.isTrue()) parts.add('true')
+                        else if (a.isFalse()) parts.add('false')
+                        else { parts = null; break }
+                    }
+                    if (parts != null) sce[name + '()'] = parts.join(', ')
+                }
+                return  // continue
+            }
             // Uninterpreted sorts (Enum): equality-evaluate against every interned literal,
             // since Z3 may pin the var to a synthetic constant (e.g. {@code Color!val!1})
             // distinct from our minted ones but equal-by-model — getName-matching alone misses

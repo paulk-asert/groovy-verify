@@ -22624,6 +22624,49 @@ Mutation-checked: 9 of 9 killed — no hook (4), observed classes too (1), any p
 any signal step sanctioned (5), any signal class (1, after the `onSignal(Terminated, …)` case was added for it), any
 pointer target (2), the invariant kept (2), not ledgered (2).
 
+## Phase 543 — a record parameter in the counterexample  *(shipped — diagnostics)*
+
+Found writing `examples/pekko.md`: Phase 541's `onAdd may return without a reply on message.replyTo` showed
+`counterexample: total = 0` and nothing of the message, whose `n` is what picks the path. Probed on plain methods, it was
+general: a final class parameter's field shows (`r.n = -1`, `fails on: f(new C(n: -1))`, Phase 436), and a record
+parameter's showed nothing and got no failing call (its canonical constructor isn't a no-arg one, so Phase 369's
+`objectLiteral` gave up).
+
+- **Shown as read.** The encoder's record-selector branch (`r.field`, Phase 142) registers the selector with
+  `displayAs` under `r$field`, the name a class parameter's field has: an int or boolean component of a parameter that
+  the body never reassigns (a record is immutable, so its read is the entry value), not while an entry assumption is
+  translated (Phase 437).
+- **Built whole.** `Z3Backend.refutationFromModel` reads a single-constructor datatype variable's whole model value
+  (completed) and keeps its int / boolean arguments in order under `name()`; `objectLiteral` builds
+  `new R(…)` from it when every declared component is an int or a boolean (a String component is an Int in the
+  datatype, so the declared types decide). A first cut filled an unread component with 0: probing found
+  `f(new R(0, 0), new R(0, 0))` for `if (r != s)`, a call that doesn't fail, and `f(new R(0, 0))` for a reassigned
+  parameter. Both now come from the model's entry values (`new R(0, 0), new R(2, 0)`; `new R(-2, 0)`).
+
+**Boundary:** a record with a component of any other type gets no failing call; a reassigned parameter's components are
+not shown; the accessor `r.n()` is outside the fragment (a pre-existing skip).
+
+**Shipped tests:** group `P543 record counterexamples` (G584), 7 cases: an int component shown and built; two components,
+one pinned by the precondition; a boolean; records compared whole; a reassigned parameter (`refute: 'r.n ='`); a String
+component (shown, `refute: 'fails on:'`); the Pekko reply diagnostic with `message.n = -1`. Phase 541's pinned case
+gains the value too. The full corpus passes unchanged otherwise (4958/4958): no existing expectation rested on a
+record's missing call.
+
+Mutation-checked: 5 of 5 killed — components not shown (5), reassigned shown too (1), any component type built (1),
+zero-filled rather than the model's (2), no whole value (5).
+
+## Perf ceilings re-based (after Phase 542)
+
+The JUnit `test` run (the only place `PerfBudget` is asserted) passed at Phase 542 at 20,961 solver checks / 13,171
+distinct VCs / 38 UNKNOWN, against ceilings of 21,000 / 13,500 / 55: 0.2% headroom on the check count, and it had failed
+under load at Phases 540 and 541 (21,173 and 21,276, 15-minute load averages 75 and 8). The count is not
+load-independent, as the file claimed: identical trees measured 20,631 quiet and 21,036 loaded (Phase 539), with the
+same UNKNOWN count. The likely source is a re-ask after a timeout (Phase 435's conjunct splitting, the witness
+re-checks); not traced. Since Phase 464's re-base (16,396 / 10,331) the corpus grew about 60 checks a
+phase, not measured per phase. Re-based `MAX_CHECK_CALLS` to 27,000 and `MAX_DISTINCT_VCS` to 17,000 (29% / 29% over
+the measured figures, the file's sizing rule); UNKNOWN and the single-check backstop unchanged. The file's comment now
+says what the count depends on.
+
 ## Definition of done, per increment
 
 An increment is done when:

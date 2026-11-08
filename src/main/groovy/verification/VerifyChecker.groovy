@@ -4438,13 +4438,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 369 — a non-null object: `new C(…)` with the properties the model fixed (Phase 45's `c$field`), when C
         // can be built so — it rendered `null` here, so `g(C c)` under `@Requires({ c != null })` read `fails on: g(null)`.
         // Null (no failing call at all) when it can't be.
-        objectLiteral(p, ce)
+        objectLiteral(p, ce, sortedCe)
     }
 
     /** Phase 369 — a failing call's non-null object argument, or null when the class has no visible no-arg constructor. */
-    private static String objectLiteral(Parameter p, Map<String, Long> ce) {
+    private static String objectLiteral(Parameter p, Map<String, Long> ce, Map<String, String> sortedCe) {
         ClassNode t = p.type?.redirect()
         if (t == null || t.isInterface() || t.isAbstract() || t == ClassHelper.OBJECT_TYPE) return null
+        List<FieldNode> rc = Encoder.recordComponents(t)
+        if (rc != null) {
+            // Phase 543 — a record: its canonical constructor, with the model's whole value (every component, in order);
+            // none when a component isn't an int or a boolean (the model then doesn't say which value fails; a String
+            // component is an Int in the datatype, so the declared types decide, not the model's)
+            if (!rc.every { (it.type?.name in INT_TYPE_NAMES) || (it.type?.name in BOOL_TYPE_NAMES) }) return null
+            String whole = sortedCe?.get(p.name + '()')
+            return whole != null ? "new ${t.nameWithoutPackage.replace('$', '.')}(${whole})".toString() : null
+        }
         List<ConstructorNode> ctors = t.declaredConstructors
         boolean noArg = ctors.isEmpty() || ctors.any { it.parameters.length == 0 && it.isPublic() }
         if (!noArg) return null

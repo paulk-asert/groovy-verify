@@ -143,7 +143,9 @@ Drop the `tell(-1)` on the rejection path and the compile fails at that path's `
 
 <!-- doclint:diagnostic p541-pekko-reply/the-rejection-path-forgets-to-reply-refuted-on-it -->
 ```
-[Static type checking] - onAdd may return without a reply on message.replyTo (pekko pack) … @ line 21, column 20.
+[Static type checking] - onAdd may return without a reply on message.replyTo (pekko pack)
+    counterexample: message.n = -1, total = 0
+ … @ line 21, column 20.
 ```
 
 A path is reported only if the solver finds it **feasible**. `if (n > 0) reply(1); if (n <= 0) reply(0)` has a
@@ -216,8 +218,6 @@ The reply obligation is a check, not an assumption, so it isn't listed.
   counted as a reply.
 - **Calls without contracts.** `pipeToSelf`, `ask` from inside a handler, timers and stash have no skeletons yet, so
   a handler using one skips verification, loudly.
-- **The counterexample's message.** A record parameter's fields don't appear in a counterexample, so the
-  diagnostic's line and column are what name the failing path.
 
 The phase-by-phase account, with each slice's mutation testing, is in [ROADMAP.md](../ROADMAP.md) (Phases 537–542),
 and the capability rows in [CAPABILITIES.md](../CAPABILITIES.md).

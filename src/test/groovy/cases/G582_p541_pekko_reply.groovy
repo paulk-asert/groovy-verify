@@ -87,7 +87,7 @@ ${opts.after ?: ''}""")
         // ---------- replies on every path ----------
         [group: 'P541 Pekko reply', name: 'a reply on each of two exits: verified', ok: true, src: tally(REPLIES)],
         [group: 'P541 Pekko reply', name: 'the rejection path forgets to reply: refuted on it',
-         expect: [MISSED, 'counterexample: total = 0', '@ line 21, column 20.'],   // at its `return Behaviors.same()`
+         expect: [MISSED, 'counterexample: message.n = -1, total = 0', '@ line 21, column 20.'],   // at its `return Behaviors.same()`
          src: tally(REPLIES.replace('            message.replyTo.tell(-1)\n', ''))],
         [group: 'P541 Pekko reply', name: 'the class has no invariant: the reply is owed all the same',
          expect: [MISSED],
