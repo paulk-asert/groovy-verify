@@ -22826,7 +22826,7 @@ withheld seven true failing calls across P347, P421 and P461 (`g(1)` breaking `i
 a call's value is in every model on its path, whether or not the failure rests on it. It needs a relevance test (does the
 obligation still fail for every value the contract allows?), and is recorded below.
 
-**Found, not fixed:** (1) the contract-bounded value above; (2) the Phase 546 crash, a user method taking `Object`
+**Found, not fixed:** (1) the contract-bounded value above (fixed in Phase 548); (2) the Phase 546 crash, a user method taking `Object`
 called with a `String` ("Sort mismatch … supplied sort is String").
 
 **Shipped tests:** group `P547 false failing calls` (G588), 7 cases: (A) the assigned unframable call, with and without a
@@ -22836,6 +22836,37 @@ in a local. P386's user-`toList()` case now expects no failing call.
 
 Mutation-checked: 4 of 4 killed — the assigned call still 'after a loop' (3), the null flag untainted (1), tainted even
 when the contract speaks of `result` (1), the generic note (1).
+
+## Phase 548 — a call's value its contract bounds but doesn't pin  *(shipped — diagnostics: a tenet violation)*
+
+Phase 547's remaining false failing call: `@Ensures({ result >= -5 }) static int idx(Object o) { 0 }`, then `int k =
+idx(new Object()); a[k]` read `counterexample: k = 806878739` and `fails on: run()`. The model's value for a call the
+verifier knows only from its contract is no run's: a run gets what the body returns. Phase 547 tried withholding the call
+whenever the model showed such a value, and took it out: a call's value is in every model on its path, so seven true
+failing calls went too. What it lacked was a relevance test, and Phase 473 already had one.
+
+- **The value is an unknown** (Phase 472's `unknown:` taint on the call's result handle) unless the contract pins it, a
+  top-level conjunct `result == e`, or the body's own effect does (Phase 407's `result`, as for `g(int i) { i }`).
+- **Phase 473's dependence test decides whether the failure rests on it.** The taint is kept only if an assertion other
+  than a definition or a domain fact mentions the value, or a local defined from it. Two changes make that test fit: the
+  callee's @Ensures, which mentions the value by construction, is asserted as a domain fact (it holds of every run of the
+  callee); and the replay binds the local to the value as a definition, not a plain equality. So `a[k]` and `if (k > 100)
+  return a[5]` rest on it and name no call, while `a[5]`, or `s += g(i)` under a broken `i == 0`, keep theirs.
+- **The note says what would settle it:** `the failure rests on what idx(…) returns, which the verifier knows only from
+  its @Ensures, so no run is known to fail — strengthen the contract if the claim should follow from it` (and, for a
+  callee with no @Ensures whose body isn't followed, that an @Ensures would settle it). Phase 547's null note comes first
+  where both apply.
+
+The full corpus passes unchanged (5004/5004): the seven calls Phase 547's first attempt withheld (P347, P421, P461) keep
+theirs, the failures there not reading the value.
+
+**Shipped tests:** group `P548 contract values` (G589), 5 cases: an index the contract bounds (withheld, the note
+pinned), a path condition reading it (withheld), a failure not reading it (`fails on: run()` kept), a contract pinning the
+value (kept), and the bound the note asks for (proved).
+
+Mutation-checked: 7 of 7 killed — no value taint (2), the contract a plain assertion (1), the replay binding a plain
+equality (1), nothing taken as pinned (1), the body's pin keeping the taint (4, in P461), no null-first order (1, in
+P547).
 
 ## Perf ceilings re-based (after Phase 542)
 

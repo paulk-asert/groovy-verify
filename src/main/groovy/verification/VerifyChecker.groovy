@@ -1571,6 +1571,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     static final String CONTRACT_NULL_NOTE = 'no failing call: the failure rests on %1$s(…) returning null, which its contract ' +
         'doesn\'t rule out but no run is known to do — an @Ensures({ result != null }) on %1$s would settle it'
 
+    /** Phase 548 — a call's value its contract bounds but doesn't pin, which the failure reads. */
+    static final String CONTRACT_VALUE_NOTE = 'no failing call: the failure rests on what %s(…) returns, which the verifier ' +
+        'knows only from its @Ensures, so no run is known to fail — strengthen the contract if the claim should follow from it'
+    static final String NO_CONTRACT_VALUE_NOTE = 'no failing call: the failure rests on what %1$s(…) returns, which the ' +
+        'verifier doesn\'t follow into its body and no @Ensures describes, so no run is known to fail — an @Ensures on %1$s would settle it'
+
     static final String UNKNOWN_CALL_NOTE = 'no failing call: the failure rests on what %s(…) returns, a value the ' +
         'verifier can\'t evaluate (its body calls or reads what it doesn\'t model), so no run is known to fail'
 
@@ -3459,13 +3465,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Set<String> keys = new LinkedHashSet<String>()
                 if (r.counterexample != null) keys.addAll(r.counterexample.keySet())
                 if (r.sortedCounterexample != null) keys.addAll(r.sortedCounterexample.keySet())
-                String k = keys.find { String key -> r.taints.contains('unknown:' + key) }
-                if (k != null) unknown = k.substring(0, k.indexOf('#call'))
+                // Phase 548 — a null flag (Phase 547) first: it says more than the value beside it
+                String k = keys.find { String key -> key.contains('?null#call') && r.taints.contains('unknown:' + key) } ?:
+                    keys.find { String key -> r.taints.contains('unknown:' + key) }
+                // Phase 548 — a contract-bounded value's handle carries its callee in a `callee:` taint
+                String calleeTaint = k == null ? null : r.taints.find { String t -> t.startsWith('callee:' + k + '|') }
+                if (calleeTaint != null) {
+                    String[] parts = calleeTaint.substring(('callee:' + k + '|').length()).split('\\|')
+                    unknown = parts[0] + (parts[1] == 'none' ? '?none' : '?some')
+                } else if (k != null) unknown = k.substring(0, k.indexOf('#call'))
             }
             if (dropped != null || unknown != null) {
                 r.failingCall = null
                 String note = dropped != null ? String.format(DROPPED_CONDITION_NOTE, dropped.substring('dropped:'.length())) :
                     unknown.endsWith('?null') ? String.format(CONTRACT_NULL_NOTE, unknown - '?null') :   // Phase 547
+                    unknown.endsWith('?none') ? String.format(NO_CONTRACT_VALUE_NOTE, unknown - '?none') :   // Phase 548
+                    unknown.endsWith('?some') ? String.format(CONTRACT_VALUE_NOTE, unknown - '?some') :
                     String.format(UNKNOWN_CALL_NOTE, unknown)
                 if (!r.notes.contains(note)) r.notes.add(note)
             }
@@ -6906,7 +6921,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         String fn = 'specw$' + Integer.toHexString(System.identityHashCode(a.rhs))
                         Object fresh = lsort != null && lsort != s.intSort() ? s.varOfSort(fn, lsort) : s.intVar(fn)
                         if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
-                            s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                            s.assertDefinition(enc.varFor(a.name), fresh)   // Phase 548 — a definition, for the dependence test
                             enc.bindNullity(a.name, enc.lastCallResultNullity)   // Phase 421 — what its @Ensures says
                             modelled = true
                         }
@@ -9490,6 +9505,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
         }
+    }
+
+    /** Phase 548 — an @Ensures with a top-level conjunct {@code result == e} (either way round), {@code e} not reading
+     *  {@code result}: the call's value is then the one a run gets. */
+    private static boolean pinsResult(Expression ens) {
+        if (ens == null) return false
+        if (ens instanceof BinaryExpression && ((BinaryExpression) ens).operation.type == Types.LOGICAL_AND) {
+            return pinsResult(((BinaryExpression) ens).leftExpression) || pinsResult(((BinaryExpression) ens).rightExpression)
+        }
+        if (!(ens instanceof BinaryExpression) || ((BinaryExpression) ens).operation.type != Types.COMPARE_EQUAL) return false
+        Expression l = ((BinaryExpression) ens).leftExpression, r = ((BinaryExpression) ens).rightExpression
+        Set<String> res = ['result'] as Set<String>
+        boolean lr = l instanceof VariableExpression && ((VariableExpression) l).name == 'result'
+        boolean rr = r instanceof VariableExpression && ((VariableExpression) r).name == 'result'
+        (lr && mentionedName(r, res) == null) || (rr && mentionedName(l, res) == null)
     }
 
     /** Phase 547 — a statement with a method call anywhere in it (a closure's body aside). */
@@ -23991,6 +24021,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 113 — a tuple result is bound by renaming `result` to the caller's tuple local in the
         // @Ensures (below), not by a scalar `result` term, so its slot accessors resolve to the local's slots.
         if (resultTupleName == null && resultHandle != null) bindings.put('result', resultHandle)
+        // Phase 548 — a value the contract bounds but doesn't pin (`@Ensures({ result >= -5 })`): a model's pick is no run's
+        // (a run gets what the body returns). An `unknown:` taint, kept only where the failure reads the value (Phase 473's
+        // test, the contract itself asserted as a domain fact below): `a[idx(o)]` read `fails on: run()` with idx returning
+        // 0, while `s += g(i)` under a broken `i == 0` keeps its call. Pinned — `result == e` — it is the run's.
+        String valueTaint = null
+        if (resultTupleName == null && resultHandle != null && !pinsResult(ensuresAst)) {
+            valueTaint = resultHandle.toString()
+            s.witnessTaints().add('unknown:' + valueTaint)
+            s.witnessTaints().add('callee:' + valueTaint + '|' + callee.name + '|' + (ensuresAst == null ? 'none' : 'some'))
+        }
 
         // Phase 133 — instance call on a carrier receiver (`recv.m(args)`): bind `this` and each component field
         // (so the callee's bare `field` / `this.field` resolves to the receiver's value), and register the carrier
@@ -24264,6 +24304,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             enc.translateWith(c.value, bindings)
                     } catch (Throwable ignored) { t = null }
                     if (t != null) { effectTerms.add(t); deferredTaints.remove(c.key) }
+                    // Phase 548 — the body's own value for the result: pinned, a run's (`g(int i) { i }`)
+                    if (t != null && c.key == 'result' && valueTaint != null) {
+                        s.witnessTaints().removeAll { String w -> w == 'unknown:' + valueTaint || w.startsWith('callee:' + valueTaint + '|') }
+                        valueTaint = null
+                    }
                 }
             }
         } finally {
@@ -24294,7 +24339,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean fromRegistry = callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null
         String calleeLabel = "${callee.declaringClass?.name ?: '?'}#${callee.name}".toString()
         if (post != null) {
-            s.assertExpr(post)
+            if (valueTaint != null) s.assertDomainFact(post)   // Phase 548 — true of any run of the callee: no dependence
+            else s.assertExpr(post)
             // Phase 231 — VERIFY_EXPLAIN heritage: a proof leaning on a spec's ensures should SAY so,
             // with trusted provenance front and centre (the per-proof twin of the trusted ledger).
             if (Reporter.EXPLAIN) {
