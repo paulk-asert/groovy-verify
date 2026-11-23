@@ -87,7 +87,7 @@ dependencies {
     // Z3 with bundled native libs (linux/mac/windows, amd64+aarch64).
     // Exposed via `api` so it lands on the consumer's COMPILE classpath:
     // the type-checking extension runs Z3 while the consumer compiles.
-    api 'tools.aqua:z3-turnkey:4.14.1'
+    api 'tools.aqua:z3-turnkey:5.3.3'
     // z3-turnkey scopes its own native-loader library (tools.aqua.turnkey.support.TurnKey, which
     // com.microsoft.z3.Native's static initializer needs) as a RUNTIME dependency — right for the
     // usual "solve at runtime" consumer, wrong for this one: the extension runs Z3 during the
